@@ -94,11 +94,13 @@ fun StyledConfirmationDialog(
                     ) {
                         Text(
                             text = title,
-                            style = MaterialTheme.typography.titleMediumEmphasized
+                            style = MaterialTheme.typography.titleMediumEmphasized,
+                            color = MaterialTheme.colorScheme.onSurface,
                         )
                         Text(
                             text = message,
-                            style = MaterialTheme.typography.bodyMedium
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onSurface,
                         )
                         Row(modifier = Modifier.align(Alignment.End)) {
                             TextButton(
@@ -106,7 +108,8 @@ fun StyledConfirmationDialog(
                             ) {
                                 Text(
                                     text = dismissText,
-                                    style = MaterialTheme.typography.labelMedium
+                                    style = MaterialTheme.typography.labelMedium,
+                                    color = MaterialTheme.colorScheme.onSurface
                                 )
                             }
                             TextButton(
@@ -114,7 +117,8 @@ fun StyledConfirmationDialog(
                             ) {
                                 Text(
                                     text = confirmText,
-                                    style = MaterialTheme.typography.labelMedium
+                                    style = MaterialTheme.typography.labelMedium,
+                                    color = MaterialTheme.colorScheme.primary
                                 )
                             }
                         }
@@ -159,15 +163,17 @@ fun StyledConfirmationDialog(
                             Column(horizontalAlignment = Alignment.CenterHorizontally) {
                                 Spacer(modifier = Modifier.height(24.dp))
                                 Text(
-                                    title,
+                                    text = title,
                                     style = MaterialTheme.typography.bodyLarge,
+                                    color = MaterialTheme.colorScheme.onSurface,
                                     textAlign = TextAlign.Center,
                                     modifier = Modifier.padding(horizontal = 16.dp)
                                 )
                                 Spacer(modifier = Modifier.height(12.dp))
                                 Text(
-                                    message,
+                                    text = message,
                                     style = MaterialTheme.typography.bodyMedium,
+                                    color = MaterialTheme.colorScheme.onSurface,
                                     textAlign = TextAlign.Center,
                                     modifier = Modifier.padding(horizontal = 16.dp)
                                 )
@@ -180,11 +186,11 @@ fun StyledConfirmationDialog(
                                         onClick = onDismiss,
                                         backdrop = innerBackdrop,
                                         modifier = Modifier.weight(1f),
-                                        materialButtonStyle = MaterialButtonStyle.Outlined,
                                     ) {
                                         Text(
                                             text = dismissText,
-                                            style = MaterialTheme.typography.bodyMedium
+                                            style = MaterialTheme.typography.bodyMedium,
+                                            color = MaterialTheme.colorScheme.onSurface
                                         )
                                     }
                                     StyledButton(
