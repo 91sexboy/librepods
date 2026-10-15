@@ -226,6 +226,7 @@ jobs:
           gh release create "$TAG" \
             artifacts/apk-release/* \
             artifacts/apk-debug/* \
+            --target "$GITHUB_SHA" \
             --title "$TITLE" \
             --notes "$NOTES" \
             --prerelease
