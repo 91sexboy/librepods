@@ -243,13 +243,11 @@ jobs:
           RELEASE_TITLE: ${{ steps.release_check.outputs.title }}
           RELEASE_DESCRIPTION: ${{ steps.release_check.outputs.description }}
           APP_VERSION: ${{ needs.build.outputs.app_version }}
-          CHANGELOG: ${{ steps.changelog.outputs.notes }}
           TIMESTAMP: ${{ steps.timestamp.outputs.timestamp }}
         run: |
           jq -n \
             --arg title "$RELEASE_TITLE" \
             --arg description "$RELEASE_DESCRIPTION" \
-            --arg changelog "${CHANGELOG:-No changes listed.}" \
             --arg timestamp "$TIMESTAMP" \
             --arg release_url "https://github.com/kavishdevar/librepods/releases/download/${RELEASE_TAG}/LibrePods-FOSS-v${APP_VERSION}-release.apk" \
             --arg debug_url "https://github.com/kavishdevar/librepods/releases/download/${RELEASE_TAG}/LibrePods-FOSS-v${APP_VERSION}-debug.apk" \
@@ -259,13 +257,6 @@ jobs:
                   title: $title,
                   description: $description,
                   color: 253060,
-                  fields: [
-                    {
-                      name: "Changelog",
-                      value: $changelog,
-                      inline: false
-                    }
-                  ],
                   timestamp: $timestamp,
                   footer: {
                     text: "GitHub Actions"
