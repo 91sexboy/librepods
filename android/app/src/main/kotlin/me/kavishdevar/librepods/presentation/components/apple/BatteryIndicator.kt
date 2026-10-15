@@ -95,7 +95,7 @@ fun BatteryIndicator(
             val strokeWidthPx = with(LocalDensity.current) { 4.dp.toPx() }
             val gapFromCenterPx = with(LocalDensity.current) { 8.sp.toPx() }
 
-            val trackColor = MaterialTheme.colorScheme.surfaceContainerHigh
+            val trackColor = MaterialTheme.colorScheme.surfaceContainerLow
             val optimizedLimit = 0.8f
             val progress = batteryPercentage / 100f
 

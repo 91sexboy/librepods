@@ -118,6 +118,7 @@ class LibrePodsService: Service() {
         (application as LibrePodsApplication).heartRateRepository
     }
 
+    @Suppress("unused")
     private val recordingRepository by lazy {
         (application as LibrePodsApplication).recordingRepository
     }
@@ -130,6 +131,7 @@ class LibrePodsService: Service() {
         (application as LibrePodsApplication).islandWindow
     }
 
+    @Suppress("unused")
     private fun observeCameraState() {
         CoroutineScope(Dispatchers.IO).launch {
             LibrePodsAccessibilityService.isCameraOpen.collect { isCamera ->
@@ -193,7 +195,7 @@ class LibrePodsService: Service() {
                         device.connectionState.value == ConnectionState.CONNECTED &&
                         device.state.value.componentState.any { it.status == ComponentStatus.IN_EAR }
                     }?.let { device ->
-                        (device as AppleDevice).stopHeadGestureDetection()
+                        (device as AppleDevice).stopHeadTracking()
                     }
                 }
             }

@@ -28,6 +28,7 @@ enum SensorServiceType {
     HEARTRATE = 19;
     HEARTRATEv2 = 20;
 
+    CMA_COMMAND = 79;
     SENSOR_SERVICE_UNKNOWN_82 = 82;
     HEARTRATE_COMMAND = 84;
 }

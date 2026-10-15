@@ -20,8 +20,8 @@ import androidx.compose.ui.unit.dp
 import me.kavishdevar.librepods.R
 import me.kavishdevar.librepods.bluetooth.aacp.types.ControlCommandIdentifier
 import me.kavishdevar.librepods.presentation.components.primitives.StyledList
-import me.kavishdevar.librepods.presentation.components.primitives.styledListItem
 import me.kavishdevar.librepods.presentation.components.primitives.StyledScaffold
+import me.kavishdevar.librepods.presentation.components.primitives.styledListItem
 import me.kavishdevar.librepods.presentation.viewmodel.AppleViewModel
 
 @Composable
@@ -66,7 +66,9 @@ fun CallControlScreen(
         ) {
             Spacer(modifier = Modifier.height(topPadding))
 
-            StyledList {
+            StyledList(
+                description = if (action == muteUnmuteText) stringResource(R.string.mute_unmute_notice) else null
+            ) {
                 styledListItem(
                     contentText = pressOnceText,
                     selected = pressOnceIsAction,

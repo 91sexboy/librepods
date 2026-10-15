@@ -1147,7 +1147,9 @@ class AACPManager(private val device: AppleDevice) {
     private fun handleSensorData(data: SensorDataWX) {
         if (data.hasCommand()) {
             when (data.command.service) {
-                SensorServiceType.ACTIVITY, SensorServiceType.DEVMOTION6 -> {
+                SensorServiceType.ACTIVITY,
+                SensorServiceType.CMA,
+                SensorServiceType.DEVMOTION6 -> {
                     val payload = data.command.payload.toByteArray()
 
                     if (payload.size != 58) {

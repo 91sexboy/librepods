@@ -6,7 +6,6 @@ import android.bluetooth.BluetoothDevice
 import android.content.Context
 import android.os.Build
 import android.util.Log
-import com.google.protobuf.copy
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -261,8 +260,17 @@ class AppleDevice(
     }
 
     fun startHeadTracking() {
+        val sensorServiceType = when (metadata.value.model) {
+            AirPodsModel.AIRPODS_5,
+            AirPodsModel.AIRPODS_5_WCC -> {
+                SensorServiceType.CMA_COMMAND
+            }
+            else -> {
+                if (metadata.value.version3.ifBlank { "8" }.first().digitToInt() >= 8) SensorServiceType.DEVMOTION6 else SensorServiceType.ACTIVITY
+            }
+        }
         aacp.setSensorServiceReportInterval(
-            sensorServiceType = if (metadata.value.version3.first().digitToInt() >= 8) SensorServiceType.DEVMOTION6 else SensorServiceType.ACTIVITY,
+            sensorServiceType = sensorServiceType,
             interval = _settings.value.headTrackingInterval
         )
         _state.update {
@@ -273,8 +281,17 @@ class AppleDevice(
     }
 
     fun stopHeadTracking() {
+        val sensorServiceType = when (metadata.value.model) {
+            AirPodsModel.AIRPODS_5,
+            AirPodsModel.AIRPODS_5_WCC -> {
+                SensorServiceType.DEVMOTION6
+            }
+            else -> {
+                if (metadata.value.version3.ifBlank { "8" }.first().digitToInt() >= 8) SensorServiceType.DEVMOTION6 else SensorServiceType.ACTIVITY
+            }
+        }
         aacp.setSensorServiceReportInterval(
-            sensorServiceType = if (metadata.value.version3.first().digitToInt() >= 8) SensorServiceType.DEVMOTION6 else SensorServiceType.ACTIVITY,
+            sensorServiceType = sensorServiceType,
             interval = Duration.ZERO
         )
         _state.update {
@@ -292,11 +309,6 @@ class AppleDevice(
         if (!started) {
             Log.w(TAG, "Failed to start gesture detection, probably because already running.")
         }
-    }
-
-    fun stopHeadGestureDetection() {
-        gestureDetector.stopDetection()
-        stopHeadTracking()
     }
 
     fun setHeadGesturesEnabled(enabled: Boolean) {
@@ -338,7 +350,7 @@ class AppleDevice(
     // AACPManager sets hrmActive true when a valid reading is received
     fun startHr(): Boolean {
         val success = aacp.setSensorServiceReportInterval(
-            sensorServiceType = if (metadata.value.version3.first().digitToInt() >= 9) SensorServiceType.HEARTRATE_COMMAND else SensorServiceType.HEARTRATE,
+            sensorServiceType = if (metadata.value.version3.ifBlank { "8" }.first().digitToInt() >= 9) SensorServiceType.HEARTRATE_COMMAND else SensorServiceType.HEARTRATE,
             interval = 1.seconds
         )
         if (success) {
@@ -352,7 +364,7 @@ class AppleDevice(
     }
     fun stopHr(): Boolean {
         val success = aacp.setSensorServiceReportInterval(
-            sensorServiceType = if (metadata.value.version3.first().digitToInt() >= 9) SensorServiceType.HEARTRATE_COMMAND else SensorServiceType.HEARTRATE,
+            sensorServiceType = if (metadata.value.version3.ifBlank { "8" }.first().digitToInt() >= 9) SensorServiceType.HEARTRATE_COMMAND else SensorServiceType.HEARTRATE,
             interval = Duration.ZERO
         )
         if (state.value.hrmState != BuddyState.INACTIVE && success) _state.update {

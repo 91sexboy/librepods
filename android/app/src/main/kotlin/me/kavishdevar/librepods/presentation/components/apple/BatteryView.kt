@@ -16,8 +16,6 @@
     along with this program.  If not, see <https://www.gnu.org/licenses/>.
 */
 
-@file:OptIn(ExperimentalEncodingApi::class)
-
 package me.kavishdevar.librepods.presentation.components.apple
 
 import androidx.compose.foundation.Image
@@ -25,9 +23,12 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.IntrinsicSize
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
@@ -46,7 +47,8 @@ import me.kavishdevar.librepods.R
 import me.kavishdevar.librepods.devices.Battery
 import me.kavishdevar.librepods.devices.BatteryComponent
 import me.kavishdevar.librepods.devices.BatteryStatus
-import kotlin.io.encoding.ExperimentalEncodingApi
+import me.kavishdevar.librepods.presentation.design.DesignSystem
+import me.kavishdevar.librepods.presentation.design.LibrePodsTheme
 
 @Composable
 fun BatteryView(
@@ -54,60 +56,71 @@ fun BatteryView(
     primaryImageRes: Int,
     caseImageRes: Int
 ) {
-    Box(
-        modifier = Modifier.fillMaxWidth(),
-        contentAlignment = Alignment.Center
+    Row(
+        modifier = Modifier
+            .widthIn(max = 350.dp)
+            .fillMaxWidth()
+            .height(IntrinsicSize.Min),
+        horizontalArrangement = Arrangement.Center,
+        verticalAlignment = Alignment.CenterVertically
     ) {
-        Row(
-            modifier = Modifier.widthIn(max = 500.dp),
-            horizontalArrangement = Arrangement.Center
-        ) {
-            val headsetBattery = batteryList.find { it.component == BatteryComponent.HEADSET }
-            if (headsetBattery != null) {
-                Column(
-                    modifier = Modifier.weight(1f),
-                    horizontalAlignment = Alignment.CenterHorizontally
-                ) {
-                    Image(
-                        bitmap = ImageBitmap.imageResource(primaryImageRes),
-                        contentDescription = "Headset",
-                        modifier = Modifier
-                            .widthIn(max = 200.dp)
-                            .fillMaxWidth()
-                            .padding(8.dp)
+        val headsetBattery = batteryList.find { it.component == BatteryComponent.HEADSET }
+        if (headsetBattery != null) {
+            Column(
+                modifier = Modifier
+                    .weight(1f)
+                    .fillMaxHeight(),
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
+                Image(
+                    bitmap = ImageBitmap.imageResource(primaryImageRes),
+                    contentDescription = "Headset",
+                    modifier = Modifier.fillMaxWidth()
+                )
+
+                if (headsetBattery.level > 0 || headsetBattery.status != BatteryStatus.DISCONNECTED) {
+                    BatteryIndicator(
+                        headsetBattery.level,
+                        headsetBattery.status,
                     )
-
-                    if (headsetBattery.level > 0 || headsetBattery.status != BatteryStatus.DISCONNECTED) {
-                        BatteryIndicator(
-                            headsetBattery.level,
-                            headsetBattery.status,
-                        )
-                    }
                 }
-            } else {
+            }
+        } else {
+            val left = batteryList.find { it.component == BatteryComponent.LEFT }
+            val right = batteryList.find { it.component == BatteryComponent.RIGHT }
+            val case = batteryList.find { it.component == BatteryComponent.CASE }
 
-                val left = batteryList.find { it.component == BatteryComponent.LEFT }
-                val right = batteryList.find { it.component == BatteryComponent.RIGHT }
-                val case = batteryList.find { it.component == BatteryComponent.CASE }
+            val leftLevel = left?.level ?: 0
+            val rightLevel = right?.level ?: 0
+            val caseLevel = case?.level ?: 0
 
-                val leftLevel = left?.level ?: 0
-                val rightLevel = right?.level ?: 0
-                val caseLevel = case?.level ?: 0
+            val singleDisplayed = remember { mutableStateOf(false) }
 
-                val singleDisplayed = remember { mutableStateOf(false) }
-
-                Column(
-                    modifier = Modifier.weight(1f),
-                    horizontalAlignment = Alignment.CenterHorizontally
+            Column(
+                modifier = Modifier
+                    .weight(1f)
+                    .fillMaxHeight(),
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
+                Box(
+                    modifier = Modifier
+                        .weight(1f)
+                        .fillMaxWidth(),
+                    contentAlignment = Alignment.Center
                 ) {
                     Image(
                         bitmap = ImageBitmap.imageResource(primaryImageRes),
                         contentDescription = stringResource(R.string.buds),
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(8.dp)
+                        modifier = Modifier.fillMaxWidth()
                     )
+                }
 
+                Box(
+                    modifier = Modifier.fillMaxWidth(),
+                    contentAlignment = Alignment.Center
+                ) {
                     if (
                         left?.status == right?.status &&
                         (leftLevel - rightLevel) in -3..3
@@ -146,19 +159,32 @@ fun BatteryView(
                         }
                     }
                 }
+            }
 
-                Column(
-                    modifier = Modifier.weight(1f),
-                    horizontalAlignment = Alignment.CenterHorizontally
+            Column(
+                modifier = Modifier
+                    .weight(1f)
+                    .fillMaxHeight(),
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
+                Box(
+                    modifier = Modifier
+                        .weight(1f)
+                        .fillMaxWidth(),
+                    contentAlignment = Alignment.Center
                 ) {
                     Image(
                         bitmap = ImageBitmap.imageResource(caseImageRes),
                         contentDescription = stringResource(R.string.case_alt),
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(8.dp)
+                        modifier = Modifier.fillMaxWidth()
                     )
+                }
 
+                Box(
+                    modifier = Modifier.fillMaxWidth(),
+                    contentAlignment = Alignment.Center
+                ) {
                     if (caseLevel > 0 || case?.status != BatteryStatus.DISCONNECTED) {
                         BatteryIndicator(
                             caseLevel,
@@ -182,7 +208,9 @@ fun BatteryViewPreview() {
         Battery(BatteryComponent.CASE, 60, BatteryStatus.NOT_CHARGING)
     )
 
-    Column {
+    LibrePodsTheme(
+        designSystem = DesignSystem.Apple
+    ) {
         Box(
             modifier = Modifier
                 .background(MaterialTheme.colorScheme.surfaceContainer)
@@ -194,7 +222,15 @@ fun BatteryViewPreview() {
                 caseImageRes = R.drawable.img_airpods_pro_2_case
             )
         }
+    }
+}
 
+@Preview
+@Composable
+fun BatteryViewHeadsetPreview() {
+    LibrePodsTheme(
+        designSystem = DesignSystem.Apple
+    ) {
         val fakeBatteryHeadset = setOf(
             Battery(BatteryComponent.HEADSET, 50, BatteryStatus.CHARGING),
         )
@@ -206,7 +242,7 @@ fun BatteryViewPreview() {
         ) {
             BatteryView(
                 batteryList = fakeBatteryHeadset,
-                primaryImageRes = R.drawable.img_airpods_max,
+                primaryImageRes = R.drawable.img_airpods_max_2_black,
                 caseImageRes = R.drawable.img_airpods_pro_2_case
             )
         }

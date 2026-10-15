@@ -302,7 +302,7 @@ fun IslandContent(
                         )
                     } else {
                         Image(
-                            bitmap = ImageBitmap.imageResource(R.drawable.img_airpods_pro_2_buds_cropped),
+                            bitmap = ImageBitmap.imageResource(R.drawable.img_airpods_pro_2_buds), // TODO: use correct icon for model
                             contentDescription = null,
                             modifier = Modifier
                                 .heightIn(max = 64.dp)

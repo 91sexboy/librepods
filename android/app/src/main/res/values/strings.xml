@@ -403,4 +403,5 @@
     <string name="reset_app_settings">Reset application settings</string>
     <string name="reset_app_settings_description">All application settings (appearance, interaction, accessibility, island, etc.) will be reset.</string>
     <string name="reset_island_settings">Reset Island settings</string>
+    <string name="mute_unmute_notice">You may not be able to mute or unmute the microphone in a call by using the controls on AirPods. This is a known issue on Android, and there is nothing LibrePods can do to fix this issue.</string>
 </resources>
