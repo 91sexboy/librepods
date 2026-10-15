@@ -57,8 +57,9 @@ private val AppleDarkColorScheme = darkColorScheme(
     onSecondaryContainer = Color(0xFFB3D9FF),
     tertiary = Color(0xFFEA7B00),
     scrim = Color(0x8C000000),
+    surfaceContainerLow = Color(0xFF2C2C2E),
     surfaceContainerHigh = Color(0xFF1C1C1E),
-    surfaceContainerLow = Color(0xFF2C2C2E)
+    surfaceContainerHighest = Color(0xFF545454)
 )
 
 private val AppleLightColorScheme = lightColorScheme(
@@ -75,8 +76,9 @@ private val AppleLightColorScheme = lightColorScheme(
     onSecondaryContainer = Color(0xFF003258),
     tertiary = Color(0xFFEA7B00),
     scrim = Color(0xD9F2F2F7),
+    surfaceContainerLow = Color(0xFFE7E7E7),
     surfaceContainerHigh = Color(0xFFFFFFFF),
-    surfaceContainerLow = Color(0xFFE7E7E7)
+    surfaceContainerHighest = Color(0xFF8D8D8D)
 )
 
 @Composable

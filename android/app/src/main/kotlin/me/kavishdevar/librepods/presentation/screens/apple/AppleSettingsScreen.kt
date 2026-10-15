@@ -191,17 +191,16 @@ fun AppleSettingsScreen(
         ) {
             item(key = "top_padding") { Spacer(modifier = Modifier.height(topPadding)) }
 
+            item(key = "spacer_battery") { Spacer(modifier = Modifier.height(16.dp)) }
             item(key = "battery") {
                 BatteryView(
                     batteryList = state.battery,
                     primaryImageRes = spec.primaryImageRes,
-                    caseImageRes = spec.caseImageRes ?: R.drawable.img_airpods_pro_2_case // TODO
+                    caseImageRes = spec.caseImageRes ?: R.drawable.img_airpods_pro_2_case
                 )
             }
-            item(key = "spacer_battery") {
-                Spacer(modifier = Modifier.height(32.dp))
-            }
 
+            item(key = "spacer_name") { Spacer(modifier = Modifier.height(16.dp)) }
             item(key = "name") {
                 StyledListItem(
                     contentText = stringResource(R.string.name),

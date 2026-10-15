@@ -31,6 +31,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.visible
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
@@ -46,6 +47,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.luminance
+import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
@@ -69,9 +71,11 @@ fun BatteryIndicator(
     showLabel: Boolean = true
 ) {
     val isDarkTheme = MaterialTheme.colorScheme.surface.luminance() < 0.5f
-    val batteryFillColor =
+    val batteryFillColor = if (status != BatteryStatus.DISCONNECTED) {
         if (batteryPercentage > 25) if (isDarkTheme) Color(0xFF2ED158) else Color(0xFF35C759)
-        else if (isDarkTheme) Color(0xFFFC4244) else Color(0xFFfe373C)
+            else if (isDarkTheme) Color(0xFFFC4244) else Color(0xFFfe373C)
+        }
+        else MaterialTheme.colorScheme.surfaceContainerHighest
 
     val initialScale = if (previousCharging) 1f else 0f
     val scaleAnim = remember { Animatable(initialScale) }
@@ -85,7 +89,8 @@ fun BatteryIndicator(
     Column(
         modifier = Modifier
             .background(MaterialTheme.colorScheme.surfaceContainer) // just for haze to work
-            .padding(4.dp),
+            .padding(4.dp)
+            .visible(batteryPercentage > 0),
         horizontalAlignment = Alignment.CenterHorizontally
     ) {
         Box(
@@ -190,8 +195,14 @@ fun BatteryIndicator(
 
         if (showLabel) {
             Row {
+                val color = MaterialTheme.colorScheme.onSurface.copy(if (status == BatteryStatus.DISCONNECTED) 0.3f else 1f)
+                val colorHex = String.format(
+                    "%08X",
+                    color.toArgb()
+                )
+
                 val richText = if (imageVectorName != null) {
-                    richText("\\icon{$imageVectorName,onSurface} $batteryPercentage%")
+                    richText("\\icon{$imageVectorName,#${colorHex}} $batteryPercentage%")
                 } else {
                     richText("$batteryPercentage%")
                 }
@@ -200,7 +211,7 @@ fun BatteryIndicator(
                     text = richText.text,
                     inlineContent = richText.inlineContent,
                     style = MaterialTheme.typography.labelMedium,
-                    color = MaterialTheme.colorScheme.onSurface
+                    color = color,
                 )
             }
         }
@@ -210,10 +221,10 @@ fun BatteryIndicator(
 @Preview(uiMode = Configuration.UI_MODE_NIGHT_YES)
 @Composable
 fun BatteryIndicatorPreview() {
-    LibrePodsTheme(designSystem = DesignSystem.Apple) {
+    LibrePodsTheme(designSystem = DesignSystem.Material) {
         BatteryIndicator(
-            batteryPercentage = 50,
-            status = BatteryStatus.OPTIMIZED_CHARGING,
+            batteryPercentage = 20,
+            status = BatteryStatus.DISCONNECTED,
             previousCharging = false,
             imageVectorName = "LeftCircleFill"
         )

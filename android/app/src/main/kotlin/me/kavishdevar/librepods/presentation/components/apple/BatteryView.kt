@@ -61,7 +61,7 @@ fun BatteryView(
             .widthIn(max = 350.dp)
             .fillMaxWidth()
             .height(IntrinsicSize.Min),
-        horizontalArrangement = Arrangement.Center,
+        horizontalArrangement = Arrangement.spacedBy(16.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
         val headsetBattery = batteryList.find { it.component == BatteryComponent.HEADSET }
@@ -79,12 +79,10 @@ fun BatteryView(
                     modifier = Modifier.fillMaxWidth()
                 )
 
-                if (headsetBattery.level > 0 || headsetBattery.status != BatteryStatus.DISCONNECTED) {
-                    BatteryIndicator(
-                        headsetBattery.level,
-                        headsetBattery.status,
-                    )
-                }
+                BatteryIndicator(
+                    headsetBattery.level,
+                    headsetBattery.status,
+                )
             }
         } else {
             val left = batteryList.find { it.component == BatteryComponent.LEFT }
@@ -185,13 +183,11 @@ fun BatteryView(
                     modifier = Modifier.fillMaxWidth(),
                     contentAlignment = Alignment.Center
                 ) {
-                    if (caseLevel > 0 || case?.status != BatteryStatus.DISCONNECTED) {
-                        BatteryIndicator(
-                            caseLevel,
-                            case?.status ?: BatteryStatus.NOT_CHARGING,
-                            if (!singleDisplayed.value) "AirPodsPro3CaseFill" else null
-                        )
-                    }
+                    BatteryIndicator(
+                        caseLevel,
+                        case?.status ?: BatteryStatus.NOT_CHARGING,
+                        if (!singleDisplayed.value) "AirPodsPro3CaseFill" else null
+                    )
                 }
             }
         }
