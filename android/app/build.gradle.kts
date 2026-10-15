@@ -1,6 +1,7 @@
 import java.util.Properties
 
-val appVersionName = "1.0.0-rc2"
+val appVersionName = rootProject.extra["appVersionName"] as String
+val appVersionCode = rootProject.extra["appVersionCode"] as Int
 
 plugins {
     alias(libs.plugins.android.application)
@@ -78,7 +79,7 @@ android {
     defaultConfig {
         applicationId = "me.kavishdevar.librepods"
         targetSdk = 37
-        versionCode = 85
+        versionCode = appVersionCode
         versionName = appVersionName
     }
     buildTypes {
@@ -202,56 +203,14 @@ aboutLibraries {
     }
 }
 
-val rootModuleDir = rootProject.file("../root-module-manual")
 val releaseDir = rootProject.file("../release")
 
-fun cap(s: String) = s.replaceFirstChar { it.uppercase() }
+tasks.register<Copy>("collectReleaseArtifacts") {
+    description = "Collects release APKs and AABs into a single directory."
 
-fun registerRootModuleZipTask(
-    name: String,
-    flavor: String,
-    buildType: String
-) = tasks.register<Zip>(name) {
-    description = "Zips the root module for the $flavor-$buildType variant."
-
-    val variantTask = "assemble${cap(flavor)}${cap(buildType)}"
-    dependsOn(variantTask)
-
-    val apkPath = "outputs/apk/$flavor/$buildType/app-$flavor-$buildType.apk"
-
-    from(rootModuleDir)
-
-    duplicatesStrategy = DuplicatesStrategy.WARN
-
-    from(layout.buildDirectory.file(apkPath)) {
-        into("system/priv-app/LibrePods")
-        rename { "LibrePods.apk" }
-    }
-
-    delete(layout.buildDirectory.dir("outputs/rootModuleZips"))
-
-    archiveFileName.set("LibrePods-FOSS-v$appVersionName-$buildType.zip")
-    destinationDirectory.set(layout.buildDirectory.dir("outputs/rootModuleZips"))
-}
-
-val zipRelease = registerRootModuleZipTask(
-    "zipReleaseModule",
-    "foss",
-    "release"
-)
-
-val zipDebug = registerRootModuleZipTask(
-    "zipDebugModule",
-    "foss",
-    "debug"
-)
-
-val collect = tasks.register<Copy>("collectReleaseArtifacts") {
-
-    description = "Collects release artifacts (APK, AAB, and root module ZIP) into a single directory for easier distribution."
     dependsOn(
-        zipRelease,
-        zipDebug,
+        "assembleFossDebug",
+        "assembleFossRelease",
         "bundlePlayRelease"
     )
 
@@ -259,24 +218,20 @@ val collect = tasks.register<Copy>("collectReleaseArtifacts") {
 
     from(layout.buildDirectory.dir("outputs/apk/foss/release")) {
         include("*.apk")
-        rename(".*", "LibrePods-FOSS-v$appVersionName-release.apk")
+        rename { "LibrePods-FOSS-v$appVersionName-release.apk" }
     }
 
     from(layout.buildDirectory.dir("outputs/apk/foss/debug")) {
         include("*.apk")
-        rename(".*", "LibrePods-FOSS-v$appVersionName-debug.apk")
+        rename { "LibrePods-FOSS-v$appVersionName-debug.apk" }
     }
 
     from(layout.buildDirectory.dir("outputs/bundle/playRelease")) {
         include("*.aab")
     }
-
-    from(layout.buildDirectory.dir("outputs/rootModuleZips")) {
-        include("*.zip")
-    }
 }
 
 tasks.register("packageReleaseArtifacts") {
-    description = "Packages release artifacts (APK, AAB, and root module ZIP) into a single directory for easier distribution."
-    dependsOn(collect)
+    description = "Collects release artifacts into a single directory."
+    dependsOn("collectReleaseArtifacts")
 }
