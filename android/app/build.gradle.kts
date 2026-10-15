@@ -218,20 +218,21 @@ tasks.register<Copy>("collectReleaseArtifacts") {
 
     from(layout.buildDirectory.dir("outputs/apk/foss/release")) {
         include("*.apk")
-        rename { "LibrePods-FOSS-v$appVersionName-release.apk" }
+        rename(
+            ".*\\.apk",
+            "LibrePods-FOSS-v${appVersionName}-release.apk"
+        )
     }
 
     from(layout.buildDirectory.dir("outputs/apk/foss/debug")) {
         include("*.apk")
-        rename { "LibrePods-FOSS-v$appVersionName-debug.apk" }
+        rename(
+            ".*\\.apk",
+            "LibrePods-FOSS-v${appVersionName}-debug.apk"
+        )
     }
 
     from(layout.buildDirectory.dir("outputs/bundle/playRelease")) {
         include("*.aab")
     }
-}
-
-tasks.register("packageReleaseArtifacts") {
-    description = "Collects release artifacts into a single directory."
-    dependsOn("collectReleaseArtifacts")
 }

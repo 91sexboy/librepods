@@ -60,7 +60,7 @@ jobs:
         working-directory: android
       - name: Build release artifacts
         if: github.event_name != 'pull_request'
-        run: ./gradlew packageReleaseArtifacts
+        run: ./gradlew collectReleaseArtifacts
         working-directory: android
       - name: Get app version
         id: version
