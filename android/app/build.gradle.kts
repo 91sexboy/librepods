@@ -220,7 +220,7 @@ tasks.register<Copy>("collectReleaseArtifacts") {
         include("*.apk")
         rename(
             ".*\\.apk",
-            "LibrePods-FOSS-v${appVersionName}-release.apk"
+            "LibrePods-FOSS-v${appVersionName}-${appVersionCode}-release.apk"
         )
     }
 
@@ -228,7 +228,7 @@ tasks.register<Copy>("collectReleaseArtifacts") {
         include("*.apk")
         rename(
             ".*\\.apk",
-            "LibrePods-FOSS-v${appVersionName}-debug.apk"
+            "LibrePods-FOSS-v${appVersionName}-${appVersionCode}-debug.apk"
         )
     }
 
