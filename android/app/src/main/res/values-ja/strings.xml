@@ -270,7 +270,6 @@
     <string name="custom">カスタム</string>
     <string name="recommended">推奨</string>
     <string name="appearance">外観</string>
-    <string name="use_material3e">Material 3 Expressiveを使用</string>
     <string name="material3e">Material 3 Expressive</string>
     <string name="update_m3e_description">LibrePodsは、刷新されたタイポグラフィやアダプティブカラースキームを含む、Material 3 Expressiveに基づいた新しいデザインに対応しました。\nアプリの設定からいつでもAppleスタイルの外観に戻すことができます。</string>
     <string name="update_equalizer_description">最新のAirPodsベータ版ファームウェアでのみ利用可能です。ベータ版ファームウェアをインストールするには、OSバージョン27を実行しているAppleデバイスが必要です。</string>
@@ -282,7 +281,7 @@
     <string name="i_agree">同意する</string>
     <string name="compatibility_check_bypassed">互換性チェックがスキップされました。お使いのデバイスに互換性があることを確認しましたか？</string>
     <string name="not_compatible_update">お使いのデバイスは現在互換性がありません。続行するにはデバイスをアップデートしてください。</string>
-    <string name="not_compatitble_description">Androidの制限により、LibrePodsを使用するにはより新しいバージョンのAndroidが必要です。
+    <string name="not_compatible_description">Androidの制限により、LibrePodsを使用するにはより新しいバージョンのAndroidが必要です。
         \n• Google Pixelデバイス: Android 16（3月のアップデート以降）および最新のGoogle Playシステムアップデートが必要
         \n• OnePlusおよびOppoデバイス: Android 16が必要
         \n• その他のすべてのデバイス: Android 17（OneUI 9、MagicOS 11、Nothing OS 5.0など）が必要

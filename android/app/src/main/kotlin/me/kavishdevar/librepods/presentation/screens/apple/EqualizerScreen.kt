@@ -79,8 +79,8 @@ import kotlinx.coroutines.flow.debounce
 import me.kavishdevar.librepods.R
 import me.kavishdevar.librepods.presentation.components.primitives.StyledButton
 import me.kavishdevar.librepods.presentation.components.primitives.StyledList
-import me.kavishdevar.librepods.presentation.components.primitives.styledListItem
 import me.kavishdevar.librepods.presentation.components.primitives.StyledScaffold
+import me.kavishdevar.librepods.presentation.components.primitives.styledListItem
 import me.kavishdevar.librepods.presentation.design.DesignSystem
 import me.kavishdevar.librepods.presentation.design.LibrePodsTheme
 import me.kavishdevar.librepods.presentation.viewmodel.AppleUiState
@@ -518,7 +518,7 @@ fun EqualizerCard(
                         modifier = Modifier.weight(1f)
                     ) {
                         Text(
-                            text = "Low".uppercase(),
+                            text = stringResource(R.string.eq_low).uppercase(),
                             style = MaterialTheme.typography.labelSmallEmphasized,
                             color = MaterialTheme.colorScheme.onSurface.copy(0.2f),
                             textAlign = TextAlign.Center,
@@ -529,7 +529,7 @@ fun EqualizerCard(
                         modifier = Modifier.weight(1f)
                     ) {
                         Text(
-                            text = "Mid".uppercase(),
+                            text = stringResource(R.string.eq_mid).uppercase(),
                             style = MaterialTheme.typography.labelSmallEmphasized,
                             color = MaterialTheme.colorScheme.onSurface.copy(0.2f),
                             textAlign = TextAlign.Center,
@@ -540,7 +540,7 @@ fun EqualizerCard(
                         modifier = Modifier.weight(1f)
                     ) {
                         Text(
-                            text = "High".uppercase(),
+                            text = stringResource(R.string.eq_high).uppercase(),
                             style = MaterialTheme.typography.labelSmallEmphasized,
                             color = MaterialTheme.colorScheme.onSurface.copy(0.2f),
                             textAlign = TextAlign.Center,

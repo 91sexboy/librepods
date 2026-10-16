@@ -404,4 +404,14 @@
     <string name="reset_app_settings_description">All application settings (appearance, interaction, accessibility, island, etc.) will be reset.</string>
     <string name="reset_island_settings">Reset Island settings</string>
     <string name="mute_unmute_notice">You may not be able to mute or unmute the microphone in a call by using the controls on AirPods. This is a known issue on Android, and there is nothing LibrePods can do to fix this issue.</string>
+    <string name="compatibility_check_bypassed">Compatibility check bypassed. Are you sure your device is compatible?</string>
+    <string name="not_compatible_update">Your device is not currently compatible. Please update your device to continue.</string>
+    <string name="not_compatible_description">Due to a limitation in Android, a newer version of Android is required to use LibrePods.
+        \n• Google Pixel devices need Android 16 March update or later with the latest Google Play system update
+        \n• OnePlus and Oppo devices need Android 16
+        \n• All other devices need Android 17 (OneUI 9, MagicOS 11, Nothing OS 5.0, etc.)
+    </string>
+    <string name="eq_low">Low</string>
+    <string name="eq_mid">Mid</string>
+    <string name="eq_high">High</string>
 </resources>

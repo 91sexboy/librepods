@@ -41,22 +41,24 @@ fun NotSupportedPage(
                 .verticalScroll(scrollState),
             verticalArrangement = Arrangement.spacedBy(16.dp)
         ) {
-            Spacer(modifier = Modifier.height(16.dp))
+            Spacer(modifier = Modifier)
             Text(
-                text = stringResource(R.string.check_the_repository_for_more_info),
+                text = stringResource(R.string.not_compatible_update),
                 style = MaterialTheme.typography.bodyMedium,
             )
             Text(
-                text = stringResource(R.string.enable_app_in_xposed_or_update_device),
+                text = stringResource(R.string.not_compatitble_description),
                 style = MaterialTheme.typography.bodyMedium,
             )
             DeviceInfoCard()
             AppInfoCard()
-            StyledListItem(
-                contentText = stringResource(R.string.bypass_compatibility_check),
-                onClick = bypassCompatibilityCheck
-            )
-            Spacer(modifier = Modifier.height(16.dp))
+            if (!BuildConfig.PLAY_BUILD) {
+                StyledListItem(
+                    name = stringResource(R.string.bypass_compatibility_check),
+                    onClick = bypassCompatibilityCheck
+                )
+            }
+            Spacer(modifier = Modifier)
         }
     }
 }
