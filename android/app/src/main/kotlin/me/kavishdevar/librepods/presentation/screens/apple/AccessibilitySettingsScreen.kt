@@ -231,7 +231,7 @@ fun AccessibilitySettingsScreen(
             }
 
             StyledToggle(
-                title = stringResource(R.string.noise_control),
+                title = stringResource(R.string.listening_mode),
                 label = stringResource(R.string.noise_cancellation_single_airpod),
                 description = stringResource(R.string.noise_cancellation_single_airpod_description),
                 checked = state.controlStates[ControlCommandIdentifier.ONE_BUD_ANC_MODE]?.getOrNull(

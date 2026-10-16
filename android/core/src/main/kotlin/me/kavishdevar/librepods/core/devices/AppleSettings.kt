@@ -19,8 +19,8 @@ data class AppleSettings(
     val headGesturesHorizontalOffset: Int = 28,
     val headTrackingInterval: Duration = 40.milliseconds,
 
-    val leftLongPressAction: StemAction = StemAction.CYCLE_NOISE_CONTROL_MODES, // left_long_press_action
-    val rightLongPressAction: StemAction = StemAction.CYCLE_NOISE_CONTROL_MODES, // right_long_press_action
+    val leftLongPressAction: StemAction = StemAction.CYCLE_listening_mode_MODES, // left_long_press_action
+    val rightLongPressAction: StemAction = StemAction.CYCLE_listening_mode_MODES, // right_long_press_action
 
     val showIslandPopup: Boolean = true, // show_island_popup
     val showBottomSheetPopup: Boolean = true, // show_bottom_sheet_popup

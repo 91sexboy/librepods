@@ -37,7 +37,7 @@ class NoiseControlWidget : AppWidgetProvider() {
         appWidgetIds: IntArray
     ) {
         for (appWidgetId in appWidgetIds) {
-            val views = RemoteViews(context.packageName, R.layout.noise_control_widget)
+            val views = RemoteViews(context.packageName, R.layout.listening_mode_widget)
 
             val intent = Intent(context, LibrePodsService::class.java).apply {
                 action = "ACTION_SET_ANC_MODE"

@@ -94,12 +94,12 @@ fun LongPress(
 
             StyledList {
                 styledListItem(
-                    contentText = stringResource(R.string.noise_control),
-                    selected = longPressAction == StemAction.CYCLE_NOISE_CONTROL_MODES,
+                    contentText = stringResource(R.string.listening_mode),
+                    selected = longPressAction == StemAction.CYCLE_listening_mode_MODES,
                     onClick = {
                         viewModel.setLongPressAction(
                             side,
-                            StemAction.CYCLE_NOISE_CONTROL_MODES
+                            StemAction.CYCLE_listening_mode_MODES
                         )
                     }
                 )
@@ -135,14 +135,14 @@ fun LongPress(
                 Spacer(modifier = Modifier.height(16.dp))
             }
 
-            if (longPressAction == StemAction.CYCLE_NOISE_CONTROL_MODES) {
+            if (longPressAction == StemAction.CYCLE_listening_mode_MODES) {
                 Spacer(modifier = Modifier.height(32.dp))
 
                 val currentByte = state.controlStates[ControlCommandIdentifier.LISTENING_MODE_CONFIGS]?.get(0)?.toInt() ?: 0
 
                 StyledList(
-                    title = stringResource(R.string.noise_control),
-                    description = stringResource(R.string.press_and_hold_noise_control_description)
+                    title = stringResource(R.string.listening_mode),
+                    description = stringResource(R.string.press_and_hold_listening_mode_description)
                 ) {
                     if (state.controlStates[ControlCommandIdentifier.ALLOW_OFF_OPTION]?.get(0) == 1.toByte()) {
                         styledListItem(

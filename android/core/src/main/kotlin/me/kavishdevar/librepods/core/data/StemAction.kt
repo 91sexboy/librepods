@@ -43,7 +43,7 @@ enum class StemAction {
     PREVIOUS_TRACK,
     NEXT_TRACK,
     DIGITAL_ASSISTANT,
-    CYCLE_NOISE_CONTROL_MODES;
+    CYCLE_listening_mode_MODES;
     companion object {
         fun fromString(action: String): StemAction? {
             return entries.find { it.name == action }
@@ -52,7 +52,7 @@ enum class StemAction {
             StemPressType.SINGLE_PRESS to PLAY_PAUSE,
             StemPressType.DOUBLE_PRESS to NEXT_TRACK,
             StemPressType.TRIPLE_PRESS to PREVIOUS_TRACK,
-            StemPressType.LONG_PRESS to CYCLE_NOISE_CONTROL_MODES,
+            StemPressType.LONG_PRESS to CYCLE_listening_mode_MODES,
         )
     }
 }

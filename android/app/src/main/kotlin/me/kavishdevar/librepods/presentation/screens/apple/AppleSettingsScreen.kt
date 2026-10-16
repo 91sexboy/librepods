@@ -233,7 +233,7 @@ fun AppleSettingsScreen(
                 item(key = "spacer_noise") {
                     Spacer(modifier = Modifier.height(16.dp))
                 }
-                item(key = "noise_control") {
+                item(key = "listening_mode") {
                     NoiseControlSettings(
                         modifier = Modifier.height(100.dp),
                         showOffListeningMode = state.controlStates[ControlCommandIdentifier.ALLOW_OFF_OPTION]?.getOrNull(0)?.toInt() == 1,

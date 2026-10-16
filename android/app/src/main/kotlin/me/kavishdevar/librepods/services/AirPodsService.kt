@@ -1256,7 +1256,7 @@ package me.kavishdevar.librepods.services
 //                }
 //            }
 //
-//            StemAction.CYCLE_NOISE_CONTROL_MODES -> {
+//            StemAction.CYCLE_listening_mode_MODES -> {
 //                Log.d("AirPodsParser", "Cycling noise control modes")
 //                sendBroadcast(Intent("me.kavishdevar.librepods.SET_ANC_MODE").apply {
 //                    setPackage(packageName)
@@ -1462,8 +1462,8 @@ package me.kavishdevar.librepods.services
 //
 //            leftLongPressAction = StemAction.fromString(
 //                sharedPreferences.getString(
-//                    "left_long_press_action", "CYCLE_NOISE_CONTROL_MODES"
-//                ) ?: "CYCLE_NOISE_CONTROL_MODES"
+//                    "left_long_press_action", "CYCLE_listening_mode_MODES"
+//                ) ?: "CYCLE_listening_mode_MODES"
 //            )!!,
 //            rightLongPressAction = StemAction.fromString(
 //                sharedPreferences.getString(
@@ -1586,8 +1586,8 @@ package me.kavishdevar.librepods.services
 //
 //            "left_long_press_action" -> {
 //                config.leftLongPressAction = StemAction.fromString(
-//                    preferences.getString(key, "CYCLE_NOISE_CONTROL_MODES")
-//                        ?: "CYCLE_NOISE_CONTROL_MODES"
+//                    preferences.getString(key, "CYCLE_listening_mode_MODES")
+//                        ?: "CYCLE_listening_mode_MODES"
 //                )!!
 //                setupStemActions()
 //            }
@@ -2019,7 +2019,7 @@ package me.kavishdevar.librepods.services
 //        val appWidgetManager = AppWidgetManager.getInstance(this)
 //        val componentName = ComponentName(this, NoiseControlWidget::class.java)
 //        val widgetIds = appWidgetManager.getAppWidgetIds(componentName)
-//        val remoteViews = RemoteViews(packageName, R.layout.noise_control_widget).also { it ->
+//        val remoteViews = RemoteViews(packageName, R.layout.listening_mode_widget).also { it ->
 //            val ancStatus = ancNotification.status
 //            val allowOffModeValue =
 //                aacpManager.controlCommandStatusList.find { it.identifier == ControlCommandIdentifier.ALLOW_OFF_OPTION }

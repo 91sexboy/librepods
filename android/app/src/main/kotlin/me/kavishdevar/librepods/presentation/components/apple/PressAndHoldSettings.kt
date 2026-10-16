@@ -33,13 +33,13 @@ fun PressAndHoldSettings(
     navigateToRightLongPress: () -> Unit
 ) {
     val leftActionText = when (leftAction) {
-        StemAction.CYCLE_NOISE_CONTROL_MODES -> stringResource(R.string.noise_control)
+        StemAction.CYCLE_listening_mode_MODES -> stringResource(R.string.listening_mode)
         StemAction.DIGITAL_ASSISTANT -> "Digital Assistant"
         else -> "INVALID!!"
     }
 
     val rightActionText = when (rightAction) {
-        StemAction.CYCLE_NOISE_CONTROL_MODES -> stringResource(R.string.noise_control)
+        StemAction.CYCLE_listening_mode_MODES -> stringResource(R.string.listening_mode)
         StemAction.DIGITAL_ASSISTANT -> "Digital Assistant"
         else -> "INVALID!!"
     }

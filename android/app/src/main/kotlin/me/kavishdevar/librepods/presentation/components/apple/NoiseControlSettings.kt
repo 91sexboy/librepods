@@ -157,7 +157,7 @@ fun NoiseControlSettings(
             Column(modifier = modifier) {
                 if (showLabels) {
                     Text(
-                        text = stringResource(R.string.noise_control),
+                        text = stringResource(R.string.listening_mode),
                         color = MaterialTheme.colorScheme.primary,
                         style = MaterialTheme.typography.labelSmallEmphasized,
                         modifier = Modifier
