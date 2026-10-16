@@ -50,12 +50,12 @@ import androidx.compose.ui.unit.dp
 import com.kyant.backdrop.backdrops.rememberLayerBackdrop
 import kotlinx.coroutines.flow.debounce
 import me.kavishdevar.librepods.R
-import me.kavishdevar.librepods.bluetooth.aacp.types.ControlCommandIdentifier
-import me.kavishdevar.librepods.bluetooth.att.ATTHandle
-import me.kavishdevar.librepods.data.apple.BuddyState
-import me.kavishdevar.librepods.devices.AirPodsSpecs
-import me.kavishdevar.librepods.devices.AppleSettings
-import me.kavishdevar.librepods.devices.BaseCapability
+import me.kavishdevar.librepods.core.bluetooth.aacp.types.ControlCommandIdentifier
+import me.kavishdevar.librepods.core.bluetooth.att.ATTHandle
+import me.kavishdevar.librepods.core.data.apple.BuddyState
+import me.kavishdevar.librepods.core.devices.AirPodsSpecs
+import me.kavishdevar.librepods.core.devices.AppleSettings
+import me.kavishdevar.librepods.core.devices.BaseCapability
 import me.kavishdevar.librepods.presentation.components.apple.AboutCard
 import me.kavishdevar.librepods.presentation.components.apple.AudioSettings
 import me.kavishdevar.librepods.presentation.components.apple.BatteryView
@@ -196,7 +196,7 @@ fun AppleSettingsScreen(
                 BatteryView(
                     batteryList = state.battery,
                     primaryImageRes = spec.primaryImageRes,
-                    caseImageRes = spec.caseImageRes ?: R.drawable.img_airpods_pro_2_case
+                    caseImageRes = spec.caseImageRes
                 )
             }
 

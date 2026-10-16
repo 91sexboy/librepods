@@ -18,10 +18,10 @@ import androidx.navigation3.ui.NavDisplay
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.channels.Channel
 import me.kavishdevar.librepods.LibrePodsApplication
-import me.kavishdevar.librepods.bluetooth.MacAddress
-import me.kavishdevar.librepods.devices.AppleDevice
-import me.kavishdevar.librepods.devices.ConnectionState
-import me.kavishdevar.librepods.devices.Device
+import me.kavishdevar.librepods.core.bluetooth.MacAddress
+import me.kavishdevar.librepods.core.devices.AppleDevice
+import me.kavishdevar.librepods.core.devices.ConnectionState
+import me.kavishdevar.librepods.core.devices.Device
 
 @Composable
 fun AppNavGraph(

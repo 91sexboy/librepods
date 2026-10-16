@@ -4,13 +4,13 @@ import androidx.room3.ColumnTypeConverter
 import kotlinx.serialization.cbor.Cbor
 import kotlinx.serialization.decodeFromByteArray
 import kotlinx.serialization.encodeToByteArray
-import me.kavishdevar.librepods.bluetooth.MacAddress
+import me.kavishdevar.librepods.core.bluetooth.MacAddress
 import me.kavishdevar.librepods.data.app.AccessibilitySettings
 import me.kavishdevar.librepods.data.app.FontSettings
 import me.kavishdevar.librepods.data.app.IslandSettings
-import me.kavishdevar.librepods.data.apple.AppleCache
-import me.kavishdevar.librepods.devices.AppleMetadata
-import me.kavishdevar.librepods.devices.AppleSettings
+import me.kavishdevar.librepods.core.data.apple.AppleCache
+import me.kavishdevar.librepods.core.devices.AppleMetadata
+import me.kavishdevar.librepods.core.devices.AppleSettings
 import kotlin.time.Instant
 
 object Converters {

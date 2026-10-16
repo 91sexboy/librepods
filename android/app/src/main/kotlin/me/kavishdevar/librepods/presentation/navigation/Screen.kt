@@ -2,7 +2,7 @@ package me.kavishdevar.librepods.presentation.navigation
 
 import androidx.navigation3.runtime.NavKey
 import kotlinx.serialization.Serializable
-import me.kavishdevar.librepods.bluetooth.MacAddress
+import me.kavishdevar.librepods.core.bluetooth.MacAddress
 
 @Serializable
 sealed interface Screen: NavKey {

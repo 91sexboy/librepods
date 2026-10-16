@@ -32,7 +32,7 @@ import android.service.quicksettings.TileService
 import android.util.Log
 import me.kavishdevar.librepods.R
 import me.kavishdevar.librepods.data.AirPodsNotifications
-import me.kavishdevar.librepods.devices.NoiseControlMode
+import me.kavishdevar.librepods.core.devices.NoiseControlMode
 import kotlin.io.encoding.ExperimentalEncodingApi
 
 class AirPodsQSService : TileService() {

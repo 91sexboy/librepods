@@ -8,10 +8,10 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.saveable.rememberSerializable
 import androidx.navigation3.runtime.NavBackStack
 import kotlinx.serialization.serializer
-import me.kavishdevar.librepods.bluetooth.MacAddress
-import me.kavishdevar.librepods.devices.AppleDevice
-import me.kavishdevar.librepods.devices.ConnectionState
-import me.kavishdevar.librepods.devices.Device
+import me.kavishdevar.librepods.core.bluetooth.MacAddress
+import me.kavishdevar.librepods.core.devices.AppleDevice
+import me.kavishdevar.librepods.core.devices.ConnectionState
+import me.kavishdevar.librepods.core.devices.Device
 
 @Composable
 fun rememberScreenNavBackStack(vararg elements: Screen): NavBackStack<Screen> {

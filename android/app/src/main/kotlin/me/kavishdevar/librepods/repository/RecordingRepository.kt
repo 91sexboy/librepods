@@ -2,7 +2,7 @@ package me.kavishdevar.librepods.repository
 
 import android.content.Context
 import android.os.Environment
-import me.kavishdevar.librepods.data.recording.Recording
+import me.kavishdevar.librepods.core.data.recording.Recording
 import java.io.File
 import kotlin.time.Clock
 import kotlin.time.Instant

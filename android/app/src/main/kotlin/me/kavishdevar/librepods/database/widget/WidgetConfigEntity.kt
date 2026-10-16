@@ -2,7 +2,7 @@ package me.kavishdevar.librepods.database.widget
 
 import androidx.room3.Entity
 import androidx.room3.PrimaryKey
-import me.kavishdevar.librepods.bluetooth.MacAddress
+import me.kavishdevar.librepods.core.bluetooth.MacAddress
 
 @Entity
 data class WidgetConfigEntity(

@@ -42,9 +42,9 @@ import android.widget.LinearLayout
 import android.widget.TextView
 import android.widget.VideoView
 import me.kavishdevar.librepods.R
-import me.kavishdevar.librepods.devices.Battery
-import me.kavishdevar.librepods.devices.BatteryComponent
-import me.kavishdevar.librepods.devices.BatteryStatus
+import me.kavishdevar.librepods.core.devices.Battery
+import me.kavishdevar.librepods.core.devices.BatteryComponent
+import me.kavishdevar.librepods.core.devices.BatteryStatus
 
 @SuppressLint("InflateParams", "ClickableViewAccessibility")
 class PopupWindow(

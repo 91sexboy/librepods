@@ -1,11 +1,11 @@
 package me.kavishdevar.librepods.presentation.utils
 
 import androidx.compose.runtime.Composable
-import me.kavishdevar.librepods.devices.AirPodsSpec
-import me.kavishdevar.librepods.devices.Battery
-import me.kavishdevar.librepods.devices.BatteryComponent
-import me.kavishdevar.librepods.devices.BatteryStatus
-import me.kavishdevar.librepods.devices.DeviceComponent
+import me.kavishdevar.librepods.core.devices.AirPodsSpec
+import me.kavishdevar.librepods.core.devices.Battery
+import me.kavishdevar.librepods.core.devices.BatteryComponent
+import me.kavishdevar.librepods.core.devices.BatteryStatus
+import me.kavishdevar.librepods.core.devices.DeviceComponent
 import me.kavishdevar.librepods.presentation.icons.RichText
 import me.kavishdevar.librepods.presentation.icons.richText
 import kotlin.math.absoluteValue

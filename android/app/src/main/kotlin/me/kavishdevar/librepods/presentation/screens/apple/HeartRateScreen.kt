@@ -48,8 +48,8 @@ import com.google.accompanist.permissions.isGranted
 import com.google.accompanist.permissions.rememberPermissionState
 import kotlinx.coroutines.flow.debounce
 import me.kavishdevar.librepods.R
-import me.kavishdevar.librepods.data.apple.BuddyState
-import me.kavishdevar.librepods.devices.AppleSettings
+import me.kavishdevar.librepods.core.data.apple.BuddyState
+import me.kavishdevar.librepods.core.devices.AppleSettings
 import me.kavishdevar.librepods.presentation.components.primitives.StyledIconButton
 import me.kavishdevar.librepods.presentation.components.primitives.StyledListItem
 import me.kavishdevar.librepods.presentation.components.primitives.StyledListItemOrientation

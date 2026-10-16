@@ -1,13 +1,12 @@
 package me.kavishdevar.librepods.repository
 
-import android.util.Log
-import me.kavishdevar.librepods.bluetooth.MacAddress
-import me.kavishdevar.librepods.data.apple.AppleCache
+import me.kavishdevar.librepods.core.bluetooth.MacAddress
+import me.kavishdevar.librepods.core.data.apple.AppleCache
 import me.kavishdevar.librepods.database.apple.AppleDao
 import me.kavishdevar.librepods.database.apple.AppleEntity
-import me.kavishdevar.librepods.devices.AppleMetadata
-import me.kavishdevar.librepods.devices.AppleSettings
-import me.kavishdevar.librepods.devices.AppleState
+import me.kavishdevar.librepods.core.devices.AppleMetadata
+import me.kavishdevar.librepods.core.devices.AppleSettings
+import me.kavishdevar.librepods.core.devices.AppleState
 
 //private const val TAG = "AppleRepository"
 class AppleRepository(

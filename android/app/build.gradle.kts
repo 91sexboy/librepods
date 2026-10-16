@@ -141,10 +141,9 @@ android {
             version = "3.22.1"
         }
     }
-    sourceSets {
-        getByName("main") {
-            res.directories += "src/main/res-apple"
-        }
+    lint {
+        checkDependencies = false
+        checkGeneratedSources = false
     }
 
     ndkVersion = "30.0.14904198"
@@ -153,6 +152,7 @@ android {
 }
 
 dependencies {
+    implementation(project(":core"))
     implementation(platform(libs.androidx.compose.bom))
     implementation(libs.accompanist.permissions)
     implementation(libs.androidx.core.ktx)

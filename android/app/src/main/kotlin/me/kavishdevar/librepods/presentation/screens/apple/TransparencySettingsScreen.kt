@@ -57,9 +57,9 @@ import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import me.kavishdevar.librepods.R
-import me.kavishdevar.librepods.bluetooth.att.types.TransparencySettings
-import me.kavishdevar.librepods.bluetooth.att.types.parseTransparencySettingsResponse
-import me.kavishdevar.librepods.bluetooth.att.types.sendTransparencySettings
+import me.kavishdevar.librepods.core.bluetooth.att.types.TransparencySettings
+import me.kavishdevar.librepods.core.bluetooth.att.types.parseTransparencySettingsResponse
+import me.kavishdevar.librepods.core.bluetooth.att.types.sendTransparencySettings
 import me.kavishdevar.librepods.presentation.components.primitives.StyledScaffold
 import me.kavishdevar.librepods.presentation.components.primitives.StyledSlider
 import me.kavishdevar.librepods.presentation.components.primitives.StyledToggle

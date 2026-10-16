@@ -51,29 +51,29 @@ import me.kavishdevar.librepods.LibrePodsApplication
 import me.kavishdevar.librepods.R
 import me.kavishdevar.librepods.audio.EldDecoder
 import me.kavishdevar.librepods.audio.WavWriter
-import me.kavishdevar.librepods.bluetooth.MacAddress
-import me.kavishdevar.librepods.bluetooth.aacp.types.ControlCommandIdentifier
-import me.kavishdevar.librepods.bluetooth.aacp.types.MagicKeyType
-import me.kavishdevar.librepods.bluetooth.verifyRPA
-import me.kavishdevar.librepods.data.heartrate.HeartRateSample
-import me.kavishdevar.librepods.data.recording.Recording
+import me.kavishdevar.librepods.core.bluetooth.MacAddress
+import me.kavishdevar.librepods.core.bluetooth.aacp.types.ControlCommandIdentifier
+import me.kavishdevar.librepods.core.bluetooth.aacp.types.MagicKeyType
+import me.kavishdevar.librepods.core.bluetooth.verifyRPA
+import me.kavishdevar.librepods.core.data.heartrate.HeartRateSample
+import me.kavishdevar.librepods.core.data.recording.Recording
+import me.kavishdevar.librepods.core.devices.AppleDevice
+import me.kavishdevar.librepods.core.devices.AppleSettings
+import me.kavishdevar.librepods.core.devices.AppleState
+import me.kavishdevar.librepods.core.devices.BatteryComponent
+import me.kavishdevar.librepods.core.devices.BatteryStatus
+import me.kavishdevar.librepods.core.devices.ComponentStatus
+import me.kavishdevar.librepods.core.devices.ConnectionState
+import me.kavishdevar.librepods.core.devices.Device
+import me.kavishdevar.librepods.core.devices.DeviceComponentState
+import me.kavishdevar.librepods.core.utils.redactMac
 import me.kavishdevar.librepods.database.app.AppSettingsEntity
-import me.kavishdevar.librepods.devices.AppleDevice
-import me.kavishdevar.librepods.devices.AppleSettings
-import me.kavishdevar.librepods.devices.AppleState
-import me.kavishdevar.librepods.devices.BatteryComponent
-import me.kavishdevar.librepods.devices.BatteryStatus
-import me.kavishdevar.librepods.devices.ComponentStatus
-import me.kavishdevar.librepods.devices.ConnectionState
-import me.kavishdevar.librepods.devices.Device
-import me.kavishdevar.librepods.devices.DeviceComponentState
 import me.kavishdevar.librepods.presentation.activities.MainActivity
 import me.kavishdevar.librepods.presentation.overlays.IslandType
 import me.kavishdevar.librepods.presentation.overlays.IslandWindow
 import me.kavishdevar.librepods.presentation.widgets.BatteryWidget
 import me.kavishdevar.librepods.utils.MediaController
 import me.kavishdevar.librepods.utils.calculateLevel
-import me.kavishdevar.librepods.utils.redactMac
 import java.time.ZoneOffset
 import kotlin.time.Duration
 import kotlin.time.Duration.Companion.seconds
@@ -931,14 +931,12 @@ class LibrePodsService: Service() {
                 ) { pcm ->
                     wavWriters[state.recordingState.recording]?.write(pcm)
 
-                    device.updateState {
+                    device.updateMicrophoneState {
                         it.copy(
-                            microphoneState = state.microphoneState.copy(
-                                isActive = true,
-                                packetsReceived = it.microphoneState.packetsReceived + 1,
-                                durationMs = it.microphoneState.durationMs + 30,
-                                level = calculateLevel(pcm)
-                            )
+                            isActive = true,
+                            packetsReceived = it.packetsReceived + 1,
+                            durationMs = it.durationMs + 30,
+                            level = calculateLevel(pcm)
                         )
                     }
                 }

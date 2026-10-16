@@ -4,10 +4,10 @@ import android.util.Log
 import androidx.room3.Dao
 import androidx.room3.Query
 import androidx.room3.Upsert
-import me.kavishdevar.librepods.bluetooth.MacAddress
-import me.kavishdevar.librepods.data.apple.AppleCache
-import me.kavishdevar.librepods.devices.AppleMetadata
-import me.kavishdevar.librepods.devices.AppleSettings
+import me.kavishdevar.librepods.core.bluetooth.MacAddress
+import me.kavishdevar.librepods.core.data.apple.AppleCache
+import me.kavishdevar.librepods.core.devices.AppleMetadata
+import me.kavishdevar.librepods.core.devices.AppleSettings
 
 private const val TAG = "AppleDao"
 

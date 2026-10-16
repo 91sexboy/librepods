@@ -21,7 +21,7 @@ package me.kavishdevar.librepods.presentation.components.apple
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.res.stringResource
 import me.kavishdevar.librepods.R
-import me.kavishdevar.librepods.data.StemAction
+import me.kavishdevar.librepods.core.data.StemAction
 import me.kavishdevar.librepods.presentation.components.primitives.StyledList
 import me.kavishdevar.librepods.presentation.components.primitives.styledListItem
 

@@ -93,7 +93,7 @@ import kotlinx.coroutines.launch
 import me.kavishdevar.librepods.R
 import me.kavishdevar.librepods.data.app.FontFamilyOption
 import me.kavishdevar.librepods.data.app.FontSettings
-import me.kavishdevar.librepods.devices.NoiseControlMode
+import me.kavishdevar.librepods.core.devices.NoiseControlMode
 import me.kavishdevar.librepods.presentation.components.primitives.StyledButton
 import me.kavishdevar.librepods.presentation.components.primitives.StyledSlider
 import me.kavishdevar.librepods.presentation.design.DesignSystem

@@ -18,6 +18,7 @@
 
 package me.kavishdevar.librepods.presentation.components.apple
 
+import androidx.annotation.DrawableRes
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
@@ -44,17 +45,18 @@ import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import me.kavishdevar.librepods.R
-import me.kavishdevar.librepods.devices.Battery
-import me.kavishdevar.librepods.devices.BatteryComponent
-import me.kavishdevar.librepods.devices.BatteryStatus
+import me.kavishdevar.librepods.core.devices.Battery
+import me.kavishdevar.librepods.core.devices.BatteryComponent
+import me.kavishdevar.librepods.core.devices.BatteryStatus
 import me.kavishdevar.librepods.presentation.design.DesignSystem
 import me.kavishdevar.librepods.presentation.design.LibrePodsTheme
+import me.kavishdevar.librepods.core.R as coreR
 
 @Composable
 fun BatteryView(
     batteryList: Set<Battery>,
-    primaryImageRes: Int,
-    caseImageRes: Int
+    @DrawableRes primaryImageRes: Int,
+    @DrawableRes caseImageRes: Int?
 ) {
     Row(
         modifier = Modifier
@@ -173,7 +175,7 @@ fun BatteryView(
                     contentAlignment = Alignment.Center
                 ) {
                     Image(
-                        bitmap = ImageBitmap.imageResource(caseImageRes),
+                        bitmap = ImageBitmap.imageResource(caseImageRes?: coreR.drawable.img_airpods_pro_3_case),
                         contentDescription = stringResource(R.string.case_alt),
                         modifier = Modifier.fillMaxWidth()
                     )
@@ -214,8 +216,8 @@ fun BatteryViewPreview() {
         ) {
             BatteryView(
                 batteryList = fakeBattery,
-                primaryImageRes = R.drawable.img_airpods_pro_2_buds,
-                caseImageRes = R.drawable.img_airpods_pro_2_case
+                primaryImageRes = coreR.drawable.img_airpods_pro_2_buds,
+                caseImageRes = coreR.drawable.img_airpods_pro_2_case
             )
         }
     }
@@ -238,8 +240,8 @@ fun BatteryViewHeadsetPreview() {
         ) {
             BatteryView(
                 batteryList = fakeBatteryHeadset,
-                primaryImageRes = R.drawable.img_airpods_max_2_black,
-                caseImageRes = R.drawable.img_airpods_pro_2_case
+                primaryImageRes = coreR.drawable.img_airpods_max_2_black,
+                caseImageRes = coreR.drawable.img_airpods_pro_2_case
             )
         }
     }

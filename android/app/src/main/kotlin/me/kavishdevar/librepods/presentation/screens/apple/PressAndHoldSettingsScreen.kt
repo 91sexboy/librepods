@@ -16,8 +16,6 @@
     along with this program.  If not, see <https://www.gnu.org/licenses/>.
 */
 
-@file:OptIn(ExperimentalStdlibApi::class, ExperimentalEncodingApi::class)
-
 package me.kavishdevar.librepods.presentation.screens.apple
 
 import android.util.Log
@@ -43,16 +41,15 @@ import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
 import com.kyant.backdrop.backdrops.rememberLayerBackdrop
 import me.kavishdevar.librepods.R
-import me.kavishdevar.librepods.bluetooth.aacp.types.ControlCommandIdentifier
-import me.kavishdevar.librepods.data.StemAction
+import me.kavishdevar.librepods.core.bluetooth.aacp.types.ControlCommandIdentifier
+import me.kavishdevar.librepods.core.data.StemAction
 import me.kavishdevar.librepods.presentation.components.primitives.StyledButton
 import me.kavishdevar.librepods.presentation.components.primitives.StyledList
-import me.kavishdevar.librepods.presentation.components.primitives.styledListItem
 import me.kavishdevar.librepods.presentation.components.primitives.StyledListItemOrientation
 import me.kavishdevar.librepods.presentation.components.primitives.StyledScaffold
+import me.kavishdevar.librepods.presentation.components.primitives.styledListItem
 import me.kavishdevar.librepods.presentation.viewmodel.AppleViewModel
 import kotlin.experimental.and
-import kotlin.io.encoding.ExperimentalEncodingApi
 
 @Composable
 fun LongPress(

@@ -1,7 +1,7 @@
 package me.kavishdevar.librepods.repository
 
 import me.kavishdevar.librepods.database.heartrate.HeartRateDao
-import me.kavishdevar.librepods.data.heartrate.HeartRateSample
+import me.kavishdevar.librepods.core.data.heartrate.HeartRateSample
 import me.kavishdevar.librepods.database.heartrate.HeartRateSampleEntity
 import kotlin.time.Instant
 

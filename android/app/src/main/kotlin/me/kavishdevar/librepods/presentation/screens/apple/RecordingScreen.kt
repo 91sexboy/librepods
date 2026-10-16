@@ -37,7 +37,7 @@ import androidx.compose.ui.unit.dp
 import androidx.core.content.FileProvider
 import me.kavishdevar.librepods.BuildConfig
 import me.kavishdevar.librepods.R
-import me.kavishdevar.librepods.data.recording.Recording
+import me.kavishdevar.librepods.core.data.recording.Recording
 import me.kavishdevar.librepods.presentation.components.primitives.StyledButton
 import me.kavishdevar.librepods.presentation.components.primitives.StyledList
 import me.kavishdevar.librepods.presentation.components.primitives.styledListItem

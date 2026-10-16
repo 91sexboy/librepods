@@ -24,7 +24,7 @@ import me.kavishdevar.librepods.repository.HeartRateRepository
 import me.kavishdevar.librepods.repository.RecordingRepository
 import me.kavishdevar.librepods.repository.WidgetConfigRepository
 import me.kavishdevar.librepods.services.LibrePodsAccessibilityService
-import me.kavishdevar.librepods.utils.GestureFeedback
+import me.kavishdevar.librepods.core.utils.GestureFeedback
 import me.kavishdevar.librepods.utils.XposedServiceHolder
 import me.kavishdevar.librepods.utils.XposedState
 

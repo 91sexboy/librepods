@@ -34,9 +34,9 @@ import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
 import me.kavishdevar.librepods.LibrePodsApplication
 import me.kavishdevar.librepods.R
-import me.kavishdevar.librepods.bluetooth.MacAddress
+import me.kavishdevar.librepods.core.bluetooth.MacAddress
 import me.kavishdevar.librepods.database.widget.WidgetConfigEntity
-import me.kavishdevar.librepods.devices.Device
+import me.kavishdevar.librepods.core.devices.Device
 import me.kavishdevar.librepods.presentation.components.primitives.StyledButton
 import me.kavishdevar.librepods.presentation.components.primitives.StyledList
 import me.kavishdevar.librepods.presentation.components.primitives.styledListItem

@@ -47,9 +47,9 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import me.kavishdevar.librepods.R
-import me.kavishdevar.librepods.bluetooth.aacp.types.ControlCommandIdentifier
-import me.kavishdevar.librepods.bluetooth.att.types.parseTransparencySettingsResponse
-import me.kavishdevar.librepods.bluetooth.att.types.sendTransparencySettings
+import me.kavishdevar.librepods.core.bluetooth.aacp.types.ControlCommandIdentifier
+import me.kavishdevar.librepods.core.bluetooth.att.types.parseTransparencySettingsResponse
+import me.kavishdevar.librepods.core.bluetooth.att.types.sendTransparencySettings
 import me.kavishdevar.librepods.presentation.components.primitives.StyledConfirmationDialog
 import me.kavishdevar.librepods.presentation.components.primitives.StyledList
 import me.kavishdevar.librepods.presentation.components.primitives.StyledListItem

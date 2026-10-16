@@ -38,21 +38,24 @@ import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.flow.debounce
 import me.kavishdevar.librepods.R
-import me.kavishdevar.librepods.bluetooth.aacp.types.ControlCommandIdentifier
-import me.kavishdevar.librepods.bluetooth.att.ATTHandle
-import me.kavishdevar.librepods.bluetooth.att.types.HearingAidSettings
-import me.kavishdevar.librepods.bluetooth.att.types.parseHearingAidSettingsResponse
-import me.kavishdevar.librepods.bluetooth.att.types.sendHearingAidSettings
+import me.kavishdevar.librepods.core.bluetooth.aacp.types.ControlCommandIdentifier
+import me.kavishdevar.librepods.core.bluetooth.att.ATTHandle
+import me.kavishdevar.librepods.core.bluetooth.att.types.HearingAidSettings
+import me.kavishdevar.librepods.core.bluetooth.att.types.parseHearingAidSettingsResponse
+import me.kavishdevar.librepods.core.bluetooth.att.types.sendHearingAidSettings
 import me.kavishdevar.librepods.presentation.components.primitives.StyledScaffold
 import me.kavishdevar.librepods.presentation.components.primitives.StyledSlider
 import me.kavishdevar.librepods.presentation.components.primitives.StyledToggle
 import me.kavishdevar.librepods.presentation.icons.LocalIcons
 import me.kavishdevar.librepods.presentation.viewmodel.AppleViewModel
+import kotlin.time.Duration.Companion.milliseconds
 
 private const val TAG = "HearingAidAdjustments"
 
@@ -119,32 +122,53 @@ fun HearingAidAdjustmentsScreen(
         }
     }
 
-    LaunchedEffect(
-        amplificationSliderValue.floatValue,
-        balanceSliderValue.floatValue,
-        toneSliderValue.floatValue,
-        conversationBoostEnabled.value,
-        ambientNoiseReductionSliderValue.floatValue,
-        ownVoiceAmplification.floatValue
-    ) {
-        if (!initialized.value) return@LaunchedEffect
-        hearingAidSettings.value = HearingAidSettings(
-            leftEQ = leftEQ.value,
-            rightEQ = rightEQ.value,
-            leftAmplification = amplificationSliderValue.floatValue + if (balanceSliderValue.floatValue < 0) -balanceSliderValue.floatValue else 0f,
-            rightAmplification = amplificationSliderValue.floatValue + if (balanceSliderValue.floatValue > 0) balanceSliderValue.floatValue else 0f,
-            leftTone = toneSliderValue.floatValue,
-            rightTone = toneSliderValue.floatValue,
-            leftConversationBoost = conversationBoostEnabled.value,
-            rightConversationBoost = conversationBoostEnabled.value,
-            leftAmbientNoiseReduction = ambientNoiseReductionSliderValue.floatValue,
-            rightAmbientNoiseReduction = ambientNoiseReductionSliderValue.floatValue,
-            netAmplification = amplificationSliderValue.floatValue,
-            balance = balanceSliderValue.floatValue,
-            ownVoiceAmplification = ownVoiceAmplification.floatValue
-        )
-        Log.d(TAG, "Updated settings: ${hearingAidSettings.value}")
-        sendHearingAidSettings(state.hearingAidData, hearingAidSettings.value, debounceJob, viewModel::writeATTCharacteristic)
+    LaunchedEffect(Unit) {
+        snapshotFlow {
+            listOf(
+                amplificationSliderValue.floatValue,
+                balanceSliderValue.floatValue,
+                toneSliderValue.floatValue,
+                conversationBoostEnabled.value,
+                ambientNoiseReductionSliderValue.floatValue,
+                ownVoiceAmplification.floatValue,
+                leftEQ.value,
+                rightEQ.value,
+                initialized.value
+            )
+        }
+            .debounce(300.milliseconds)
+            .collect { values ->
+                val isInitialized = values[8] as Boolean
+                if (!isInitialized) return@collect
+
+                val amplification = values[0] as Float
+                val balance = values[1] as Float
+                val tone = values[2] as Float
+                val conversationBoost = values[3] as Boolean
+                val ambientNoise = values[4] as Float
+                val ownVoice = values[5] as Float
+                val leftEqVal = values[6] as FloatArray
+                val rightEqVal = values[7] as FloatArray
+
+                hearingAidSettings.value = HearingAidSettings(
+                    leftEQ = leftEqVal,
+                    rightEQ = rightEqVal,
+                    leftAmplification = amplification + if (balance < 0) -balance else 0f,
+                    rightAmplification = amplification + if (balance > 0) balance else 0f,
+                    leftTone = tone,
+                    rightTone = tone,
+                    leftConversationBoost = conversationBoost,
+                    rightConversationBoost = conversationBoost,
+                    leftAmbientNoiseReduction = ambientNoise,
+                    rightAmbientNoiseReduction = ambientNoise,
+                    netAmplification = amplification,
+                    balance = balance,
+                    ownVoiceAmplification = ownVoice
+                )
+
+                Log.d(TAG, "Updated settings: ${hearingAidSettings.value}")
+                sendHearingAidSettings(state.hearingAidData, hearingAidSettings.value, viewModel::writeATTCharacteristic)
+            }
     }
 
     StyledScaffold(

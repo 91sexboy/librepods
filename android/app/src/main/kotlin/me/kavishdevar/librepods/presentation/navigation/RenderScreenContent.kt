@@ -10,11 +10,11 @@ import androidx.navigation3.runtime.NavBackStack
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.channels.Channel
 import me.kavishdevar.librepods.R
-import me.kavishdevar.librepods.bluetooth.MacAddress
-import me.kavishdevar.librepods.bluetooth.aacp.types.ControlCommandIdentifier
+import me.kavishdevar.librepods.core.bluetooth.MacAddress
+import me.kavishdevar.librepods.core.bluetooth.aacp.types.ControlCommandIdentifier
 import me.kavishdevar.librepods.data.updates.updates
-import me.kavishdevar.librepods.devices.AppleDevice
-import me.kavishdevar.librepods.devices.Device
+import me.kavishdevar.librepods.core.devices.AppleDevice
+import me.kavishdevar.librepods.core.devices.Device
 import me.kavishdevar.librepods.presentation.screens.DeviceListScreen
 import me.kavishdevar.librepods.presentation.screens.OpenSourceLicensesScreen
 import me.kavishdevar.librepods.presentation.screens.PurchaseScreen

@@ -65,6 +65,7 @@ import me.kavishdevar.librepods.data.app.IslandSettings
 import me.kavishdevar.librepods.data.app.resolve
 import me.kavishdevar.librepods.presentation.components.apple.NoiseControlSettings
 import me.kavishdevar.librepods.presentation.icons.LocalIcons
+import me.kavishdevar.librepods.core.R as coreR
 
 @Composable
 fun IslandContent(
@@ -221,7 +222,7 @@ fun IslandContent(
                     }
                 }
                 .pointerInput(Unit) {
-                    detectVerticalDragGestures { change, dragAmount ->
+                    detectVerticalDragGestures { _, dragAmount ->
                         if (dragAmount > 0) changeState(IslandState.EXPANDED, true)
                         else changeState(
                             if (islandSettings.keepCompactVisible) IslandState.COMPACT else IslandState.CLOSE,
@@ -302,7 +303,7 @@ fun IslandContent(
                         )
                     } else {
                         Image(
-                            bitmap = ImageBitmap.imageResource(R.drawable.img_airpods_pro_2_buds), // TODO: use correct icon for model
+                            bitmap = ImageBitmap.imageResource(coreR.drawable.img_airpods_pro_2_buds), // TODO: use correct icon for model
                             contentDescription = null,
                             modifier = Modifier
                                 .heightIn(max = 64.dp)
