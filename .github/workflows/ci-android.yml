@@ -20,20 +20,35 @@ on:
 
 jobs:
   build:
-    runs-on: blacksmith-4vcpu-ubuntu-2404
+    runs-on: blacksmith-8vcpu-ubuntu-2404
+    env:
+      GRADLE_OPTS: '-Dorg.gradle.jvmargs="-Xmx16g -XX:MaxMetaspaceSize=2g -XX:+UseParallelGC" -Dkotlin.daemon.jvm.options="-Xmx6g -XX:+UseParallelGC" -Dorg.gradle.workers.max=8'
     outputs:
       short_sha: ${{ steps.vars.outputs.short_sha }}
       app_version: ${{ steps.version.outputs.app_version }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: useblacksmith/checkout@v1
         with:
           submodules: true
+          fetch-depth: 0
           ref: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.branch || github.ref }}
       - uses: actions/setup-java@v4
         with:
           distribution: zulu
           java-version: 21
       - uses: gradle/actions/setup-gradle@v4
+      - name: Mount Gradle Cache
+        uses: useblacksmith/stickydisk@v1
+        with:
+          key: ${{ github.repository }}-android-gradle-cache
+          path: ~/.gradle
+
+      - name: Mount Native NDK CXX Cache
+        uses: useblacksmith/stickydisk@v1
+        with:
+          key: ${{ github.repository }}-android-cxx-cache
+          path: android/app/.cxx
+
       - name: Decode keystore
         if: github.event_name != 'pull_request'
         run: echo "${{ secrets.RELEASE_KEYSTORE_FILE }}" | base64 --decode > android/release.keystore
@@ -99,18 +114,18 @@ jobs:
       github.event_name == 'push' &&
       (github.ref == 'refs/heads/main' ||
        github.ref == 'refs/heads/android/rewrite')
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-8vcpu-ubuntu-2404
     needs: build
     permissions:
       contents: write
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: useblacksmith/checkout@v1
         with:
           fetch-depth: 0
           fetch-tags: true
 
-      - name: Determine release tag
+      - name: Determine release tag and action type
         id: release_check
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -118,73 +133,69 @@ jobs:
           SHORT_SHA: ${{ needs.build.outputs.short_sha }}
         run: |
           if [[ "$GITHUB_REF" == "refs/heads/main" ]]; then
-            echo "publish=true" >> "$GITHUB_OUTPUT"
-            echo "tag=nightly-${SHORT_SHA}" >> "$GITHUB_OUTPUT"
-            echo "title=Nightly ${SHORT_SHA}" >> "$GITHUB_OUTPUT"
-            echo "description=Download the latest debug and release APKs." >> "$GITHUB_OUTPUT"
+            NEW_TAG="v${APP_VERSION}"
+            TITLE="${NEW_TAG}"
+            DESCRIPTION="Download the latest release and debug APKs."
           else
             NEW_TAG="rewrite-v${APP_VERSION}"
+            TITLE="v${APP_VERSION} (rewrite)"
+            DESCRIPTION="Download rewrite testing versions. THINGS WILL BE BROKEN!"
+          fi
 
-            LAST_TAG=$(gh release list \
-              --limit 1000 \
-              --json tagName,publishedAt |
-              jq -r '[.[] | select(.tagName | startswith("rewrite-"))]
-                | sort_by(.publishedAt)
-                | last
-                | .tagName // empty')
+          echo "tag=${NEW_TAG}" >> "$GITHUB_OUTPUT"
+          echo "title=${TITLE}" >> "$GITHUB_OUTPUT"
+          echo "description=${DESCRIPTION}" >> "$GITHUB_OUTPUT"
 
-            if [[ "$NEW_TAG" == "$LAST_TAG" ]]; then
-              echo "publish=false" >> "$GITHUB_OUTPUT"
-              echo "Version ${APP_VERSION} already released; skipping prerelease."
-            else
-              echo "publish=true" >> "$GITHUB_OUTPUT"
-              echo "tag=${NEW_TAG}" >> "$GITHUB_OUTPUT"
-              echo "title=v${APP_VERSION} (rewrite)" >> "$GITHUB_OUTPUT"
-              echo "description=Download rewrite testing versions. THINGS WILL BE BROKEN!" >> "$GITHUB_OUTPUT"
-            fi
+          # Check if a release with this exact tag already exists
+          if gh release view "$NEW_TAG" &>/dev/null; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+            echo "Release $NEW_TAG already exists. Will update it."
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+            echo "Release $NEW_TAG does not exist. Will create a new one."
           fi
 
       - name: Download release APK
-        if: steps.release_check.outputs.publish == 'true'
         uses: actions/download-artifact@v4
         with:
           name: apk-release
           path: artifacts/apk-release
 
       - name: Download debug APK
-        if: steps.release_check.outputs.publish == 'true'
         uses: actions/download-artifact@v4
         with:
           name: apk-debug
           path: artifacts/apk-debug
 
       - name: Find previous release
-        if: steps.release_check.outputs.publish == 'true'
         id: prev
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           APP_VERSION: ${{ needs.build.outputs.app_version }}
         run: |
           if [[ "$GITHUB_REF" == "refs/heads/main" ]]; then
-            PREFIX="nightly-"
+            TAG=$(gh release list \
+              --limit 1000 \
+              --json tagName,publishedAt |
+              jq -r --arg current "${{ steps.release_check.outputs.tag }}" \
+                '[.[] | select(.tagName | startswith("v") and (.tagName | startswith("rewrite-") | not) and .tagName != $current)]
+                | sort_by(.publishedAt)
+                | last
+                | .tagName // empty')
           else
-            MAJOR="${APP_VERSION%%.*}"
-            PREFIX="rewrite-v${MAJOR}."
+            TAG=$(gh release list \
+              --limit 1000 \
+              --json tagName,publishedAt |
+              jq -r --arg current "${{ steps.release_check.outputs.tag }}" \
+                '[.[] | select(.tagName | startswith("rewrite-") and .tagName != $current)]
+                | sort_by(.publishedAt)
+                | last
+                | .tagName // empty')
           fi
-
-          TAG=$(gh release list \
-            --limit 1000 \
-            --json tagName,publishedAt |
-            jq -r --arg prefix "$PREFIX" \
-              '[.[] | select(.tagName | startswith($prefix))]
-              | sort_by(.publishedAt)
-              | last
-              | .tagName // empty')
 
           echo "tag=$TAG" >> "$GITHUB_OUTPUT"
 
       - name: Generate changelog
-        if: steps.release_check.outputs.publish == 'true'
         id: changelog
         env:
           PREVIOUS_TAG: ${{ steps.prev.outputs.tag }}
@@ -215,29 +226,40 @@ jobs:
             echo "EOF"
           } >> "$GITHUB_OUTPUT"
 
-      - name: Create prerelease
-        if: steps.release_check.outputs.publish == 'true'
+      - name: Create or Update release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAG: ${{ steps.release_check.outputs.tag }}
           TITLE: ${{ steps.release_check.outputs.title }}
           NOTES: ${{ steps.changelog.outputs.notes }}
+          EXISTS: ${{ steps.release_check.outputs.exists }}
+          REF: ${{ github.ref }}
         run: |
-          gh release create "$TAG" \
-            artifacts/apk-release/* \
-            artifacts/apk-debug/* \
-            --target "$GITHUB_SHA" \
-            --title "$TITLE" \
-            --notes "$NOTES" \
-            --prerelease
+          PRERELEASE_FLAG=""
+          if [[ "$REF" != "refs/heads/main" ]]; then
+            PRERELEASE_FLAG="--prerelease"
+          fi
+
+          if [[ "$EXISTS" == "true" ]]; then
+            echo "Updating existing release $TAG..."
+            gh release upload "$TAG" artifacts/apk-release/* artifacts/apk-debug/* --clobber
+            gh release edit "$TAG" --title "$TITLE" --notes "$NOTES"
+          else
+            echo "Creating new release $TAG..."
+            gh release create "$TAG" \
+              artifacts/apk-release/* \
+              artifacts/apk-debug/* \
+              --target "$GITHUB_SHA" \
+              --title "$TITLE" \
+              --notes "$NOTES" \
+              $PRERELEASE_FLAG
+          fi
 
       - name: Get timestamp
-        if: steps.release_check.outputs.publish == 'true'
         id: timestamp
         run: echo "timestamp=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_OUTPUT"
 
       - name: Post to Discord
-        if: steps.release_check.outputs.publish == 'true'
         env:
           DISCORD_WEBHOOK: ${{ secrets.DISCORD_ANDROID_CI_URL }}
           RELEASE_TAG: ${{ steps.release_check.outputs.tag }}
@@ -245,11 +267,13 @@ jobs:
           RELEASE_DESCRIPTION: ${{ steps.release_check.outputs.description }}
           APP_VERSION: ${{ needs.build.outputs.app_version }}
           TIMESTAMP: ${{ steps.timestamp.outputs.timestamp }}
+          CHANGELOG_NOTES: ${{ steps.changelog.outputs.notes }}
         run: |
           jq -n \
             --arg title "$RELEASE_TITLE" \
             --arg description "$RELEASE_DESCRIPTION" \
             --arg timestamp "$TIMESTAMP" \
+            --arg changelog "$CHANGELOG_NOTES" \
             --arg release_url "https://github.com/kavishdevar/librepods/releases/download/${RELEASE_TAG}/LibrePods-FOSS-v${APP_VERSION}-release.apk" \
             --arg debug_url "https://github.com/kavishdevar/librepods/releases/download/${RELEASE_TAG}/LibrePods-FOSS-v${APP_VERSION}-debug.apk" \
             '{
@@ -259,6 +283,13 @@ jobs:
                   description: $description,
                   color: 253060,
                   timestamp: $timestamp,
+                  fields: [
+                    {
+                      name: "Changelog",
+                      value: (if $changelog == "" then "No changes." elif ($changelog | length) > 1024 then (($changelog | .[0:1021]) + "...") else $changelog end),
+                      inline: false
+                    }
+                  ],
                   footer: {
                     text: "GitHub Actions"
                   }
