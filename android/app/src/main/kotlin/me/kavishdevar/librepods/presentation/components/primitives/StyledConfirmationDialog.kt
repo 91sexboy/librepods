@@ -57,8 +57,8 @@ import com.kyant.backdrop.drawBackdrop
 import com.kyant.backdrop.effects.blur
 import com.kyant.backdrop.effects.lens
 import com.kyant.backdrop.effects.vibrancy
-import me.kavishdevar.librepods.presentation.design.DesignSystem
-import me.kavishdevar.librepods.presentation.design.LocalDesignSystem
+import me.kavishdevar.librepods.data.app.DesignSystem
+import me.kavishdevar.librepods.presentation.design.LocalDesign
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -72,12 +72,14 @@ fun StyledConfirmationDialog(
     onDismiss: () -> Unit = { showDialog.value = false },
     backdrop: LayerBackdrop,
 ) {
+    val design = LocalDesign.current
+
     AnimatedVisibility(
         visible = showDialog.value,
         enter = scaleIn(initialScale = 1.05f) + fadeIn(),
         exit = scaleOut(targetScale = 1.05f) + fadeOut()
     ) {
-        when (LocalDesignSystem.current) {
+        when (design.system) {
             DesignSystem.Material -> {
                 BasicAlertDialog(
                     onDismissRequest = onDismiss,

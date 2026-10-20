@@ -1,4 +1,4 @@
-package me.kavishdevar.librepods.presentation.design
+package me.kavishdevar.librepods.data.app
 
 enum class DesignSystem {
     Apple,

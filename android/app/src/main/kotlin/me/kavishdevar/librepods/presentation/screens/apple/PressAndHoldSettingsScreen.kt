@@ -85,7 +85,6 @@ fun LongPress(
         Column (
             modifier = Modifier
                 .fillMaxSize()
-                .background(MaterialTheme.colorScheme.surfaceContainer)
                 .verticalScroll(scrollState)
                 .padding(top = 8.dp)
                 .padding(horizontal = 16.dp)

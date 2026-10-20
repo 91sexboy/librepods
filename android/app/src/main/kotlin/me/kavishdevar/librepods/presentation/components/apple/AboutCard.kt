@@ -28,12 +28,13 @@ import androidx.compose.runtime.remember
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.tooling.preview.Preview
 import me.kavishdevar.librepods.R
+import me.kavishdevar.librepods.data.app.Design
+import me.kavishdevar.librepods.data.app.DesignSystem
 import me.kavishdevar.librepods.presentation.components.primitives.StyledList
 import me.kavishdevar.librepods.presentation.components.primitives.styledListItem
-import me.kavishdevar.librepods.presentation.icons.richText
-import me.kavishdevar.librepods.presentation.design.DesignSystem
 import me.kavishdevar.librepods.presentation.design.LibrePodsTheme
-import me.kavishdevar.librepods.presentation.design.LocalDesignSystem
+import me.kavishdevar.librepods.presentation.design.LocalDesign
+import me.kavishdevar.librepods.presentation.icons.richText
 import kotlin.io.encoding.ExperimentalEncodingApi
 
 @Composable
@@ -44,6 +45,8 @@ fun AboutCard(
     version: String?,
     navigateToVersion: () -> Unit
 ) {
+    val design = LocalDesign.current
+
     val serialNumbers = listOf(
         richText(serialNumbers[0]),
         richText("\\icon{LeftCircleFill} " + serialNumbers[1]),
@@ -69,7 +72,7 @@ fun AboutCard(
                 Text(
                     text = serialNumbers[serialNumber.intValue].text,
                     inlineContent = serialNumbers[serialNumber.intValue].inlineContent,
-                    style = if (LocalDesignSystem.current == DesignSystem.Apple) MaterialTheme.typography.bodyMedium else MaterialTheme.typography.bodySmall,
+                    style = if (design.system == DesignSystem.Apple) MaterialTheme.typography.bodyMedium else MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurface.copy(0.7f),
                 )
             },
@@ -95,7 +98,9 @@ fun AboutCard(
 @Composable
 fun AboutCardPreview() {
     LibrePodsTheme(
-        designSystem = DesignSystem.Apple
+        design = Design(
+            system = DesignSystem.Apple
+        )
     ) {
         AboutCard(
             modelName = "AirPods Pro",

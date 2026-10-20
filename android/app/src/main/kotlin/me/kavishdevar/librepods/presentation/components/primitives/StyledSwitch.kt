@@ -37,6 +37,8 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.SwitchDefaults
+import androidx.compose.material3.contentColorFor
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.derivedStateOf
@@ -79,7 +81,9 @@ import com.kyant.backdrop.highlight.Highlight
 import com.kyant.backdrop.shadow.Shadow
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.launch
+import me.kavishdevar.librepods.data.app.ColorStyle
 import me.kavishdevar.librepods.presentation.design.LocalAccessibilitySettings
+import me.kavishdevar.librepods.presentation.design.LocalDesign
 import kotlin.math.abs
 
 @Composable
@@ -87,17 +91,26 @@ fun StyledSwitch(
     checked: Boolean,
     onCheckedChange: (Boolean) -> Unit,
     enabled: Boolean = true,
-    backgroundColor: Color = MaterialTheme.colorScheme.surfaceContainer,
+    backgroundColor: Color,
 ) {
     val isDarkTheme = MaterialTheme.colorScheme.surface.luminance() < 0.5f
     val haptics = LocalHapticFeedback.current
 
     val differentiateWithoutColor = LocalAccessibilitySettings.current.differentiateWithoutColor
 
-    val onColor = if (enabled) Color(0xFF34C759) else if (isDarkTheme) Color(0xFF5B5B5E) else Color(0xFFD1D1D6)
-    val offColor = if (enabled) if (isDarkTheme) Color(0xFF5B5B5E) else Color(0xFFD1D1D6) else if (isDarkTheme) Color(
-        0x805B5B5E
-    ) else Color(0xFFD1D1D6)
+    val design = LocalDesign.current
+
+    val onColor =
+        if (design.colorStyle == ColorStyle.Default) if (enabled) Color(0xFF34C759) else if (isDarkTheme) Color(0xFF5B5B5E) else Color(0xFFD1D1D6)
+        else if (enabled) SwitchDefaults.colors().checkedTrackColor else SwitchDefaults.colors().disabledCheckedTrackColor
+    val offColor =
+        if (design.colorStyle == ColorStyle.Default) if (enabled) if (isDarkTheme) Color(0xFF5B5B5E) else Color(0xFFD1D1D6) else if (isDarkTheme) Color(0x805B5B5E) else Color(0xFFD1D1D6)
+        else if (enabled) SwitchDefaults.colors().uncheckedTrackColor else SwitchDefaults.colors().disabledUncheckedTrackColor
+
+    val thumbColor =
+        if (design.colorStyle == ColorStyle.Default) if (enabled) Color(0xFFFFFFFF) else if (isDarkTheme) Color(0xFF5B5B5E) else Color(0xFFD1D1D6)
+        else if (enabled) if (checked) SwitchDefaults.colors().checkedThumbColor else SwitchDefaults.colors().uncheckedThumbColor
+        else if (checked) SwitchDefaults.colors().disabledCheckedThumbColor else SwitchDefaults.colors().disabledUncheckedThumbColor
 
     val trackWidth = 64.dp
     val trackHeight = 28.dp
@@ -178,7 +191,10 @@ fun StyledSwitch(
                             .width(2.dp)
                             .height(trackHeight / 3)
                             .clip(RoundedCornerShape(50))
-                            .background(Color.White)
+                            .background(
+                                if (design.colorStyle == ColorStyle.Default) Color.White
+                                else if (enabled) contentColorFor(SwitchDefaults.colors().checkedTrackColor) else SwitchDefaults.colors().disabledCheckedTrackColor
+                            )
                     )
                 } else {
                     Box(
@@ -187,7 +203,9 @@ fun StyledSwitch(
                             .size(trackHeight / 3)
                             .border(
                                 width = 1.5.dp,
-                                color = Color.Gray,
+                                color =
+                                    if (design.colorStyle == ColorStyle.Default) Color.Gray
+                                    else if (enabled) contentColorFor(SwitchDefaults.colors().uncheckedTrackColor) else SwitchDefaults.colors().disabledUncheckedTrackColor,
                                 shape = CircleShape
                             )
                     )
@@ -312,7 +330,7 @@ fun StyledSwitch(
                         }
                         drawLayer(innerShadowLayer)
 
-                        drawRect(Color.White.copy(1f - progress))
+                        drawRect(thumbColor.copy(1f - progress))
                     },
                     effects = {
                         lens(
@@ -346,6 +364,7 @@ fun StyledSwitchPreview() {
                 checked.value = it
             },
             enabled = true,
+            backgroundColor = MaterialTheme.colorScheme.surfaceContainer
         )
 //        LaunchedEffect(Unit) {
 //            delay(1.seconds)

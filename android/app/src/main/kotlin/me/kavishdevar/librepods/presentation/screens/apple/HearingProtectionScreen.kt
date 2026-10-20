@@ -41,6 +41,7 @@ import me.kavishdevar.librepods.core.bluetooth.att.ATTHandle
 import me.kavishdevar.librepods.presentation.components.primitives.StyledButton
 import me.kavishdevar.librepods.presentation.components.primitives.StyledScaffold
 import me.kavishdevar.librepods.presentation.components.primitives.StyledToggle
+import me.kavishdevar.librepods.presentation.design.LocalDesign
 import me.kavishdevar.librepods.presentation.viewmodel.AppleViewModel
 
 @Composable
@@ -61,7 +62,6 @@ fun HearingProtectionScreen(
         Column(
             modifier = Modifier
                 .fillMaxSize()
-                .background(MaterialTheme.colorScheme.surfaceContainer)
                 .layerBackdrop(backdrop)
                 .padding(horizontal = 16.dp)
         ) {

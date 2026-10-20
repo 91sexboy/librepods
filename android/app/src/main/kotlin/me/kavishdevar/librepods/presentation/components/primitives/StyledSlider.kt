@@ -94,10 +94,11 @@ import com.kyant.backdrop.shadow.Shadow
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.launch
 import me.kavishdevar.librepods.R
-import me.kavishdevar.librepods.presentation.icons.LocalIcons
-import me.kavishdevar.librepods.presentation.design.DesignSystem
+import me.kavishdevar.librepods.data.app.Design
+import me.kavishdevar.librepods.data.app.DesignSystem
 import me.kavishdevar.librepods.presentation.design.LibrePodsTheme
-import me.kavishdevar.librepods.presentation.design.LocalDesignSystem
+import me.kavishdevar.librepods.presentation.design.LocalDesign
+import me.kavishdevar.librepods.presentation.icons.LocalIcons
 import me.kavishdevar.librepods.utils.inspectDragGestures
 import kotlin.math.abs
 import kotlin.math.roundToInt
@@ -238,7 +239,9 @@ fun StyledSlider(
         selectedContentColor = MaterialTheme.colorScheme.onPrimaryContainer,
     )
 ) {
-    when (LocalDesignSystem.current) {
+    val design = LocalDesign.current
+
+    when (design.system) {
         DesignSystem.Material -> {
             val defaultShape = when {
                 count == 1 -> RoundedCornerShape(24.dp)
@@ -755,7 +758,9 @@ private fun snapIfClose(value: Float, points: List<Float>, threshold: Float = 0.
 fun StyledSliderPreview() {
     val a = remember { mutableFloatStateOf(0.5f) }
     LibrePodsTheme(
-        designSystem = DesignSystem.Apple
+        design = Design(
+            system = DesignSystem.Material
+        )
     ) {
         StyledScaffold(
             title = "test",

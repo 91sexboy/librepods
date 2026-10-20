@@ -49,8 +49,9 @@ import com.google.android.play.core.review.ReviewManagerFactory
 import kotlinx.coroutines.flow.MutableStateFlow
 import me.kavishdevar.librepods.BuildConfig
 import me.kavishdevar.librepods.LibrePodsApplication
+import me.kavishdevar.librepods.data.app.Design
 import me.kavishdevar.librepods.presentation.design.LibrePodsTheme
-import me.kavishdevar.librepods.presentation.design.NightTheme
+import me.kavishdevar.librepods.data.app.NightTheme
 import me.kavishdevar.librepods.presentation.navigation.NavigationRoot
 import me.kavishdevar.librepods.presentation.utils.LocalDebugMode
 import me.kavishdevar.librepods.repository.AppDataRepository
@@ -115,8 +116,19 @@ class MainActivity: ComponentActivity() {
                 LocalDebugMode provides settings.debugMode
             ) {
                 LibrePodsTheme(
-                    designSystem = settings.designSystem,
-                    overrideMaterialColor = settings.overrideMaterialColor,
+                    design = Design(
+                        system = settings.designSystem,
+                        iconStyle = settings.iconStyle,
+                        blurTopBarInMaterial = settings.blurTopBarInMaterial,
+                        progressiveBlurEnabled = settings.progressiveBlurTopBar,
+                        hazePerformanceMode = settings.hazePerformanceMode,
+                        hazeBlurStyle = settings.hazeBlurStyle,
+                        colorStyle = settings.colorStyle,
+                        paletteStyle = settings.paletteStyle,
+                        overrideMaterialColor = settings.overrideMaterialColor,
+                        contrastLevel = settings.contrastLevel,
+                        amoledMode = settings.amoledMode
+                    ),
                     accessibilitySettings = settings.accessibilitySettings,
                     fontSettings = settings.fontSettings,
                     darkTheme = darkTheme

@@ -56,7 +56,7 @@ kotlin {
             "kotlinx.coroutines.FlowPreview",
             "kotlinx.serialization.ExperimentalSerializationApi",
             "kotlinx.coroutines.ExperimentalCoroutinesApi",
-            "dev.chrisbanes.haze.materials.ExperimentalHazeMaterialsApi",
+            "dev.chrisbanes.haze.ExperimentalHazeApi",
             "com.google.accompanist.permissions.ExperimentalPermissionsApi"
         )
     }
@@ -168,7 +168,11 @@ dependencies {
     implementation(libs.androidx.navigation.compose)
     implementation(libs.androidx.constraintlayout)
     implementation(libs.haze)
-    implementation(libs.haze.materials)
+    implementation(libs.haze.blur)
+    implementation(libs.haze.blur.materials)
+    implementation(libs.haze.blur.material3)
+    implementation(libs.haze.glass)
+    implementation(libs.haze.glass.material3)
     implementation(libs.androidx.dynamicanimation)
     implementation(libs.androidx.compose.material.icons.core)
     implementation(libs.billing)
@@ -193,6 +197,7 @@ dependencies {
     implementation(libs.protobuf.kotlin)
 //    compileOnly(files("../../../framework-classes.jar"))
     implementation(libs.androidx.healthconnect.client)
+    implementation(libs.materialKolor.material3)
 }
 
 aboutLibraries {

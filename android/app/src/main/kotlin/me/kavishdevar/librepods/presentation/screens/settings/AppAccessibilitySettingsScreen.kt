@@ -35,6 +35,24 @@ fun AppAccessibilitySettingsRoute(
                 it.copy(accessibilitySettings = accessibilitySettings.copy(differentiateWithoutColor = differentiateWithoutColor))
             }
         },
+        reduceTransparency = accessibilitySettings.reduceTransparency,
+        onReduceTransparencyChanged = { reduceTransparency ->
+            viewModel.updateSettings {
+                it.copy(accessibilitySettings = accessibilitySettings.copy(reduceTransparency = reduceTransparency))
+            }
+        },
+        increaseContrast = accessibilitySettings.increaseContrast,
+        onIncreaseContrastChanged = { increaseContrast ->
+            viewModel.updateSettings {
+                it.copy(accessibilitySettings = accessibilitySettings.copy(increaseContrast = increaseContrast))
+            }
+        },
+        showBorders = accessibilitySettings.showBorders,
+        onShowBordersChanged = { showBorders ->
+            viewModel.updateSettings {
+                it.copy(accessibilitySettings = accessibilitySettings.copy(showBorders = showBorders))
+            }
+        }
     )
 }
 
@@ -42,7 +60,13 @@ fun AppAccessibilitySettingsRoute(
 fun AppAccessibilitySettingsScreen(
     navigateBack: (() -> Unit)? = null,
     differentiateWithoutColor: Boolean,
-    onDifferentiateWithoutColorChanged: (Boolean) -> Unit
+    onDifferentiateWithoutColorChanged: (Boolean) -> Unit,
+    reduceTransparency: Boolean,
+    onReduceTransparencyChanged: (Boolean) -> Unit,
+    increaseContrast: Boolean,
+    onIncreaseContrastChanged: (Boolean) -> Unit,
+    showBorders: Boolean,
+    onShowBordersChanged: (Boolean) -> Unit
 ) {
     val scrollState = rememberScrollState()
 
@@ -63,6 +87,25 @@ fun AppAccessibilitySettingsScreen(
                     label = stringResource(R.string.differentiate_without_color),
                     checked = differentiateWithoutColor,
                     onCheckedChange = onDifferentiateWithoutColorChanged
+                )
+            }
+
+            // TODO: extract strings
+            StyledList(title = "Glass effects") {
+                styledToggle(
+                    label = "Reduce transparency",
+                    checked = reduceTransparency,
+                    onCheckedChange = onReduceTransparencyChanged
+                )
+                styledToggle(
+                    label = "Increase contrast",
+                    checked = increaseContrast,
+                    onCheckedChange = onIncreaseContrastChanged
+                )
+                styledToggle(
+                    label = "Show borders",
+                    checked = showBorders,
+                    onCheckedChange = onShowBordersChanged
                 )
             }
 

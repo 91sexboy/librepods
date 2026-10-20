@@ -59,8 +59,6 @@ import me.kavishdevar.librepods.presentation.icons.LocalIcons
 import me.kavishdevar.librepods.presentation.viewmodel.AppleViewModel
 import kotlin.time.Duration.Companion.milliseconds
 
-//private var phoneMediaDebounceJob: Job? = null
-
 @Composable
 fun AccessibilitySettingsScreen(
     viewModel: AppleViewModel,

@@ -54,12 +54,16 @@ import com.mikepenz.aboutlibraries.ui.compose.variant.LibraryDetailMode
 import com.mikepenz.aboutlibraries.ui.compose.variant.LibraryInlineDetail
 import com.mikepenz.aboutlibraries.ui.compose.variant.LibraryRow
 import me.kavishdevar.librepods.R
+import me.kavishdevar.librepods.data.app.ColorStyle
 import me.kavishdevar.librepods.presentation.components.primitives.StyledScaffold
+import me.kavishdevar.librepods.presentation.design.LocalDesign
 
 @Composable
 fun OpenSourceLicensesScreen(
     navigateBack: (() -> Unit)?
 ) {
+    val design = LocalDesign.current
+
     StyledScaffold(
         title = stringResource(R.string.open_source_licenses),
         navigateBack = navigateBack
@@ -67,7 +71,7 @@ fun OpenSourceLicensesScreen(
         Column(
             modifier = Modifier
                 .fillMaxSize()
-                .background(MaterialTheme.colorScheme.surfaceContainer)
+                .background(if (design.colorStyle == ColorStyle.Custom) MaterialTheme.colorScheme.surface else MaterialTheme.colorScheme.surfaceContainer)
                 .padding(horizontal = 16.dp),
             verticalArrangement = Arrangement.spacedBy(16.dp)
         ) {
@@ -94,9 +98,9 @@ fun OpenSourceLicensesScreen(
                 ),
 
                 variantColors = LibraryDefaults.m3VariantColors(
-                    rowBackground = MaterialTheme.colorScheme.surfaceContainer,
+                    rowBackground = if (design.colorStyle == ColorStyle.Custom) MaterialTheme.colorScheme.surface else MaterialTheme.colorScheme.surfaceContainer,
                     rowOnBackground = MaterialTheme.colorScheme.onSurface,
-                    rowExpandedBackground = MaterialTheme.colorScheme.surfaceContainer
+                    rowExpandedBackground = if (design.colorStyle == ColorStyle.Custom) MaterialTheme.colorScheme.surface else MaterialTheme.colorScheme.surfaceContainer
                 ),
 
                 divider = {
@@ -174,7 +178,7 @@ fun OpenSourceLicensesScreen(
                                         bottomEnd = if (index == count - 1) 24.dp else 8.dp
                                     )
                                 )
-                                .background(MaterialTheme.colorScheme.surfaceContainer)
+                                .background(if (design.colorStyle == ColorStyle.Custom) MaterialTheme.colorScheme.surface else MaterialTheme.colorScheme.surfaceContainer)
                         )
                     }
                 }

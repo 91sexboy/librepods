@@ -76,11 +76,13 @@ import androidx.compose.ui.unit.dp
 import androidx.graphics.shapes.Morph
 import me.kavishdevar.librepods.BuildConfig
 import me.kavishdevar.librepods.R
+import me.kavishdevar.librepods.data.app.ColorStyle
+import me.kavishdevar.librepods.data.app.Design
+import me.kavishdevar.librepods.data.app.DesignSystem
 import me.kavishdevar.librepods.data.updates.UpdateItem
 import me.kavishdevar.librepods.data.updates.updates
-import me.kavishdevar.librepods.presentation.design.DesignSystem
 import me.kavishdevar.librepods.presentation.design.LibrePodsTheme
-import me.kavishdevar.librepods.presentation.design.LocalDesignSystem
+import me.kavishdevar.librepods.presentation.design.LocalDesign
 import kotlin.math.min
 
 @Composable
@@ -96,13 +98,18 @@ fun ReleaseNotesScreen(
     val topPadding = WindowInsets.statusBars.asPaddingValues().calculateTopPadding()
     val bottomPadding = WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding()
 
-    val m3eEnabled = LocalDesignSystem.current == DesignSystem.Material
+    val design = LocalDesign.current
+    val m3eEnabled = design.system == DesignSystem.Material
 
-    LibrePodsTheme(designSystem = DesignSystem.Material) {
+    LibrePodsTheme(
+        design = Design(
+            system = DesignSystem.Material,
+        )
+    ) {
         Column(
             modifier = Modifier
                 .fillMaxSize()
-                .background(MaterialTheme.colorScheme.surfaceContainer, RoundedCornerShape(52.dp)),
+                .background(if (design.colorStyle == ColorStyle.Custom) MaterialTheme.colorScheme.surface else MaterialTheme.colorScheme.surfaceContainer, RoundedCornerShape(52.dp)),
             verticalArrangement = Arrangement.spacedBy(8.dp),
             horizontalAlignment = Alignment.CenterHorizontally
         ) {
@@ -205,7 +212,7 @@ fun ReleaseNotesScreen(
                                             density = LocalDensity.current.density * 0.8f,
                                             fontScale = LocalDensity.current.fontScale
                                         ),
-                                        LocalDesignSystem provides if (m3eEnabled) DesignSystem.Material else DesignSystem.Apple
+                                        LocalDesign provides design
                                     ) {
                                         updateItem.demoComposeable()
                                     }
@@ -370,7 +377,9 @@ fun ReleaseNotesScreen(
 @Composable
 fun ReleaseNotesScreenPreview() {
     LibrePodsTheme(
-        designSystem = DesignSystem.Apple
+        design = Design(
+            system = DesignSystem.Material
+        )
     ) {
         ReleaseNotesScreen(
             updates = updates,

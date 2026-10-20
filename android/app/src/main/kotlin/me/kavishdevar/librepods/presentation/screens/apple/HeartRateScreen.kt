@@ -57,8 +57,8 @@ import me.kavishdevar.librepods.presentation.components.primitives.StyledScaffol
 import me.kavishdevar.librepods.presentation.components.primitives.StyledSlider
 import me.kavishdevar.librepods.presentation.components.primitives.StyledToggle
 import me.kavishdevar.librepods.presentation.icons.LocalIcons
-import me.kavishdevar.librepods.presentation.design.DesignSystem
-import me.kavishdevar.librepods.presentation.design.LocalDesignSystem
+import me.kavishdevar.librepods.data.app.DesignSystem
+import me.kavishdevar.librepods.presentation.design.LocalDesign
 import me.kavishdevar.librepods.presentation.viewmodel.AppleUiState
 import me.kavishdevar.librepods.presentation.viewmodel.AppleViewModel
 import java.time.Instant
@@ -93,6 +93,8 @@ fun HeartRateScreen(
     setHrRange: (ClosedRange<Long>) -> Unit,
     updateSettings: (transform: (AppleSettings) -> AppleSettings) -> Unit,
 ) {
+    val design = LocalDesign.current
+
     val state = uiState.state
     val settings = uiState.settings
 
@@ -102,13 +104,13 @@ fun HeartRateScreen(
         title = stringResource(R.string.heart_rate),
         navigateBack = navigateBack,
         actionButtons = listOf(
-            { scaffoldBackdrop ->
+            { hazeInput ->
                 val icon = when (state.hrmState) {
                     BuddyState.INACTIVE -> LocalIcons.current.Play
                     BuddyState.WAITING -> LocalIcons.current.Circle
                     BuddyState.ACTIVE -> LocalIcons.current.Pause
                 }
-                if (LocalDesignSystem.current == DesignSystem.Material) {
+                if (design.system == DesignSystem.Material) {
                     FilledTonalIconToggleButton(
                         checked = state.hrmState == BuddyState.ACTIVE,
                         onCheckedChange = { if (it) startHr() else stopHr() },
@@ -130,7 +132,7 @@ fun HeartRateScreen(
                 } else {
                     StyledIconButton(
                         onClick = { if (state.hrmState == BuddyState.INACTIVE) startHr() else stopHr() },
-                        backdrop = scaffoldBackdrop,
+                        hazeInput = hazeInput,
                     ) {
                         AnimatedContent(
                             icon

@@ -56,6 +56,8 @@ import me.kavishdevar.librepods.core.data.apple.BuddyState
 import me.kavishdevar.librepods.core.devices.AirPodsSpecs
 import me.kavishdevar.librepods.core.devices.AppleSettings
 import me.kavishdevar.librepods.core.devices.BaseCapability
+import me.kavishdevar.librepods.data.app.Design
+import me.kavishdevar.librepods.data.app.DesignSystem
 import me.kavishdevar.librepods.presentation.components.apple.AboutCard
 import me.kavishdevar.librepods.presentation.components.apple.AudioSettings
 import me.kavishdevar.librepods.presentation.components.apple.BatteryView
@@ -70,9 +72,8 @@ import me.kavishdevar.librepods.presentation.components.primitives.StyledListIte
 import me.kavishdevar.librepods.presentation.components.primitives.StyledScaffold
 import me.kavishdevar.librepods.presentation.components.primitives.StyledSlider
 import me.kavishdevar.librepods.presentation.components.primitives.StyledToggle
-import me.kavishdevar.librepods.presentation.design.DesignSystem
 import me.kavishdevar.librepods.presentation.design.LibrePodsTheme
-import me.kavishdevar.librepods.presentation.design.LocalDesignSystem
+import me.kavishdevar.librepods.presentation.design.LocalDesign
 import me.kavishdevar.librepods.presentation.icons.LocalIcons
 import me.kavishdevar.librepods.presentation.utils.LocalDebugMode
 import me.kavishdevar.librepods.presentation.viewmodel.AppleUiState
@@ -179,6 +180,7 @@ fun AppleSettingsScreen(
 
     val baseCapabilities = spec.baseCapabilities
 
+    val design = LocalDesign.current
     val debugMode = LocalDebugMode.current
 
     StyledScaffold(
@@ -255,7 +257,7 @@ fun AppleSettingsScreen(
                 if (baseCapabilities.contains(BaseCapability.ADAPTIVE_AUDIO)) {
                     item(key = "adaptive_strength") {
                         AnimatedVisibility(
-                            visible = state.controlStates[ControlCommandIdentifier.LISTENING_MODE]?.getOrNull(0)?.toInt() == 4 && LocalDesignSystem.current == DesignSystem.Material,
+                            visible = state.controlStates[ControlCommandIdentifier.LISTENING_MODE]?.getOrNull(0)?.toInt() == 4 && design.system == DesignSystem.Material,
                             enter = remember {
                                 fadeIn() + slideInVertically()
                             },
@@ -594,83 +596,76 @@ fun AppleSettingsScreen(
 @Composable
 fun AppleSettingsScreenPreviewApple() {
     LibrePodsTheme(
-        designSystem = DesignSystem.Apple
+        design = Design(
+            system = DesignSystem.Apple,
+        )
     ) {
-        Box(
-            modifier = Modifier
-                .background(MaterialTheme.colorScheme.surfaceContainer)
-        ) {
-            AppleSettingsScreen(
-                uiState = AppleUiState(),
+        AppleSettingsScreen(
+            uiState = AppleUiState(),
 
-                setControlCommandInt = { _, _ -> },
-                setControlCommandBoolean = { _, _ -> },
-                writeATTCharacteristic = { _, _ -> },
+            setControlCommandInt = { _, _ -> },
+            setControlCommandBoolean = { _, _ -> },
+            writeATTCharacteristic = { _, _ -> },
 
-                updateSettings = { _ -> },
+            updateSettings = { _ -> },
 
-                disconnect = {},
+            disconnect = {},
 
-                navigateBack = null,
-                navigateToRename = {},
-                navigateToHearingProtection = {},
-                navigateToHearingAid = {},
-                navigateToLeftLongPress = {},
-                navigateToRightLongPress = {},
-                navigateToPurchase = {},
-                navigateToEqualizer = {},
-                navigateToHeadTracking = {},
-                navigateToAccessibility = {},
-                navigateToVersion = {},
-                navigateToCallControlScreen = {},
-                navigateToMicrophoneSettings = {},
-                navigateToRecordingScreen = {},
-                navigateToHeartRateScreen = {},
-                navigateToDebugScreen = {}
-            )
-        }
+            navigateBack = null,
+            navigateToRename = {},
+            navigateToHearingProtection = {},
+            navigateToHearingAid = {},
+            navigateToLeftLongPress = {},
+            navigateToRightLongPress = {},
+            navigateToPurchase = {},
+            navigateToEqualizer = {},
+            navigateToHeadTracking = {},
+            navigateToAccessibility = {},
+            navigateToVersion = {},
+            navigateToCallControlScreen = {},
+            navigateToMicrophoneSettings = {},
+            navigateToRecordingScreen = {},
+            navigateToHeartRateScreen = {},
+            navigateToDebugScreen = {}
+        )
     }
 }
-
 
 @Preview(name = "Material")
 @Composable
 fun AppleSettingsScreenPreviewMaterial() {
     LibrePodsTheme(
-        designSystem = DesignSystem.Material
+        design = Design(
+            system = DesignSystem.Material,
+        )
     ) {
-        Box(
-            modifier = Modifier
-                .background(MaterialTheme.colorScheme.surfaceContainer)
-        ) {
-            AppleSettingsScreen(
-                uiState = AppleUiState(),
+        AppleSettingsScreen(
+            uiState = AppleUiState(),
 
-                setControlCommandInt = { _, _ -> },
-                setControlCommandBoolean = { _, _ -> },
-                writeATTCharacteristic = { _, _ -> },
+            setControlCommandInt = { _, _ -> },
+            setControlCommandBoolean = { _, _ -> },
+            writeATTCharacteristic = { _, _ -> },
 
-                updateSettings = { _ -> },
+            updateSettings = { _ -> },
 
-                disconnect = {},
+            disconnect = {},
 
-                navigateBack = null,
-                navigateToRename = {},
-                navigateToHearingProtection = {},
-                navigateToHearingAid = {},
-                navigateToLeftLongPress = {},
-                navigateToRightLongPress = {},
-                navigateToPurchase = {},
-                navigateToEqualizer = {},
-                navigateToHeadTracking = {},
-                navigateToAccessibility = {},
-                navigateToVersion = {},
-                navigateToCallControlScreen = {},
-                navigateToMicrophoneSettings = {},
-                navigateToRecordingScreen = {},
-                navigateToHeartRateScreen = {},
-                navigateToDebugScreen = {}
-            )
-        }
+            navigateBack = null,
+            navigateToRename = {},
+            navigateToHearingProtection = {},
+            navigateToHearingAid = {},
+            navigateToLeftLongPress = {},
+            navigateToRightLongPress = {},
+            navigateToPurchase = {},
+            navigateToEqualizer = {},
+            navigateToHeadTracking = {},
+            navigateToAccessibility = {},
+            navigateToVersion = {},
+            navigateToCallControlScreen = {},
+            navigateToMicrophoneSettings = {},
+            navigateToRecordingScreen = {},
+            navigateToHeartRateScreen = {},
+            navigateToDebugScreen = {}
+        )
     }
 }

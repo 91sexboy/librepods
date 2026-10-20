@@ -68,8 +68,8 @@ import com.kyant.backdrop.effects.lens
 import com.kyant.backdrop.effects.vibrancy
 import com.kyant.backdrop.highlight.Highlight
 import kotlinx.coroutines.launch
-import me.kavishdevar.librepods.presentation.design.DesignSystem
-import me.kavishdevar.librepods.presentation.design.LocalDesignSystem
+import me.kavishdevar.librepods.data.app.DesignSystem
+import me.kavishdevar.librepods.presentation.design.LocalDesign
 import me.kavishdevar.librepods.utils.inspectDragGestures
 import kotlin.math.abs
 import kotlin.math.atan2
@@ -97,7 +97,9 @@ fun StyledButton(
     materialButtonStyle: MaterialButtonStyle = MaterialButtonStyle.Tonal, // picking tonal because most usages assume a transparent/gray background, tonal will give a slightly less vibrant background
     content: @Composable RowScope.() -> Unit,
 ) {
-    when (LocalDesignSystem.current) {
+    val design = LocalDesign.current
+
+    when (design.system) {
         DesignSystem.Material -> {
             when (materialButtonStyle) {
                 MaterialButtonStyle.Filled -> {

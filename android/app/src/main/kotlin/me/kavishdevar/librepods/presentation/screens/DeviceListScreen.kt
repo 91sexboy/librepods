@@ -68,6 +68,7 @@ import me.kavishdevar.librepods.core.devices.AppleState
 import me.kavishdevar.librepods.core.devices.BaseCapability
 import me.kavishdevar.librepods.core.devices.ConnectionState
 import me.kavishdevar.librepods.core.devices.Device
+import me.kavishdevar.librepods.data.app.DesignSystem
 import me.kavishdevar.librepods.presentation.components.apple.NoiseControlSettings
 import me.kavishdevar.librepods.presentation.components.primitives.StyledIconButton
 import me.kavishdevar.librepods.presentation.components.primitives.StyledList
@@ -76,8 +77,7 @@ import me.kavishdevar.librepods.presentation.components.primitives.StyledListIte
 import me.kavishdevar.librepods.presentation.components.primitives.StyledScaffold
 import me.kavishdevar.librepods.presentation.components.primitives.styledListItem
 import me.kavishdevar.librepods.presentation.components.primitives.styledToggle
-import me.kavishdevar.librepods.presentation.design.DesignSystem
-import me.kavishdevar.librepods.presentation.design.LocalDesignSystem
+import me.kavishdevar.librepods.presentation.design.LocalDesign
 import me.kavishdevar.librepods.presentation.icons.LocalIcons
 import me.kavishdevar.librepods.presentation.utils.createAirPodsBatteryRichText
 import kotlin.math.min
@@ -90,6 +90,7 @@ fun DeviceListScreen(
     navigateToDevice: (MacAddress) -> Unit,
     navigateToHeartRateScreen: (MacAddress) -> Unit
 ) {
+    val design = LocalDesign.current
     val scrollState = rememberScrollState()
 
     val isPremium by BillingManager.provider.isPremium.collectAsState()
@@ -98,8 +99,8 @@ fun DeviceListScreen(
         title = stringResource(R.string.app_name),
         navigateBack = null,
         actionButtons = listOf(
-            { scaffoldBackdrop ->
-                if (LocalDesignSystem.current == DesignSystem.Material) {
+            { hazeInput ->
+                if (design.system == DesignSystem.Material) {
                     FilledTonalIconButton(
                         onClick = navigateToAppSettings,
                         modifier = Modifier
@@ -116,12 +117,13 @@ fun DeviceListScreen(
                 } else {
                     StyledIconButton(
                         onClick = navigateToAppSettings,
-                        backdrop = scaffoldBackdrop
+                        hazeInput = hazeInput
                     ) {
                         Icon(
                             imageVector = LocalIcons.current.Settings,
                             contentDescription = "Settings",
-                            tint = MaterialTheme.colorScheme.onBackground
+                            tint = MaterialTheme.colorScheme.onBackground,
+                            modifier = Modifier.size(IconButtonDefaults.mediumIconSize)
                         )
                     }
                 }

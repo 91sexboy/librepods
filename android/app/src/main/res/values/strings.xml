@@ -414,4 +414,20 @@
     <string name="eq_low">Low</string>
     <string name="eq_mid">Mid</string>
     <string name="eq_high">High</string>
+    <string name="app_color">App color</string>
+    <string name="wallpaper">Wallpaper</string>
+    <string name="icons">Icons</string>
+    <string name="material_symbols">Material Symbols</string>
+    <string name="blur_style">Blur style</string>
+    <string name="blur_style_ultra_thin">Ultra thin</string>
+    <string name="blur_style_thin">Thin</string>
+    <string name="blur_style_regular">Regular</string>
+    <string name="blur_style_thick">Thick</string>
+    <string name="blur_style_ultra_thick">Ultra thick</string>
+    <string name="use_progressive_blur_for_top_bar">Use progressive blur for top bar</string>
+    <string name="color">Color</string>
+    <string name="blur_and_glass_effects">Blur and glass effects</string>
+    <string name="blur_content_behind_top_bar">Blur content behind top bar</string>
+    <string name="black_background">Black background</string>
+    <string name="palette_style">Palette Style</string>
 </resources>

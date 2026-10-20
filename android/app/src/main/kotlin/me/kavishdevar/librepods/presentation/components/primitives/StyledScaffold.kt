@@ -77,15 +77,13 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.zIndex
-import com.kyant.backdrop.backdrops.LayerBackdrop
-import com.kyant.backdrop.backdrops.layerBackdrop
-import com.kyant.backdrop.backdrops.rememberLayerBackdrop
-import dev.chrisbanes.haze.HazeTint
-import dev.chrisbanes.haze.hazeEffect
+import dev.chrisbanes.haze.HazeInput
+import dev.chrisbanes.haze.blur.hazeBlur
 import dev.chrisbanes.haze.hazeSource
 import dev.chrisbanes.haze.rememberHazeState
-import me.kavishdevar.librepods.presentation.design.DesignSystem
-import me.kavishdevar.librepods.presentation.design.LocalDesignSystem
+import me.kavishdevar.librepods.data.app.ColorStyle
+import me.kavishdevar.librepods.data.app.DesignSystem
+import me.kavishdevar.librepods.presentation.design.LocalDesign
 import me.kavishdevar.librepods.presentation.icons.LocalIcons
 import me.kavishdevar.librepods.presentation.navigation.LocalIsCurrentEntry
 import me.kavishdevar.librepods.presentation.navigation.LocalSharedTransitionScope
@@ -97,16 +95,18 @@ fun StyledScaffold(
     visible: Boolean = true,
     title: String,
     navigateBack: (() -> Unit)?,
-    actionButtons: List<@Composable (backdrop: LayerBackdrop) -> Unit> = emptyList(),
+    actionButtons: List<@Composable (hazeInput: HazeInput) -> Unit> = emptyList(),
     snackbarHostState: SnackbarHostState = remember { SnackbarHostState() },
     content: @Composable (topPadding: Dp, bottomPadding: Dp) -> Unit
 ) {
-    val hazeState = rememberHazeState(blurEnabled = true)
+    val design = LocalDesign.current
 
-    when (LocalDesignSystem.current) {
+    val hazeState = rememberHazeState()
+
+    when (design.system) {
         DesignSystem.Material -> {
             Scaffold(
-                containerColor = MaterialTheme.colorScheme.surfaceContainer,
+                containerColor = if (design.colorStyle == ColorStyle.Custom) MaterialTheme.colorScheme.surface else MaterialTheme.colorScheme.surfaceContainer,
                 snackbarHost = { SnackbarHost(snackbarHostState) },
                 topBar = {
                     AnimatedVisibility(
@@ -152,11 +152,14 @@ fun StyledScaffold(
                             },
                             actions = {
                                 actionButtons.forEach { actionButton ->
-                                    actionButton(rememberLayerBackdrop())
+                                    actionButton(HazeInput.Sources(hazeState))
                                 }
                                 Spacer(modifier = Modifier.width(12.dp))
                             },
-                            colors = TopAppBarDefaults.topAppBarColors(containerColor = MaterialTheme.colorScheme.surfaceContainer)
+                            modifier = if (design.blurTopBarInMaterial) Modifier.hazeBlur(
+                                input = HazeInput.Sources(hazeState),
+                            ) else Modifier,
+                            colors = TopAppBarDefaults.topAppBarColors().copy(containerColor = if (design.blurTopBarInMaterial) Color.Transparent else if (design.colorStyle == ColorStyle.Custom) MaterialTheme.colorScheme.surface else MaterialTheme.colorScheme.surfaceContainer)
                         )
                     }
                 },
@@ -180,7 +183,7 @@ fun StyledScaffold(
         }
         DesignSystem.Apple -> {
             Scaffold(
-                containerColor = MaterialTheme.colorScheme.surfaceContainer,
+                containerColor = if (design.colorStyle == ColorStyle.Custom) MaterialTheme.colorScheme.surface else MaterialTheme.colorScheme.surfaceContainer,
                 snackbarHost = { SnackbarHost(snackbarHostState) },
                 modifier = Modifier
                     .then(
@@ -203,9 +206,6 @@ fun StyledScaffold(
                         .clip(RoundedCornerShape(52.dp))
                         .padding(start = startPadding, end = endPadding)
                 ) {
-                    val backdrop = rememberLayerBackdrop()
-                    val bgColor = MaterialTheme.colorScheme.surfaceContainer
-
                     val density = LocalDensity.current
                     val screenWidthPx = with(density) {
                         LocalWindowInfo.current.containerDpSize.width.toPx()
@@ -235,7 +235,7 @@ fun StyledScaffold(
                                     zIndexInOverlay = 1f,
                                     renderInOverlay = { transitionProgress != 0f }
                                 )
-                                .layerBackdrop(backdrop)
+                                .hazeSource(hazeState)
                         )
                     }
 
@@ -294,13 +294,13 @@ fun StyledScaffold(
                             ) {
                                 StyledIconButton(
                                     onClick = { navigateBack?.invoke() },
-                                    backdrop = backdrop // i know, this doesn't capture what's actually beneath it. but it's going to matter just in the transition.
+                                    hazeInput = HazeInput.Sources(hazeState)
                                 ) {
                                     Icon(
                                         imageVector = LocalIcons.current.ArrowBack,
                                         contentDescription = "Back",
                                         modifier = Modifier.size(16.dp),
-                                        tint = MaterialTheme.colorScheme.onBackground
+                                        tint = MaterialTheme.colorScheme.onBackground,
                                     )
                                 }
                             }
@@ -322,18 +322,12 @@ fun StyledScaffold(
                             .height(64.dp + topPadding)
                             .fillMaxWidth()
                     ){
-                        val scrimColor = MaterialTheme.colorScheme.scrim
-
                         Box(
-                            modifier = Modifier.hazeEffect(
-                                state = hazeState,
-                            ) {
-                                backgroundColor = bgColor
-                                tints = listOf(
-                                    HazeTint(scrimColor)
+                            modifier = Modifier
+                                .hazeSource(state = hazeState, zIndex = 1f, key = "titleBar")
+                                .hazeBlur(
+                                    input = HazeInput.Sources(state = hazeState)
                                 )
-                                blurRadius = 6.dp
-                            }
                         ) {
 
                             Column(modifier = Modifier.fillMaxSize()) {
@@ -382,7 +376,7 @@ fun StyledScaffold(
                     ) {
                         Row{
                             actionButtons.forEach { actionButton ->
-                                actionButton(backdrop)
+                                actionButton(HazeInput.Sources(hazeState))
                             }
                         }
                     }

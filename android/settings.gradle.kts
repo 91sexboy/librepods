@@ -23,3 +23,4 @@ dependencyResolutionManagement {
 rootProject.name = "LibrePods"
 include(":app")
 include(":core")
+include(":privileged")

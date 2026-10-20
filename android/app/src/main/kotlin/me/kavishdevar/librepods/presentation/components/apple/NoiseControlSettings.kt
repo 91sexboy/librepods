@@ -91,14 +91,16 @@ import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
 import me.kavishdevar.librepods.R
+import me.kavishdevar.librepods.core.devices.NoiseControlMode
+import me.kavishdevar.librepods.data.app.ColorStyle
+import me.kavishdevar.librepods.data.app.Design
+import me.kavishdevar.librepods.data.app.DesignSystem
 import me.kavishdevar.librepods.data.app.FontFamilyOption
 import me.kavishdevar.librepods.data.app.FontSettings
-import me.kavishdevar.librepods.core.devices.NoiseControlMode
 import me.kavishdevar.librepods.presentation.components.primitives.StyledButton
 import me.kavishdevar.librepods.presentation.components.primitives.StyledSlider
-import me.kavishdevar.librepods.presentation.design.DesignSystem
 import me.kavishdevar.librepods.presentation.design.LibrePodsTheme
-import me.kavishdevar.librepods.presentation.design.LocalDesignSystem
+import me.kavishdevar.librepods.presentation.design.LocalDesign
 import me.kavishdevar.librepods.presentation.icons.LocalIcons
 import me.kavishdevar.librepods.presentation.utils.LocalDebugMode
 import kotlin.math.abs
@@ -116,7 +118,9 @@ fun NoiseControlSettings(
     onAdaptiveStrengthChanged: (Int) -> Unit,
     showLabels: Boolean = true
 ) {
-    when (LocalDesignSystem.current) {
+    val design = LocalDesign.current
+
+    when (design.system) {
         DesignSystem.Material -> {
             val options = buildList {
                 if (showOffListeningMode) {
@@ -187,14 +191,14 @@ fun NoiseControlSettings(
                                     options.lastIndex -> ButtonGroupDefaults.connectedTrailingButtonShapes()
                                     else -> ButtonGroupDefaults.connectedMiddleButtonShapes()
                                 },
-                                colors = ToggleButtonDefaults.colors(containerColor = if (showLabels) MaterialTheme.colorScheme.surfaceContainerHigh else MaterialTheme.colorScheme.secondaryContainer),
+                                colors = ToggleButtonDefaults.colors(containerColor = if (showLabels) MaterialTheme.colorScheme.surfaceContainerHigh else MaterialTheme.colorScheme.surfaceContainerLow),
                                 modifier = Modifier.fillMaxWidth()
                             ) {
                                 Icon(
                                     bitmap = ImageBitmap.imageResource(iconRes),
                                     contentDescription = null,
                                     modifier = Modifier.size(42.dp),
-                                    tint = if (selectedMode == mode) MaterialTheme.colorScheme.onPrimary else if (showLabels) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.onSecondaryContainer
+                                    tint = if (selectedMode == mode) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurface
                                 )
                             }
 
@@ -216,8 +220,7 @@ fun NoiseControlSettings(
         }
 
         DesignSystem.Apple -> {
-            val isDarkTheme = MaterialTheme.colorScheme.surface.luminance() < 0.5f
-            val backgroundColor = if (isDarkTheme) (if (showLabels) Color(0xFF1C1C1E) else MaterialTheme.colorScheme.surfaceContainerLow) else Color(0xFFE3E3E8)
+            val backgroundColor = if (showLabels) MaterialTheme.colorScheme.surfaceContainerHigh else MaterialTheme.colorScheme.surfaceContainerLow
 
             val density = LocalDensity.current
 
@@ -487,7 +490,7 @@ fun NoiseControlSettings(
                                 modifier = Modifier
                                     .fillMaxHeight()
                                     .background(
-                                        if (noiseControlModeValue == 4) MaterialTheme.colorScheme.surfaceDim else Color.Transparent,
+                                        if (noiseControlModeValue == 4) MaterialTheme.colorScheme.surfaceBright else Color.Transparent,
                                         RoundedCornerShape(percent = 100)
                                     )
 
@@ -579,7 +582,7 @@ fun NoiseControlSettings(
                             modifier = Modifier
                                 .background(
                                     @Suppress("KotlinConstantConditions")
-                                    if (showLabels) MaterialTheme.colorScheme.surfaceContainer
+                                    if (showLabels) if (design.colorStyle == ColorStyle.Custom) MaterialTheme.colorScheme.surface else MaterialTheme.colorScheme.surfaceContainer
                                     else MaterialTheme.colorScheme.surfaceContainerHigh
                                 ), // else backdrop doesn't work
                         ) {
@@ -759,7 +762,9 @@ fun NoiseControlSettingsPreview() {
     ) {
         LibrePodsTheme(
             darkTheme = true,
-            designSystem = DesignSystem.Apple,
+            design = Design(
+                system = DesignSystem.Apple,
+            ),
             fontSettings = FontSettings(fontFamilyOption = FontFamilyOption.Inter)
         ) {
             Box(
@@ -772,6 +777,7 @@ fun NoiseControlSettingsPreview() {
                     modifier = Modifier.align(Alignment.Center)
                 ){
                     NoiseControlSettings(
+                        modifier = Modifier.height(120.dp),
                         showOffListeningMode = showOffListeningMode.value,
                         noiseControlModeValue = mode.intValue,
                         onNoiseControlModeChanged = { mode.intValue = it },

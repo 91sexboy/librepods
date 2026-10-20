@@ -41,7 +41,8 @@ import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.launch
 import me.kavishdevar.librepods.R
-import me.kavishdevar.librepods.presentation.design.DesignSystem
+import me.kavishdevar.librepods.data.app.Design
+import me.kavishdevar.librepods.data.app.DesignSystem
 import me.kavishdevar.librepods.presentation.design.LibrePodsTheme
 import me.kavishdevar.librepods.utils.XposedState
 import me.kavishdevar.librepods.utils.bypassDeviceCheck
@@ -79,7 +80,9 @@ fun OnboardingScreen(
     }
 
     LibrePodsTheme(
-        designSystem = DesignSystem.Material
+        design = Design(
+            system = DesignSystem.Material
+        )
     ) {
         Column(
             modifier = Modifier

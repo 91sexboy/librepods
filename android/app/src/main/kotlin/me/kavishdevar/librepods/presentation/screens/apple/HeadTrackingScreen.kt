@@ -76,19 +76,19 @@ import kotlinx.coroutines.flow.debounce
 import kotlinx.coroutines.launch
 import me.kavishdevar.librepods.R
 import me.kavishdevar.librepods.core.data.apple.BuddyState
+import me.kavishdevar.librepods.core.utils.HeadTracking
+import me.kavishdevar.librepods.data.app.DesignSystem
 import me.kavishdevar.librepods.presentation.components.primitives.MaterialButtonStyle
 import me.kavishdevar.librepods.presentation.components.primitives.StyledButton
 import me.kavishdevar.librepods.presentation.components.primitives.StyledIconButton
 import me.kavishdevar.librepods.presentation.components.primitives.StyledScaffold
 import me.kavishdevar.librepods.presentation.components.primitives.StyledSlider
 import me.kavishdevar.librepods.presentation.components.primitives.StyledToggle
+import me.kavishdevar.librepods.presentation.design.LocalDesign
 import me.kavishdevar.librepods.presentation.icons.LocalIcons
 import me.kavishdevar.librepods.presentation.icons.MaterialIcons
-import me.kavishdevar.librepods.presentation.design.DesignSystem
-import me.kavishdevar.librepods.presentation.design.LocalDesignSystem
 import me.kavishdevar.librepods.presentation.utils.LocalDebugMode
 import me.kavishdevar.librepods.presentation.viewmodel.AppleViewModel
-import me.kavishdevar.librepods.core.utils.HeadTracking
 import kotlin.math.abs
 import kotlin.time.Duration.Companion.milliseconds
 import kotlin.time.Duration.Companion.seconds
@@ -99,6 +99,8 @@ fun HeadTrackingScreen(
     navigateBack: (() -> Unit)?,
     navigateToPurchase: () -> Unit
 ) {
+    val design = LocalDesign.current
+
     val uiState by viewModel.uiState.collectAsState()
 
     val state = uiState.state
@@ -124,8 +126,8 @@ fun HeadTrackingScreen(
         title = stringResource(R.string.head_gestures),
         navigateBack = navigateBack,
         actionButtons = listOf(
-            { scaffoldBackdrop ->
-                if (LocalDesignSystem.current == DesignSystem.Material) {
+            { hazeInput ->
+                if (design.system == DesignSystem.Material) {
                     FilledTonalIconToggleButton(
                         checked = state.headTrackingState == BuddyState.ACTIVE,
                         onCheckedChange = { if (it) viewModel.startHeadTracking() else viewModel.stopHeadTracking() },
@@ -144,7 +146,7 @@ fun HeadTrackingScreen(
                 } else {
                     StyledIconButton(
                         onClick = if (state.headTrackingState != BuddyState.ACTIVE) viewModel::startHeadTracking else viewModel::stopHeadTracking,
-                        backdrop = scaffoldBackdrop,
+                        hazeInput = hazeInput,
                         enabled = state.headTrackingState != BuddyState.WAITING
                     ) {
                         Icon(

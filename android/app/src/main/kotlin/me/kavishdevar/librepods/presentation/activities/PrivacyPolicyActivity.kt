@@ -25,10 +25,11 @@ import androidx.compose.ui.unit.dp
 import androidx.core.view.WindowCompat
 import me.kavishdevar.librepods.LibrePodsApplication
 import me.kavishdevar.librepods.R
+import me.kavishdevar.librepods.data.app.Design
 import me.kavishdevar.librepods.presentation.components.primitives.StyledScaffold
 import me.kavishdevar.librepods.presentation.screens.onboarding.PrivacyPolicyPage
 import me.kavishdevar.librepods.presentation.design.LibrePodsTheme
-import me.kavishdevar.librepods.presentation.design.NightTheme
+import me.kavishdevar.librepods.data.app.NightTheme
 
 class PrivacyPolicyActivity : ComponentActivity() {
     val appDataRepository by lazy { (application as LibrePodsApplication).appDataRepository }
@@ -55,7 +56,12 @@ class PrivacyPolicyActivity : ComponentActivity() {
             }
 
             LibrePodsTheme(
-                designSystem = settings.designSystem,
+                design = Design(
+                    system = settings.designSystem,
+                    iconStyle = settings.iconStyle
+                ),
+                accessibilitySettings = settings.accessibilitySettings,
+                fontSettings = settings.fontSettings,
                 darkTheme = darkTheme
             ) {
 //                For demo screenshots

@@ -16,8 +16,6 @@
     along with this program.  If not, see <https://www.gnu.org/licenses/>.
 */
 
-@file:OptIn(ExperimentalEncodingApi::class)
-
 package me.kavishdevar.librepods.presentation.components.apple
 
 import androidx.compose.runtime.Composable
@@ -26,13 +24,10 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.res.stringResource
-import dev.chrisbanes.haze.materials.ExperimentalHazeMaterialsApi
 import me.kavishdevar.librepods.R
 import me.kavishdevar.librepods.presentation.components.primitives.StyledList
 import me.kavishdevar.librepods.presentation.components.primitives.styledListItem
-import kotlin.io.encoding.ExperimentalEncodingApi
 
-@ExperimentalHazeMaterialsApi
 @Composable
 fun CallControlSettings(
     flipped: Boolean,

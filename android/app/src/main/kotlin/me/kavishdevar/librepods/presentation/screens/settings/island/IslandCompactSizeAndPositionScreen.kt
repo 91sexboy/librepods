@@ -25,6 +25,8 @@ import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import me.kavishdevar.librepods.LibrePodsApplication
 import me.kavishdevar.librepods.R
+import me.kavishdevar.librepods.data.app.Design
+import me.kavishdevar.librepods.data.app.DesignSystem
 import me.kavishdevar.librepods.data.app.FontFamilyOption
 import me.kavishdevar.librepods.data.app.FontSettings
 import me.kavishdevar.librepods.data.app.IslandSettings
@@ -32,7 +34,6 @@ import me.kavishdevar.librepods.presentation.components.primitives.MaterialButto
 import me.kavishdevar.librepods.presentation.components.primitives.StyledButton
 import me.kavishdevar.librepods.presentation.components.primitives.StyledScaffold
 import me.kavishdevar.librepods.presentation.components.primitives.StyledSlider
-import me.kavishdevar.librepods.presentation.design.DesignSystem
 import me.kavishdevar.librepods.presentation.design.LibrePodsTheme
 import me.kavishdevar.librepods.presentation.overlays.IslandState
 import me.kavishdevar.librepods.presentation.utils.LocalDebugMode
@@ -239,7 +240,9 @@ fun IslandCompactSizeAndPositionScreenPreview() {
     LibrePodsTheme(
 //        designSystem = DesignSystem.Apple,
 //        fontSettings = FontSettings(fontFamilyOption = FontFamilyOption.Inter),
-        designSystem = DesignSystem.Material,
+        design = Design(
+            system = DesignSystem.Material
+        ),
         fontSettings = FontSettings(fontFamilyOption = FontFamilyOption.RobotoFlexExpressive),
         darkTheme = true
     ) {

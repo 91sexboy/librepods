@@ -51,8 +51,8 @@ import com.google.accompanist.permissions.rememberPermissionState
 import me.kavishdevar.librepods.R
 import me.kavishdevar.librepods.presentation.components.primitives.StyledList
 import me.kavishdevar.librepods.presentation.components.primitives.StyledListItem
-import me.kavishdevar.librepods.presentation.components.primitives.styledListItem
 import me.kavishdevar.librepods.presentation.components.primitives.StyledListItemOrientation
+import me.kavishdevar.librepods.presentation.components.primitives.styledListItem
 import me.kavishdevar.librepods.presentation.icons.MaterialIcons
 
 @Composable
@@ -149,7 +149,10 @@ fun PermissionsPage(
                 .verticalScroll(scrollState),
             verticalArrangement = Arrangement.spacedBy(12.dp)
         ) {
-            StyledList(title = stringResource(R.string.required_permissions)) {
+            StyledList(
+                title = stringResource(R.string.required_permissions),
+                surfaceColor = MaterialTheme.colorScheme.surfaceContainerLow
+            ) {
                 val animatedBluetoothIconColor by animateColorAsState(if (bluetoothPermissionsState.allPermissionsGranted) MaterialTheme.colorScheme.onPrimaryContainer else MaterialTheme.colorScheme.onSurfaceVariant)
                 val animatedBluetoothContainerColor by animateColorAsState(
                     if (bluetoothPermissionsState.allPermissionsGranted) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceVariant
@@ -186,7 +189,11 @@ fun PermissionsPage(
                     },
                 )
             }
-            StyledList(title = stringResource(R.string.optional_permissions)) {
+
+            StyledList(
+                title = stringResource(R.string.optional_permissions),
+                surfaceColor = MaterialTheme.colorScheme.surfaceContainerLow
+            ) {
                 val animatedNotificationsIconColor by animateColorAsState(
                     if (notificationPermissionState.status.isGranted) MaterialTheme.colorScheme.onPrimaryContainer else MaterialTheme.colorScheme.onSurfaceVariant
                 )

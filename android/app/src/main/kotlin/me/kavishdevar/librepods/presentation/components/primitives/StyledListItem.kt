@@ -63,8 +63,9 @@ import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.launch
-import me.kavishdevar.librepods.presentation.design.DesignSystem
-import me.kavishdevar.librepods.presentation.design.LocalDesignSystem
+import me.kavishdevar.librepods.data.app.ColorStyle
+import me.kavishdevar.librepods.data.app.DesignSystem
+import me.kavishdevar.librepods.presentation.design.LocalDesign
 import me.kavishdevar.librepods.presentation.design.sectionHeader
 import me.kavishdevar.librepods.presentation.icons.LocalIcons
 import me.kavishdevar.librepods.presentation.icons.richText
@@ -100,12 +101,13 @@ fun StyledListItem(
         )
     }
 ) {
-    val m3eEnabled = LocalDesignSystem.current == DesignSystem.Material
+    val design = LocalDesign.current
+    val m3eEnabled = design.system == DesignSystem.Material
     Column {
         title?.let {
             Box(
                 modifier = Modifier
-                    .background(if (m3eEnabled) Color.Transparent else MaterialTheme.colorScheme.surfaceContainer)
+                    .background(if (m3eEnabled) Color.Transparent else if (design.colorStyle == ColorStyle.Custom) MaterialTheme.colorScheme.surface else MaterialTheme.colorScheme.surfaceContainer)
                     .padding(horizontal = 16.dp)
                     .padding(top = 4.dp, bottom = if (m3eEnabled) 8.dp else 4.dp)
             ) {
@@ -121,7 +123,7 @@ fun StyledListItem(
                 .fillMaxWidth()
                 .heightIn(min = 48.dp)
                 .background(
-                    if (m3eEnabled) Color.Transparent else MaterialTheme.colorScheme.surfaceContainer,
+                    if (m3eEnabled) Color.Transparent else if (design.colorStyle == ColorStyle.Custom) MaterialTheme.colorScheme.surface else MaterialTheme.colorScheme.surfaceContainer,
                     RoundedCornerShape(if (m3eEnabled) 16.dp else 28.dp)
                 )
                 .clip(RoundedCornerShape(if (m3eEnabled) 16.dp else 28.dp))
@@ -173,12 +175,13 @@ fun StyledListItem(
         )
     }
 ) {
-    val m3eEnabled = LocalDesignSystem.current == DesignSystem.Material
+    val design = LocalDesign.current
+    val m3eEnabled = design.system == DesignSystem.Material
     Column {
         title?.let {
             Box(
                 modifier = Modifier
-                    .background(if (m3eEnabled) Color.Transparent else MaterialTheme.colorScheme.surfaceContainer)
+                    .background(if (m3eEnabled) Color.Transparent else if (design.colorStyle == ColorStyle.Custom) MaterialTheme.colorScheme.surface else MaterialTheme.colorScheme.surfaceContainer)
                     .padding(horizontal = 16.dp)
                     .padding(top = 4.dp, bottom = if (m3eEnabled) 8.dp else 4.dp)
             ) {
@@ -194,7 +197,7 @@ fun StyledListItem(
                 .fillMaxWidth()
                 .heightIn(min = 48.dp)
                 .background(
-                    if (m3eEnabled) Color.Transparent else MaterialTheme.colorScheme.surfaceContainer,
+                    if (m3eEnabled) Color.Transparent else if (design.colorStyle == ColorStyle.Custom) MaterialTheme.colorScheme.surface else MaterialTheme.colorScheme.surfaceContainer,
                     RoundedCornerShape(if (m3eEnabled) 16.dp else 28.dp)
                 )
                 .clip(RoundedCornerShape(if (m3eEnabled) 16.dp else 28.dp))
@@ -202,7 +205,7 @@ fun StyledListItem(
             StyledListItemContent(
                 onClick = onClick,
                 content = {
-                    when (LocalDesignSystem.current) {
+                    when (design.system) {
                         DesignSystem.Apple -> {
                             Text(
                                 text = contentText,
@@ -264,12 +267,13 @@ fun StyledListItem(
         )
     }
 ) {
-    val m3eEnabled = LocalDesignSystem.current == DesignSystem.Material
+    val design = LocalDesign.current
+    val m3eEnabled = design.system == DesignSystem.Material
     Column {
         title?.let {
             Box(
                 modifier = Modifier
-                    .background(if (m3eEnabled) Color.Transparent else MaterialTheme.colorScheme.surfaceContainer)
+                    .background(if (m3eEnabled) Color.Transparent else if (design.colorStyle == ColorStyle.Custom) MaterialTheme.colorScheme.surface else MaterialTheme.colorScheme.surfaceContainer)
                     .padding(horizontal = 16.dp)
                     .padding(top = 4.dp, bottom = if (m3eEnabled) 8.dp else 4.dp)
             ) {
@@ -285,7 +289,7 @@ fun StyledListItem(
                 .fillMaxWidth()
                 .heightIn(min = 48.dp)
                 .background(
-                    if (m3eEnabled) Color.Transparent else MaterialTheme.colorScheme.surfaceContainer,
+                    if (m3eEnabled) Color.Transparent else if (design.colorStyle == ColorStyle.Custom) MaterialTheme.colorScheme.surface else MaterialTheme.colorScheme.surfaceContainer,
                     RoundedCornerShape(if (m3eEnabled) 16.dp else 28.dp)
                 )
                 .clip(RoundedCornerShape(if (m3eEnabled) 16.dp else 28.dp))
@@ -293,7 +297,7 @@ fun StyledListItem(
             StyledListItemContent(
                 onClick = onClick,
                 content = {
-                    when (LocalDesignSystem.current) {
+                    when (design.system) {
                         DesignSystem.Apple -> {
                             Text(
                                 text = contentText,
@@ -355,12 +359,13 @@ fun StyledListItem(
         )
     }
 ) {
-    val m3eEnabled = LocalDesignSystem.current == DesignSystem.Material
+    val design = LocalDesign.current
+    val m3eEnabled = design.system == DesignSystem.Material
     Column {
         title?.let {
             Box(
                 modifier = Modifier
-                    .background(if (m3eEnabled) Color.Transparent else MaterialTheme.colorScheme.surfaceContainer)
+                    .background(if (m3eEnabled) Color.Transparent else if (design.colorStyle == ColorStyle.Custom) MaterialTheme.colorScheme.surface else MaterialTheme.colorScheme.surfaceContainer)
                     .padding(horizontal = 16.dp)
                     .padding(top = 4.dp, bottom = if (m3eEnabled) 8.dp else 4.dp)
             ) {
@@ -376,7 +381,7 @@ fun StyledListItem(
                 .fillMaxWidth()
                 .heightIn(min = 48.dp)
                 .background(
-                    if (m3eEnabled) Color.Transparent else MaterialTheme.colorScheme.surfaceContainer,
+                    if (m3eEnabled) Color.Transparent else if (design.colorStyle == ColorStyle.Custom) MaterialTheme.colorScheme.surface else MaterialTheme.colorScheme.surfaceContainer,
                     RoundedCornerShape(if (m3eEnabled) 16.dp else 28.dp)
                 )
                 .clip(RoundedCornerShape(if (m3eEnabled) 16.dp else 28.dp))
@@ -384,7 +389,7 @@ fun StyledListItem(
             StyledListItemContent(
                 onClick = onClick,
                 content = {
-                    when (LocalDesignSystem.current) {
+                    when (design.system) {
                         DesignSystem.Apple -> {
                             Text(
                                 text = contentText,
@@ -401,11 +406,11 @@ fun StyledListItem(
                         }
                     }
                 },
-                supportingContent = if (supportingText != null && (LocalDesignSystem.current == DesignSystem.Material || orientation == StyledListItemOrientation.Horizontal)) {
+                supportingContent = if (supportingText != null && (design.system == DesignSystem.Material || orientation == StyledListItemOrientation.Horizontal)) {
                     @Composable {
                         Text(
                             text = supportingText,
-                            style = if (LocalDesignSystem.current == DesignSystem.Apple && orientation == StyledListItemOrientation.Horizontal) MaterialTheme.typography.bodyMedium else MaterialTheme.typography.bodySmall,
+                            style = if (design.system == DesignSystem.Apple && orientation == StyledListItemOrientation.Horizontal) MaterialTheme.typography.bodyMedium else MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurface.copy(0.7f),
                         )
                     }
@@ -420,10 +425,10 @@ fun StyledListItem(
                 colors = colors
             )
         }
-        if (supportingText != null && LocalDesignSystem.current == DesignSystem.Apple && orientation == StyledListItemOrientation.Vertical) {
+        if (supportingText != null && design.system == DesignSystem.Apple && orientation == StyledListItemOrientation.Vertical) {
             Box(
                 modifier = Modifier
-                    .background(if (m3eEnabled) Color.Transparent else MaterialTheme.colorScheme.surfaceContainer)
+                    .background(if (m3eEnabled) Color.Transparent else if (design.colorStyle == ColorStyle.Custom) MaterialTheme.colorScheme.surface else MaterialTheme.colorScheme.surfaceContainer)
                     .padding(horizontal = 16.dp)
                     .padding(top = 4.dp, bottom = if (m3eEnabled) 8.dp else 4.dp)
             ) {
@@ -464,11 +469,12 @@ fun StyledListScope.styledListItem(
         )
     }
 ) {
+    val design = LocalDesign.current
     item { index, count ->
         StyledListItemContent(
             onClick = onClick,
             content = {
-                when (LocalDesignSystem.current) {
+                when (design.system) {
                     DesignSystem.Apple -> {
                         Text(
                             text = contentText,
@@ -572,11 +578,12 @@ fun StyledListScope.styledListItem(
         )
     }
 ) {
+    val design = LocalDesign.current
     item { index, count ->
         StyledListItemContent(
             onClick = onClick,
             content = {
-                when (LocalDesignSystem.current) {
+                when (design.system) {
                     DesignSystem.Apple -> {
                         Text(
                             text = contentText,
@@ -635,11 +642,12 @@ fun StyledListScope.styledListItem(
         )
     }
 ) {
+    val design = LocalDesign.current
     item { index, count ->
         StyledListItemContent(
             onClick = onClick,
             content = {
-                when (LocalDesignSystem.current) {
+                when (design.system) {
                     DesignSystem.Apple -> {
                         Text(
                             text = contentText,
@@ -660,8 +668,8 @@ fun StyledListScope.styledListItem(
                    @Composable {
                         Text(
                             text = supportingText,
-                            style = if (LocalDesignSystem.current == DesignSystem.Apple && orientation == StyledListItemOrientation.Horizontal) MaterialTheme.typography.bodyMedium else MaterialTheme.typography.bodySmall,
-                            color = if (LocalDesignSystem.current == DesignSystem.Material) LocalContentColor.current.copy(0.7f) else MaterialTheme.colorScheme.onSurface.copy(0.7f), // TODO: move to color scheme
+                            style = if (design.system == DesignSystem.Apple && orientation == StyledListItemOrientation.Horizontal) MaterialTheme.typography.bodyMedium else MaterialTheme.typography.bodySmall,
+                            color = if (design.system == DesignSystem.Material) LocalContentColor.current.copy(0.7f) else MaterialTheme.colorScheme.onSurface.copy(0.7f), // TODO: move to color scheme
                         )
                     }
                 } else null,
@@ -715,10 +723,12 @@ private fun StyledListItemContent(
         )
     }
 ) {
+    val design = LocalDesign.current
+
     val haptics = LocalHapticFeedback.current
     val scope = rememberCoroutineScope()
 
-    when (LocalDesignSystem.current) {
+    when (design.system) {
         DesignSystem.Apple -> {
             val surfaceColor = colors.containerColor
             val pressedColor = MaterialTheme.colorScheme.surfaceContainerLow

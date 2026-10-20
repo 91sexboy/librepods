@@ -31,6 +31,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.ComposeView
 import androidx.compose.ui.platform.ViewCompositionStrategy
 import androidx.lifecycle.Lifecycle
@@ -44,9 +45,10 @@ import androidx.savedstate.SavedStateRegistry
 import androidx.savedstate.SavedStateRegistryController
 import androidx.savedstate.SavedStateRegistryOwner
 import androidx.savedstate.setViewTreeSavedStateRegistryOwner
+import me.kavishdevar.librepods.data.app.Design
 import me.kavishdevar.librepods.database.app.AppSettingsEntity
 import me.kavishdevar.librepods.presentation.design.LibrePodsTheme
-import me.kavishdevar.librepods.presentation.design.NightTheme
+import me.kavishdevar.librepods.data.app.NightTheme
 import me.kavishdevar.librepods.services.LibrePodsAccessibilityService
 import kotlin.math.roundToInt
 
@@ -292,8 +294,12 @@ class IslandWindow(
                 }
 
                 LibrePodsTheme(
-                    designSystem = currentAppSettings.designSystem,
-                    overrideMaterialColor = currentAppSettings.overrideMaterialColor,
+                    design = Design(
+                        system = currentAppSettings.designSystem,
+                        colorStyle = currentAppSettings.colorStyle,
+                        overrideMaterialColor = currentAppSettings.overrideMaterialColor,
+                        contrastLevel = currentAppSettings.contrastLevel
+                    ),
                     accessibilitySettings = currentAppSettings.accessibilitySettings,
                     fontSettings = currentAppSettings.fontSettings,
                     darkTheme = darkTheme

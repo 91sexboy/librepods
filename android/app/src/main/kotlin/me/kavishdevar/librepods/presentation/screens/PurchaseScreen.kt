@@ -69,7 +69,6 @@ fun PurchaseScreen(
             modifier = Modifier
                 .layerBackdrop(backdrop)
                 .verticalScroll(scrollState)
-                .background(MaterialTheme.colorScheme.surfaceContainer)
                 .padding(horizontal = 16.dp)
         ) {
             Spacer(modifier = Modifier.height(topPadding))

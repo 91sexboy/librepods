@@ -42,7 +42,8 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.em
 import androidx.compose.ui.unit.sp
 import androidx.core.graphics.toColorInt
-import me.kavishdevar.librepods.presentation.design.DesignSystem
+import me.kavishdevar.librepods.data.app.Design
+import me.kavishdevar.librepods.data.app.DesignSystem
 import me.kavishdevar.librepods.presentation.design.LibrePodsTheme
 
 data class RichText(
@@ -198,7 +199,9 @@ fun RichTextPreview() {
     val darkTheme = remember { mutableStateOf(true) }
 
     LibrePodsTheme(
-        designSystem = designSystem.value,
+        design = Design(
+            system = designSystem.value,
+        ),
         darkTheme = darkTheme.value
     ) {
         val iconMap = LocalIcons.current.IconMap
@@ -209,8 +212,7 @@ fun RichTextPreview() {
         Column(
             modifier = Modifier
                 .fillMaxSize()
-                .verticalScroll(rememberScrollState())
-                .background(MaterialTheme.colorScheme.surfaceContainer),
+                .verticalScroll(rememberScrollState()),
             verticalArrangement = Arrangement.spacedBy(8.dp),
         ) {
             Spacer(modifier = Modifier.height(topPadding))
@@ -267,7 +269,9 @@ fun RichTextPreview() {
                     )
 
                     LibrePodsTheme(
-                        designSystem = DesignSystem.Material,
+                        design = Design(
+                            system = DesignSystem.Material,
+                        ),
                         darkTheme = darkTheme.value
                     ) {
                         val richText = richText(
@@ -287,7 +291,9 @@ fun RichTextPreview() {
 
 
                     LibrePodsTheme(
-                        designSystem = DesignSystem.Apple,
+                        design = Design(
+                            system = DesignSystem.Apple,
+                        ),
                         darkTheme = darkTheme.value
                     ) {
                         val richText = richText(

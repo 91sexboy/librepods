@@ -178,8 +178,6 @@ fun HearingAidAdjustmentsScreen(
         Column(
             modifier = Modifier
                 .fillMaxSize()
-                .background(MaterialTheme.colorScheme.surfaceContainer)
-                .verticalScroll(verticalScrollState)
                 .padding(horizontal = 16.dp),
             verticalArrangement = Arrangement.spacedBy(16.dp)
         ) {

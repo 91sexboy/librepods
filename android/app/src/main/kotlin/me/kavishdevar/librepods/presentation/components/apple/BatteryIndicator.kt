@@ -53,8 +53,11 @@ import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import me.kavishdevar.librepods.core.devices.BatteryStatus
-import me.kavishdevar.librepods.presentation.design.DesignSystem
+import me.kavishdevar.librepods.data.app.ColorStyle
+import me.kavishdevar.librepods.data.app.Design
+import me.kavishdevar.librepods.data.app.DesignSystem
 import me.kavishdevar.librepods.presentation.design.LibrePodsTheme
+import me.kavishdevar.librepods.presentation.design.LocalDesign
 import me.kavishdevar.librepods.presentation.icons.LocalIcons
 import me.kavishdevar.librepods.presentation.icons.richText
 import kotlin.math.cos
@@ -70,6 +73,7 @@ fun BatteryIndicator(
     previousCharging: Boolean = false,
     showLabel: Boolean = true
 ) {
+    val design = LocalDesign.current
     val isDarkTheme = MaterialTheme.colorScheme.surface.luminance() < 0.5f
     val batteryFillColor = if (status != BatteryStatus.DISCONNECTED) {
         if (batteryPercentage > 25) if (isDarkTheme) Color(0xFF2ED158) else Color(0xFF35C759)
@@ -88,7 +92,7 @@ fun BatteryIndicator(
 
     Column(
         modifier = Modifier
-            .background(MaterialTheme.colorScheme.surfaceContainer) // just for haze to work
+            .background(if (design.colorStyle == ColorStyle.Custom) MaterialTheme.colorScheme.surface else MaterialTheme.colorScheme.surfaceContainer) // just for haze to work
             .padding(4.dp)
             .visible(batteryPercentage > 0),
         horizontalAlignment = Alignment.CenterHorizontally
@@ -221,7 +225,11 @@ fun BatteryIndicator(
 @Preview(uiMode = Configuration.UI_MODE_NIGHT_YES)
 @Composable
 fun BatteryIndicatorPreview() {
-    LibrePodsTheme(designSystem = DesignSystem.Material) {
+    LibrePodsTheme(
+        design = Design(
+            system = DesignSystem.Material,
+        )
+    ) {
         BatteryIndicator(
             batteryPercentage = 20,
             status = BatteryStatus.DISCONNECTED,

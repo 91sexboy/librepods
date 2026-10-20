@@ -12,9 +12,9 @@ import kotlinx.coroutines.channels.Channel
 import me.kavishdevar.librepods.R
 import me.kavishdevar.librepods.core.bluetooth.MacAddress
 import me.kavishdevar.librepods.core.bluetooth.aacp.types.ControlCommandIdentifier
-import me.kavishdevar.librepods.data.updates.updates
 import me.kavishdevar.librepods.core.devices.AppleDevice
 import me.kavishdevar.librepods.core.devices.Device
+import me.kavishdevar.librepods.data.updates.updates
 import me.kavishdevar.librepods.presentation.screens.DeviceListScreen
 import me.kavishdevar.librepods.presentation.screens.OpenSourceLicensesScreen
 import me.kavishdevar.librepods.presentation.screens.PurchaseScreen
@@ -38,14 +38,16 @@ import me.kavishdevar.librepods.presentation.screens.apple.UpdateHearingTestRout
 import me.kavishdevar.librepods.presentation.screens.apple.VersionScreen
 import me.kavishdevar.librepods.presentation.screens.onboarding.OnboardingScreen
 import me.kavishdevar.librepods.presentation.screens.settings.AppAccessibilitySettingsRoute
-import me.kavishdevar.librepods.presentation.screens.settings.AppAppearanceSettingsRoute
 import me.kavishdevar.librepods.presentation.screens.settings.AppSettingsScreen
 import me.kavishdevar.librepods.presentation.screens.settings.BLESettingsScreenRoute
-import me.kavishdevar.librepods.presentation.screens.settings.IslandSettingsRoute
+import me.kavishdevar.librepods.presentation.screens.settings.appearance.AppAppearanceSettingsRoute
+import me.kavishdevar.librepods.presentation.screens.settings.appearance.AppColorSettingsRoute
+import me.kavishdevar.librepods.presentation.screens.settings.appearance.HazeSettingsRoute
 import me.kavishdevar.librepods.presentation.screens.settings.island.IslandCompactCustomizeRoute
 import me.kavishdevar.librepods.presentation.screens.settings.island.IslandCompactSizeAndPositionRoute
 import me.kavishdevar.librepods.presentation.screens.settings.island.IslandExpandedCustomizeRoute
 import me.kavishdevar.librepods.presentation.screens.settings.island.IslandExpandedSizeAndPositionRoute
+import me.kavishdevar.librepods.presentation.screens.settings.island.IslandSettingsRoute
 import me.kavishdevar.librepods.presentation.viewmodel.AppSettingsViewModel
 import me.kavishdevar.librepods.presentation.viewmodel.AppleViewModel
 import me.kavishdevar.librepods.presentation.viewmodel.PurchaseViewModel
@@ -182,7 +184,7 @@ fun RenderScreenContent(
                 navigateToBleSettingsScreen = { navigate(Screen.BLESettings) },
                 navigateToAppAppearanceScreen = { navigate(Screen.AppAppearance) },
                 navigateToAppAccessibilityScreen = { navigate(Screen.AppAccessibilitySettings) },
-                navigateToIslandSettingsScreen = { navigate(Screen.IslandSettings) }
+                navigateToIslandSettingsScreen = { navigate(Screen.IslandSettings) },
             )
         }
 
@@ -454,7 +456,9 @@ fun RenderScreenContent(
             val appSettingsViewModel: AppSettingsViewModel = viewModel(factory = factory)
             AppAppearanceSettingsRoute(
                 viewModel = appSettingsViewModel,
-                navigateBack = navigateBack
+                navigateBack = navigateBack,
+                navigateToAppColorSettingsScreen = { navigate(Screen.AppColorSettings) },
+                navigateToHazeSettingsScreen = { navigate(Screen.HazeSettings) }
             )
         }
 
@@ -513,6 +517,28 @@ fun RenderScreenContent(
             }
             val appSettingsViewModel: AppSettingsViewModel = viewModel(factory = factory)
             IslandExpandedCustomizeRoute(
+                viewModel = appSettingsViewModel,
+                navigateBack = navigateBack
+            )
+        }
+
+        Screen.AppColorSettings -> {
+            val factory = viewModelFactory {
+                initializer { AppSettingsViewModel(appDataRepository = appDataRepository) }
+            }
+            val appSettingsViewModel: AppSettingsViewModel = viewModel(factory = factory)
+            AppColorSettingsRoute(
+                viewModel = appSettingsViewModel,
+                navigateBack = navigateBack
+            )
+        }
+
+        Screen.HazeSettings -> {
+            val factory = viewModelFactory {
+                initializer { AppSettingsViewModel(appDataRepository = appDataRepository) }
+            }
+            val appSettingsViewModel: AppSettingsViewModel = viewModel(factory = factory)
+            HazeSettingsRoute(
                 viewModel = appSettingsViewModel,
                 navigateBack = navigateBack
             )

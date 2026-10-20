@@ -1,16 +1,17 @@
 package me.kavishdevar.librepods.database
 
 import androidx.room3.ColumnTypeConverter
+import com.materialkolor.PaletteStyle
 import kotlinx.serialization.cbor.Cbor
 import kotlinx.serialization.decodeFromByteArray
 import kotlinx.serialization.encodeToByteArray
 import me.kavishdevar.librepods.core.bluetooth.MacAddress
-import me.kavishdevar.librepods.data.app.AccessibilitySettings
-import me.kavishdevar.librepods.data.app.FontSettings
-import me.kavishdevar.librepods.data.app.IslandSettings
 import me.kavishdevar.librepods.core.data.apple.AppleCache
 import me.kavishdevar.librepods.core.devices.AppleMetadata
 import me.kavishdevar.librepods.core.devices.AppleSettings
+import me.kavishdevar.librepods.data.app.AccessibilitySettings
+import me.kavishdevar.librepods.data.app.FontSettings
+import me.kavishdevar.librepods.data.app.IslandSettings
 import kotlin.time.Instant
 
 object Converters {
@@ -79,4 +80,12 @@ object Converters {
     @ColumnTypeConverter
     fun bytesToIslandSettings(bytes: ByteArray): IslandSettings =
         cbor.decodeFromByteArray(bytes)
+
+    @ColumnTypeConverter
+    fun paletteStyleToString(style: PaletteStyle): String =
+        style.name
+
+    @ColumnTypeConverter
+    fun stringToPaletteStyle(name: String): PaletteStyle =
+        PaletteStyle.parse(name)
 }

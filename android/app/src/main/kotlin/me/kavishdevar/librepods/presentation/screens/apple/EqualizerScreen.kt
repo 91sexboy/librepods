@@ -77,12 +77,15 @@ import com.kyant.backdrop.effects.lens
 import com.kyant.backdrop.highlight.Highlight
 import kotlinx.coroutines.flow.debounce
 import me.kavishdevar.librepods.R
+import me.kavishdevar.librepods.data.app.ColorStyle
+import me.kavishdevar.librepods.data.app.Design
+import me.kavishdevar.librepods.data.app.DesignSystem
 import me.kavishdevar.librepods.presentation.components.primitives.StyledButton
 import me.kavishdevar.librepods.presentation.components.primitives.StyledList
 import me.kavishdevar.librepods.presentation.components.primitives.StyledScaffold
 import me.kavishdevar.librepods.presentation.components.primitives.styledListItem
-import me.kavishdevar.librepods.presentation.design.DesignSystem
 import me.kavishdevar.librepods.presentation.design.LibrePodsTheme
+import me.kavishdevar.librepods.presentation.design.LocalDesign
 import me.kavishdevar.librepods.presentation.viewmodel.AppleUiState
 import me.kavishdevar.librepods.presentation.viewmodel.AppleViewModel
 import kotlin.math.abs
@@ -233,6 +236,9 @@ fun EqualizerCard(
     val dashColor = MaterialTheme.colorScheme.onSurface.copy(0.2f)
 
     val backdrop = rememberLayerBackdrop()
+
+    val design = LocalDesign.current
+
     Column(
         modifier = Modifier
             .fillMaxWidth()
@@ -396,7 +402,7 @@ fun EqualizerCard(
                         }
                     }
 
-                    val backgroundColor = MaterialTheme.colorScheme.surfaceContainer
+                    val backgroundColor = if (design.colorStyle == ColorStyle.Custom) MaterialTheme.colorScheme.surface else MaterialTheme.colorScheme.surfaceContainer
 
                     Canvas(
                         modifier = Modifier
@@ -632,7 +638,7 @@ fun EqualizerCard(
                                     )
                                     .border(
                                         2.5.dp,
-                                        MaterialTheme.colorScheme.surfaceContainer,
+                                        if (design.colorStyle == ColorStyle.Custom) MaterialTheme.colorScheme.surface else MaterialTheme.colorScheme.surfaceContainer,
                                         CircleShape
                                     )
                                     .draggable(
@@ -684,7 +690,9 @@ fun EqualizerCard(
 @Composable
 fun EqualizerScreenPreviewApple() {
     LibrePodsTheme(
-        designSystem = DesignSystem.Apple
+        design = Design(
+            system = DesignSystem.Apple,
+        )
     ) {
         val state = remember { mutableStateOf(AppleUiState()) }
 
@@ -701,7 +709,9 @@ fun EqualizerScreenPreviewApple() {
 @Composable
 fun EqualizerScreenPreviewMaterial() {
     LibrePodsTheme(
-        designSystem = DesignSystem.Material
+        design = Design(
+            system = DesignSystem.Material
+        )
     ) {
         val state = remember { mutableStateOf(AppleUiState()) }
 

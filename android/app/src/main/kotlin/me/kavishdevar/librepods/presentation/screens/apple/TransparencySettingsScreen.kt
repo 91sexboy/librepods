@@ -39,6 +39,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Slider
 import androidx.compose.material3.SliderDefaults
 import androidx.compose.material3.Text
+import androidx.compose.material3.rememberSliderState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
@@ -60,13 +61,14 @@ import me.kavishdevar.librepods.R
 import me.kavishdevar.librepods.core.bluetooth.att.types.TransparencySettings
 import me.kavishdevar.librepods.core.bluetooth.att.types.parseTransparencySettingsResponse
 import me.kavishdevar.librepods.core.bluetooth.att.types.sendTransparencySettings
+import me.kavishdevar.librepods.data.app.ColorStyle
+import me.kavishdevar.librepods.data.app.DesignSystem
 import me.kavishdevar.librepods.presentation.components.primitives.StyledScaffold
 import me.kavishdevar.librepods.presentation.components.primitives.StyledSlider
 import me.kavishdevar.librepods.presentation.components.primitives.StyledToggle
-import me.kavishdevar.librepods.presentation.icons.LocalIcons
-import me.kavishdevar.librepods.presentation.design.DesignSystem
-import me.kavishdevar.librepods.presentation.design.LocalDesignSystem
+import me.kavishdevar.librepods.presentation.design.LocalDesign
 import me.kavishdevar.librepods.presentation.design.sectionHeader
+import me.kavishdevar.librepods.presentation.icons.LocalIcons
 import me.kavishdevar.librepods.presentation.viewmodel.AppleViewModel
 
 private const val TAG = "TransparencySettings"
@@ -77,6 +79,8 @@ fun TransparencySettingsScreen(
     viewModel: AppleViewModel,
     navigateBack: (() -> Unit)?,
 ) {
+    val design = LocalDesign.current
+
     val isDarkTheme = MaterialTheme.colorScheme.surface.luminance() < 0.5f
     val textColor = if (isDarkTheme) Color.White else Color.Black
     val verticalScrollState = rememberScrollState()
@@ -96,13 +100,13 @@ fun TransparencySettingsScreen(
         Column(
             modifier = Modifier
                 .fillMaxSize()
-                .background(MaterialTheme.colorScheme.surfaceContainer)
+                .background(if (design.colorStyle == ColorStyle.Custom) MaterialTheme.colorScheme.surface else MaterialTheme.colorScheme.surfaceContainer)
                 .verticalScroll(verticalScrollState)
                 .padding(horizontal = 16.dp),
             verticalArrangement = Arrangement.spacedBy(16.dp)
         ) {
             Spacer(modifier = Modifier.height(topPadding))
-            val backgroundColor = MaterialTheme.colorScheme.surfaceContainer
+            val backgroundColor = if (design.colorStyle == ColorStyle.Custom) MaterialTheme.colorScheme.surface else MaterialTheme.colorScheme.surfaceContainer
 
             val enabled = rememberSaveable { mutableStateOf(false) }
             val amplificationSliderValue = rememberSaveable { mutableFloatStateOf(0.5f) }
@@ -258,7 +262,7 @@ fun TransparencySettingsScreen(
                 Text(
                     text = stringResource(R.string.equalizer),
                     style = MaterialTheme.typography.labelSmallEmphasized,
-                    color = if (LocalDesignSystem.current == DesignSystem.Material) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.sectionHeader,
+                    color = if (design.system == DesignSystem.Material) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.sectionHeader,
                     modifier = Modifier.padding(16.dp, bottom = 4.dp)
                 )
 
@@ -286,15 +290,19 @@ fun TransparencySettingsScreen(
                                 modifier = Modifier.padding(bottom = 4.dp)
                             )
 
-                            Slider(
+                            val sliderState = rememberSliderState(
                                 value = eqValue.floatValue,
+                                trackRange = 0f..100f
+                            )
+
+                            Slider(
+                                state = sliderState,
                                 onValueChange = { newVal ->
                                     eqValue.floatValue = newVal
                                     val newEQ = eq.value.copyOf()
                                     newEQ[i] = eqValue.floatValue
                                     eq.value = newEQ
                                 },
-                                valueRange = 0f..100f,
                                 modifier = Modifier
                                     .fillMaxWidth(0.9f)
                                     .height(36.dp),

@@ -144,6 +144,12 @@ sealed interface Screen: NavKey {
 
     @Serializable
     data object IslandExpandedSizeAndPosition: Screen
+
+    @Serializable
+    data object AppColorSettings: Screen
+
+    @Serializable
+    data object HazeSettings: Screen
 }
 
 @Serializable

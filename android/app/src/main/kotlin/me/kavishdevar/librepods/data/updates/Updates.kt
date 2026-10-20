@@ -2,11 +2,11 @@ package me.kavishdevar.librepods.data.updates
 
 import androidx.compose.runtime.Composable
 import me.kavishdevar.librepods.R
+import me.kavishdevar.librepods.data.app.DesignSystem
+import me.kavishdevar.librepods.presentation.design.LocalDesign
 import me.kavishdevar.librepods.presentation.screens.apple.AppleSettingsScreenPreviewMaterial
 import me.kavishdevar.librepods.presentation.screens.apple.EqualizerScreenPreviewApple
 import me.kavishdevar.librepods.presentation.screens.apple.EqualizerScreenPreviewMaterial
-import me.kavishdevar.librepods.presentation.design.DesignSystem
-import me.kavishdevar.librepods.presentation.design.LocalDesignSystem
 
 val update1_0_0 = listOf(
         UpdateItem(
@@ -20,7 +20,9 @@ val update1_0_0 = listOf(
             titleRes = R.string.equalizer,
             descriptionRes = R.string.update_equalizer_description,
             demoComposeable = @Composable {
-                when (LocalDesignSystem.current) {
+                val design = LocalDesign.current
+                
+                when (design.system) {
                     DesignSystem.Apple -> {
                         EqualizerScreenPreviewApple()
                     }

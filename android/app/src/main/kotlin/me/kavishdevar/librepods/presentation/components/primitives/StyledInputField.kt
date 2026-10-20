@@ -37,10 +37,9 @@ import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import me.kavishdevar.librepods.data.app.DesignSystem
+import me.kavishdevar.librepods.presentation.design.LocalDesign
 import me.kavishdevar.librepods.presentation.icons.LocalIcons
-import me.kavishdevar.librepods.presentation.design.DesignSystem
-import me.kavishdevar.librepods.presentation.design.LocalDesignSystem
-
 
 @Composable
 fun StyledInputField(
@@ -55,111 +54,114 @@ fun StyledInputField(
         selectedContentColor = MaterialTheme.colorScheme.onPrimaryContainer,
     )
 ) {
-    val m3eEnabled = LocalDesignSystem.current == DesignSystem.Material && !forceApple
+    val design = LocalDesign.current
 
-    if(m3eEnabled) {
-        TextField(
-            state = inputState,
-            placeholder = {
-                Text(
-                    text = placeholder,
-                    style = MaterialTheme.typography.labelMedium,
-                    color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.8f)
-                )
-            },
-            lineLimits = if (singleLine) TextFieldLineLimits.SingleLine else TextFieldLineLimits.Default,
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 16.dp)
-        )
-    }
-    else {
-        val minHeight = if (singleLine) 58.dp else 120.dp
-        val verticalAlignment = if (singleLine) Alignment.CenterVertically else Alignment.Top
-        val hasText = inputState.text.isNotEmpty()
-        val density = LocalDensity.current
-        val spacerHeight by animateDpAsState(
-            targetValue = if (hasText) with(density) { 32.sp.toDp() } else 0.dp,
-            label = "labelSpacer"
-        )
-
-        val transition = updateTransition(hasText, label = "floating")
-        val yOffset by transition.animateDp(label = "y") {
-            if (it) with(density) { (-48).sp.toDp() } else 0.dp
-        }
-
-        Spacer(modifier = Modifier.height(spacerHeight))
-
-        Box(
-            modifier = Modifier.fillMaxWidth()
-        ) {
-            Row(
-                verticalAlignment = verticalAlignment,
+    when (design.system) {
+        DesignSystem.Material -> {
+            TextField(
+                state = inputState,
+                placeholder = {
+                    Text(
+                        text = placeholder,
+                        style = MaterialTheme.typography.labelMedium,
+                        color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.8f)
+                    )
+                },
+                lineLimits = if (singleLine) TextFieldLineLimits.SingleLine else TextFieldLineLimits.Default,
                 modifier = Modifier
                     .fillMaxWidth()
-                    .heightIn(min = minHeight)
-                    .background(
-                        colors.containerColor,
-                        RoundedCornerShape(28.dp)
-                    )
-                    .padding(horizontal = 16.dp, vertical = 8.dp)
-                    .pointerInput(Unit) {
-                        detectTapGestures {
-                            focusRequester.requestFocus()
-                        }
-                    }
-            ) {
-                BasicTextField(
-                    state = inputState,
-                    lineLimits = if (singleLine) TextFieldLineLimits.SingleLine else TextFieldLineLimits.Default,
-                    textStyle = MaterialTheme.typography.bodyMedium.copy(color = MaterialTheme.colorScheme.onBackground),
-                    cursorBrush = SolidColor(MaterialTheme.colorScheme.onBackground),
-                    decorator = { innerTextField ->
-                        Row(
-                            modifier = Modifier.padding(top = if (singleLine) 0.dp else 16.dp),
-                            verticalAlignment = verticalAlignment,
-                        ) {
-                            Row(
-                                modifier = Modifier
-                                    .weight(1f)
-                            ) {
-                                Box(
-                                    modifier = Modifier
-                                        .weight(1f),
-                                    contentAlignment = if (singleLine) Alignment.CenterStart else Alignment.TopStart
-                                ) {
-                                    Text(
-                                        text = placeholder,
-                                        style = MaterialTheme.typography.labelMedium,
-                                        color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.8f),
-                                        modifier = Modifier
-                                            .offset(y = yOffset)
-                                    )
+                    .padding(horizontal = 16.dp)
+            )
+        }
 
-                                    innerTextField()
-                                }
-                            }
-                            if (singleLine && !inputState.text.isEmpty()) {
-                                IconButton(
-                                    onClick = {
-                                        inputState.clearText()
-                                    }
-                                ) {
-                                    Icon(
-                                        imageVector = LocalIcons.current.CloseCircle,
-                                        contentDescription = "Clear text",
-                                        tint = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.6f),
-                                        modifier = Modifier.size(16.dp)
-                                    )
-                                }
-                            }
-                        }
-                    },
+        DesignSystem.Apple -> {
+            val minHeight = if (singleLine) 58.dp else 120.dp
+            val verticalAlignment = if (singleLine) Alignment.CenterVertically else Alignment.Top
+            val hasText = inputState.text.isNotEmpty()
+            val density = LocalDensity.current
+            val spacerHeight by animateDpAsState(
+                targetValue = if (hasText) with(density) { 32.sp.toDp() } else 0.dp,
+                label = "labelSpacer"
+            )
+
+            val transition = updateTransition(hasText, label = "floating")
+            val yOffset by transition.animateDp(label = "y") {
+                if (it) with(density) { (-48).sp.toDp() } else 0.dp
+            }
+
+            Spacer(modifier = Modifier.height(spacerHeight))
+
+            Box(
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Row(
+                    verticalAlignment = verticalAlignment,
                     modifier = Modifier
                         .fillMaxWidth()
-                        .padding(start = 8.dp)
-                        .focusRequester(focusRequester)
-                )
+                        .heightIn(min = minHeight)
+                        .background(
+                            colors.containerColor,
+                            RoundedCornerShape(28.dp)
+                        )
+                        .padding(horizontal = 16.dp, vertical = 8.dp)
+                        .pointerInput(Unit) {
+                            detectTapGestures {
+                                focusRequester.requestFocus()
+                            }
+                        }
+                ) {
+                    BasicTextField(
+                        state = inputState,
+                        lineLimits = if (singleLine) TextFieldLineLimits.SingleLine else TextFieldLineLimits.Default,
+                        textStyle = MaterialTheme.typography.bodyMedium.copy(color = MaterialTheme.colorScheme.onBackground),
+                        cursorBrush = SolidColor(MaterialTheme.colorScheme.onBackground),
+                        decorator = { innerTextField ->
+                            Row(
+                                modifier = Modifier.padding(top = if (singleLine) 0.dp else 16.dp),
+                                verticalAlignment = verticalAlignment,
+                            ) {
+                                Row(
+                                    modifier = Modifier
+                                        .weight(1f)
+                                ) {
+                                    Box(
+                                        modifier = Modifier
+                                            .weight(1f),
+                                        contentAlignment = if (singleLine) Alignment.CenterStart else Alignment.TopStart
+                                    ) {
+                                        Text(
+                                            text = placeholder,
+                                            style = MaterialTheme.typography.labelMedium,
+                                            color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.8f),
+                                            modifier = Modifier
+                                                .offset(y = yOffset)
+                                        )
+
+                                        innerTextField()
+                                    }
+                                }
+                                if (singleLine && !inputState.text.isEmpty()) {
+                                    IconButton(
+                                        onClick = {
+                                            inputState.clearText()
+                                        }
+                                    ) {
+                                        Icon(
+                                            imageVector = LocalIcons.current.CloseCircle,
+                                            contentDescription = "Clear text",
+                                            tint = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.6f),
+                                            modifier = Modifier.size(16.dp)
+                                        )
+                                    }
+                                }
+                            }
+                        },
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(start = 8.dp)
+                            .focusRequester(focusRequester)
+                    )
+                }
             }
         }
     }

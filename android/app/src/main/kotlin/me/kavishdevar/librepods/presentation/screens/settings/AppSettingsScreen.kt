@@ -60,6 +60,7 @@ import androidx.core.net.toUri
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.kyant.backdrop.backdrops.layerBackdrop
 import com.kyant.backdrop.backdrops.rememberLayerBackdrop
+import dev.chrisbanes.haze.HazeInput
 import me.kavishdevar.librepods.BuildConfig
 import me.kavishdevar.librepods.R
 import me.kavishdevar.librepods.presentation.components.common.AppInfoCard
@@ -111,7 +112,6 @@ fun AppSettingsScreen(
         Column(
             modifier = Modifier
                 .fillMaxSize()
-                .background(MaterialTheme.colorScheme.surfaceContainer)
                 .layerBackdrop(backdrop)
                 .verticalScroll(scrollState)
                 .padding(horizontal = 16.dp)
@@ -453,7 +453,7 @@ fun AppSettingsScreen(
                verticalAlignment = Alignment.CenterVertically
            ) {
                StyledIconButton(
-                   backdrop = innerBackdrop,
+                   hazeInput = HazeInput.Content, // TODO: migrate to haze
                    onClick = { contactBottomSheet.value = false }
                ) {
                    Icon(
@@ -469,7 +469,7 @@ fun AppSettingsScreen(
                    color = MaterialTheme.colorScheme.onBackground
                )
                StyledIconButton(
-                   backdrop = innerBackdrop,
+                   hazeInput = HazeInput.Content, // TODO: migrate to haze
                    surfaceColor = MaterialTheme.colorScheme.primary,
                    enabled = subjectState.text.isNotEmpty() && descriptionState.text.isNotEmpty(),
                    onClick = {

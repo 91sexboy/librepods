@@ -92,7 +92,6 @@ fun HearingAidScreen(
             modifier = Modifier
                 .layerBackdrop(backdrop)
                 .fillMaxSize()
-                .background(MaterialTheme.colorScheme.surfaceContainer)
                 .verticalScroll(verticalScrollState)
                 .padding(horizontal = 16.dp),
             verticalArrangement = Arrangement.spacedBy(8.dp)

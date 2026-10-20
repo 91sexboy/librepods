@@ -53,7 +53,6 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
-import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.debounce
 import kotlinx.coroutines.flow.filterNotNull
 import me.kavishdevar.librepods.R
@@ -61,8 +60,9 @@ import me.kavishdevar.librepods.core.bluetooth.att.ATTHandle
 import me.kavishdevar.librepods.core.bluetooth.att.types.HearingAidSettings
 import me.kavishdevar.librepods.core.bluetooth.att.types.parseHearingAidSettingsResponse
 import me.kavishdevar.librepods.core.bluetooth.att.types.sendHearingAidSettings
+import me.kavishdevar.librepods.data.app.Design
+import me.kavishdevar.librepods.data.app.DesignSystem
 import me.kavishdevar.librepods.presentation.components.primitives.StyledScaffold
-import me.kavishdevar.librepods.presentation.design.DesignSystem
 import me.kavishdevar.librepods.presentation.design.LibrePodsTheme
 import me.kavishdevar.librepods.presentation.viewmodel.AppleUiState
 import me.kavishdevar.librepods.presentation.viewmodel.AppleViewModel
@@ -135,7 +135,6 @@ fun UpdateHearingTestScreen(
                 mutableStateOf(FloatArray(8))
             }
 
-            val debounceJob = remember { mutableStateOf<Job?>(null) }
             val initialized = rememberSaveable { mutableStateOf(false) }
 
             val hearingAidSettings = remember {
@@ -281,17 +280,15 @@ fun UpdateHearingTestScreen(
 @Composable
 fun UpdateHearingTestScreenPreviewApple() {
     LibrePodsTheme(
-        designSystem = DesignSystem.Apple
+        design = Design(
+            system = DesignSystem.Apple
+        )
     ) {
-        Box (
-            modifier = Modifier.background(MaterialTheme.colorScheme.surfaceContainer)
-        ) {
-            UpdateHearingTestScreen(
-                uiState = AppleUiState(),
-                navigateBack = null,
-                setATTCharacteristicValue = { _, _ -> }
-            )
-        }
+        UpdateHearingTestScreen(
+            uiState = AppleUiState(),
+            navigateBack = null,
+            setATTCharacteristicValue = { _, _ -> }
+        )
     }
 }
 
@@ -299,19 +296,15 @@ fun UpdateHearingTestScreenPreviewApple() {
 @Composable
 fun UpdateHearingTestScreenPreviewMaterial() {
     LibrePodsTheme(
-        designSystem = DesignSystem.Material
+        design = Design(
+            system = DesignSystem.Material
+        )
     ) {
-        Box (
-            modifier = Modifier
-                .wrapContentHeight()
-                .background(MaterialTheme.colorScheme.surfaceContainer)
-        ) {
-            UpdateHearingTestScreen(
-                uiState = AppleUiState(),
-                navigateBack = null,
-                setATTCharacteristicValue = { _, _ -> }
-            )
-        }
+        UpdateHearingTestScreen(
+            uiState = AppleUiState(),
+            navigateBack = null,
+            setATTCharacteristicValue = { _, _ -> }
+        )
     }
 }
 

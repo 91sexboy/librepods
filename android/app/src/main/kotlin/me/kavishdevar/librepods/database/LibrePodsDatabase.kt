@@ -1,7 +1,6 @@
 package me.kavishdevar.librepods.database
 
 import androidx.room3.AutoMigration
-import androidx.room3.ColumnInfo
 import androidx.room3.ColumnTypeConverters
 import androidx.room3.Database
 import androidx.room3.RoomDatabase
@@ -25,7 +24,10 @@ import me.kavishdevar.librepods.database.widget.WidgetConfigEntity
         WidgetConfigEntity::class,
         HeartRateSampleEntity::class
     ],
-    version = 1
+    version = 2,
+    autoMigrations = [
+        AutoMigration(from = 1, to = 2),
+    ]
 )
 abstract class LibrePodsDatabase: RoomDatabase() {
     abstract fun appleDao(): AppleDao

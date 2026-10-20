@@ -56,10 +56,11 @@ import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import kotlinx.coroutines.launch
-import me.kavishdevar.librepods.presentation.design.DesignSystem
+import me.kavishdevar.librepods.data.app.Design
+import me.kavishdevar.librepods.data.app.DesignSystem
 import me.kavishdevar.librepods.presentation.design.LibrePodsTheme
 import me.kavishdevar.librepods.presentation.design.LocalAccessibilitySettings
-import me.kavishdevar.librepods.presentation.design.LocalDesignSystem
+import me.kavishdevar.librepods.presentation.design.LocalDesign
 import me.kavishdevar.librepods.presentation.design.sectionHeader
 import me.kavishdevar.librepods.presentation.icons.LocalIcons
 
@@ -82,7 +83,8 @@ fun StyledToggle(
         selectedContentColor = MaterialTheme.colorScheme.onPrimaryContainer,
     )
 ) {
-    val m3eEnabled = LocalDesignSystem.current == DesignSystem.Material
+    val design = LocalDesign.current
+    val m3eEnabled = design.system == DesignSystem.Material
 
     Column(modifier = Modifier.padding(vertical = 12.dp)) {
         title?.let {
@@ -193,10 +195,12 @@ private fun StyledToggleContent(
 ) {
     val currentChecked by rememberUpdatedState(checked)
 
+    val design = LocalDesign.current
+
     val haptics = LocalHapticFeedback.current
     val scope = rememberCoroutineScope()
 
-    val m3eEnabled = LocalDesignSystem.current == DesignSystem.Material
+    val m3eEnabled = design.system == DesignSystem.Material
 
     if (m3eEnabled) {
         val defaultShape = when {
@@ -361,7 +365,7 @@ private fun StyledToggleContent(
 @Composable
 fun StyledToggleAppleListPreview() {
     val checked = remember { mutableStateOf(false) }
-    LibrePodsTheme(designSystem = DesignSystem.Apple) {
+    LibrePodsTheme(design = Design(system = DesignSystem.Apple)) {
         StyledList {
             styledToggle(
                 label = "Apple Styled List",
@@ -377,7 +381,7 @@ fun StyledToggleAppleListPreview() {
 @Composable
 fun StyledToggleApplePreview() {
     val checked = remember { mutableStateOf(false) }
-    LibrePodsTheme(designSystem = DesignSystem.Apple) {
+    LibrePodsTheme(design = Design(system = DesignSystem.Apple)) {
         StyledToggle(
             label = "Apple",
             description = "This is an example description for the styled toggle.",
@@ -391,7 +395,7 @@ fun StyledToggleApplePreview() {
 @Composable
 fun StyledToggleM3EListPreview() {
     val checked = remember { mutableStateOf(false) }
-    LibrePodsTheme(designSystem = DesignSystem.Material) {
+    LibrePodsTheme(design = Design(system = DesignSystem.Material)) {
         StyledList {
             styledToggle(
                 label = "Apple Styled List",
@@ -407,7 +411,7 @@ fun StyledToggleM3EListPreview() {
 @Composable
 fun StyledToggleM3EPreview() {
     val checked = remember { mutableStateOf(false) }
-    LibrePodsTheme(designSystem = DesignSystem.Material) {
+    LibrePodsTheme(design = Design(system = DesignSystem.Material)) {
         StyledToggle(
             label = "Material",
             description = "This is an example description for the styled toggle.",

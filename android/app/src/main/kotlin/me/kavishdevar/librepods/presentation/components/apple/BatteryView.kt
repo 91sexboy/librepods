@@ -48,7 +48,8 @@ import me.kavishdevar.librepods.R
 import me.kavishdevar.librepods.core.devices.Battery
 import me.kavishdevar.librepods.core.devices.BatteryComponent
 import me.kavishdevar.librepods.core.devices.BatteryStatus
-import me.kavishdevar.librepods.presentation.design.DesignSystem
+import me.kavishdevar.librepods.data.app.Design
+import me.kavishdevar.librepods.data.app.DesignSystem
 import me.kavishdevar.librepods.presentation.design.LibrePodsTheme
 import me.kavishdevar.librepods.core.R as coreR
 
@@ -207,7 +208,9 @@ fun BatteryViewPreview() {
     )
 
     LibrePodsTheme(
-        designSystem = DesignSystem.Apple
+        design = Design(
+            system = DesignSystem.Apple,
+        )
     ) {
         Box(
             modifier = Modifier
@@ -227,7 +230,9 @@ fun BatteryViewPreview() {
 @Composable
 fun BatteryViewHeadsetPreview() {
     LibrePodsTheme(
-        designSystem = DesignSystem.Apple
+        design = Design(
+            system = DesignSystem.Apple
+        )
     ) {
         val fakeBatteryHeadset = setOf(
             Battery(BatteryComponent.HEADSET, 50, BatteryStatus.CHARGING),
