@@ -75,6 +75,7 @@ import me.kavishdevar.librepods.presentation.widgets.BatteryWidget
 import me.kavishdevar.librepods.utils.MediaController
 import me.kavishdevar.librepods.utils.calculateLevel
 import java.time.ZoneOffset
+import javax.crypto.Cipher
 import kotlin.time.Duration
 import kotlin.time.Duration.Companion.seconds
 import kotlin.time.toJavaInstant
@@ -96,6 +97,9 @@ class LibrePodsService: Service() {
 
     val irkMap = mutableMapOf<MacAddress, ByteArray>()
     val rpasByPublicMac = mutableMapOf<MacAddress, MutableSet<MacAddress>>()
+
+    val encKeyMap = mutableMapOf<MacAddress, ByteArray>()
+    val caseAddressByPublicMac = mutableMapOf<MacAddress, MutableSet<MacAddress>>()
 
     val rejectedRandomMac = mutableSetOf<MacAddress>()
     private val eldDecoder = EldDecoder()
@@ -420,13 +424,6 @@ class LibrePodsService: Service() {
 
     private val bleScanCallback = object : ScanCallback() {
         override fun onScanResult(callbackType: Int, result: ScanResult) {
-            Log.d(TAG,
-                "${result.device.address} " +
-                    "sid=${result.advertisingSid} " +
-                    "legacy=${result.isLegacy} " +
-                    "phy=${result.primaryPhy} " +
-                    "rssi=${result.rssi}"
-            )
             handleScanResult(result)
         }
 
@@ -443,20 +440,142 @@ class LibrePodsService: Service() {
     private fun handleScanResult(result: ScanResult) {
         val macAddress = MacAddress(result.device.address)
 
+        val manufacturerData = result.scanRecord
+            ?.getManufacturerSpecificData(0x004C)
+
+        if (manufacturerData != null &&
+            handleCaseAdvertisement(macAddress, manufacturerData)
+        ) {
+            return
+        }
+
         if (rejectedRandomMac.contains(macAddress)) return
 
-        val device = getDeviceFromBleMac(macAddress)?: return
+        val device = getDeviceFromBleMac(macAddress) ?: return
 
-        Log.d(TAG, "Scan result for device ${device.macAddress.toRedactedString()}")
+        Log.d(
+            TAG,
+            "Scan result for device ${device.macAddress.toRedactedString()}"
+        )
 
         when (device) {
             is AppleDevice -> {
-                val manufacturerData = result.scanRecord?.getManufacturerSpecificData(0x004C) ?: return
+                if (manufacturerData == null) return
 
-                Log.i(TAG, "Apple device scan result: ${manufacturerData.toHexString()}")
-                // hell. TODO: do stuff
+                Log.i(
+                    TAG,
+                    "Apple device scan result: ${manufacturerData.toHexString()}"
+                )
             }
         }
+    }
+
+    private fun handleCaseAdvertisement(
+        caseMac: MacAddress,
+        data: ByteArray
+    ): Boolean {
+        var offset = 0
+
+        while (offset + 2 <= data.size) {
+            val kind = data[offset].toInt() and 0xFF
+            val rawLength = data[offset + 1].toInt() and 0xFF
+            val length = rawLength and 0x1F
+            val payloadStart = offset + 2
+            val payloadEnd = payloadStart + length
+
+            if (payloadEnd > data.size) break
+
+            if (
+                kind == 0x07 &&
+                length >= 17 &&
+                data[payloadStart] == 0x06.toByte()
+            ) {
+                val encrypted = data.copyOfRange(
+                    payloadStart + 1,
+                    payloadStart + 17
+                )
+
+                for ((publicMac, key) in encKeyMap.toMap()) {
+                    val plaintext = try {
+                        @SuppressLint("GetInstance")
+                        val cipher = Cipher.getInstance(
+                            "AES/ECB/NoPadding"
+                        )
+                        cipher.init(
+                            Cipher.DECRYPT_MODE,
+                            javax.crypto.spec.SecretKeySpec(key, "AES")
+                        )
+                        cipher.doFinal(encrypted)
+                    } catch (_: Exception) {
+                        continue
+                    }
+
+                    if (!isValidCasePlaintext(plaintext)) continue
+
+                    val device = devices.value.values.firstOrNull {
+                        it.macAddress == publicMac
+                    } as? AppleDevice ?: continue
+
+                    val oldCaseMac = caseAddressByPublicMac[publicMac]
+                        ?.firstOrNull()
+
+                    if (oldCaseMac != caseMac) {
+                        caseAddressByPublicMac[publicMac] =
+                            mutableSetOf(caseMac)
+
+                        Log.i(
+                            TAG,
+                            "Case address for ${publicMac.toRedactedString()} " +
+                                "updated: $oldCaseMac -> $caseMac"
+                        )
+                    }
+
+                    rejectedRandomMac.remove(caseMac)
+
+                    val caseBattery = plaintext[3].toInt() and 0xFF
+                    val leftBattery = plaintext[4].toInt() and 0xFF
+                    val rightBattery = plaintext[5].toInt() and 0xFF
+
+                    Log.i(
+                        TAG,
+                        "Case advertisement for " +
+                            "${device.macAddress.toRedactedString()}: " +
+                            "${plaintext.toHexString()} | " +
+                            "C: ${formatCaseBattery(caseBattery)} " +
+                            "L: ${formatCaseBattery(leftBattery)} " +
+                            "R: ${formatCaseBattery(rightBattery)}"
+                    )
+
+                    return true
+                }
+            }
+
+            offset = payloadEnd
+        }
+
+        return false
+    }
+
+    private fun isValidCasePlaintext(pt: ByteArray): Boolean {
+        if (pt.size != 16) return false
+
+        if (pt[1] != 0x20.toByte()) return false
+
+        if (pt[15] != 0.toByte()) return false
+
+        return (3..5).all { index ->
+            val battery = pt[index].toInt() and 0xFF
+            battery == 0xFF || (battery and 0x7F) <= 100
+        }
+    }
+
+    private fun formatCaseBattery(battery: Int): String {
+        if (battery == 0xFF) return "--"
+
+        val percentage = battery and 0x7F
+        val charging = if (battery and 0x80 != 0) "+" else ""
+
+        return "$percentage%$charging"
     }
 
     private fun getDeviceFromBleMac(bleMac: MacAddress): Device<*, *, *>? {
@@ -512,22 +631,20 @@ class LibrePodsService: Service() {
             .setReportDelay(appSettings.bleReportDelay)
             .build()
 
-        val manufacturerData = byteArrayOf(0x07, 0x19)
-        val manufacturerMask = byteArrayOf(
-            0xFF.toByte(),
-            0xFF.toByte()
-        )
-
-        val filter = ScanFilter.Builder()
+        val appleFilter = ScanFilter.Builder()
             .setManufacturerData(
                 0x004C,
-                manufacturerData,
-                manufacturerMask
+                null,
+                null
             )
             .build()
 
+        val scanFilters = listOf(
+            appleFilter
+        )
+
         try {
-            bleScanner.startScan(listOf(filter), scanSettings, bleScanCallback)
+            bleScanner.startScan(scanFilters, scanSettings, bleScanCallback)
             Log.i(TAG, "Started BLE scan with user-set params: scanMode: ${appSettings.bleScanMode}, reportDelay: ${appSettings.bleReportDelay}")
         } catch (e: Exception) {
             if (e.message?.contains("too frequently") == true) {
@@ -599,6 +716,12 @@ class LibrePodsService: Service() {
                         irkMap[device.macAddress] = irk
                         rejectedRandomMac.clear()
                         Log.d(TAG, "Loaded IRK for device ${device.macAddress.toRedactedString()}")
+                    }
+
+                    val encKey = entity.cache.magicKeys[MagicKeyType.ENC_KEY]
+                    if (encKey != null) {
+                        encKeyMap[device.macAddress] = encKey
+                        Log.d(TAG, "Loaded ENC_KEY for device ${device.macAddress.toRedactedString()}")
                     }
 
                     Log.i(
