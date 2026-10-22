@@ -341,6 +341,7 @@ class IslandWindow(
         autoCloseRunnable = Runnable {
             if (appSettings.islandSettings.keepCompactVisible) {
                 islandState = IslandState.COMPACT
+                updateWindowParams(islandState)
             } else {
                 close()
             }
@@ -356,6 +357,7 @@ class IslandWindow(
 
         autoCloseRunnable?.let { autoCloseHandler?.removeCallbacks(it) }
         islandState = IslandState.CLOSE
+        updateWindowParams(islandState)
     }
 
     private fun cleanupAndRemoveView() {
