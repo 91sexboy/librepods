@@ -42,6 +42,8 @@ import androidx.health.connect.client.records.HeartRateRecord
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -60,6 +62,7 @@ import me.kavishdevar.librepods.core.data.recording.Recording
 import me.kavishdevar.librepods.core.devices.AppleDevice
 import me.kavishdevar.librepods.core.devices.AppleSettings
 import me.kavishdevar.librepods.core.devices.AppleState
+import me.kavishdevar.librepods.core.devices.Battery
 import me.kavishdevar.librepods.core.devices.BatteryComponent
 import me.kavishdevar.librepods.core.devices.BatteryStatus
 import me.kavishdevar.librepods.core.devices.ComponentStatus
@@ -93,7 +96,7 @@ class LibrePodsService: Service() {
     private val _devices = MutableStateFlow<Map<MacAddress, Device<*, *, *>>>(emptyMap())
     val devices = _devices.asStateFlow()
 
-    private val deviceJobs = mutableMapOf<MacAddress, MutableList<Job>>()
+    private val serviceCoroutineScope = CoroutineScope(Dispatchers.IO + SupervisorJob())
 
     val irkMap = mutableMapOf<MacAddress, ByteArray>()
     val rpasByPublicMac = mutableMapOf<MacAddress, MutableSet<MacAddress>>()
@@ -276,7 +279,7 @@ class LibrePodsService: Service() {
     override fun onDestroy() {
         unregisterBluetoothReceivers()
         stopBleScanner()
-
+        serviceCoroutineScope.cancel("Service stopped")
         super.onDestroy()
     }
 
@@ -330,13 +333,6 @@ class LibrePodsService: Service() {
                         device.startHr()
                     }
                 }
-
-                deviceJobs[MacAddress(bluetoothDevice.address)] = mutableListOf()
-
-                deviceJobs[MacAddress(bluetoothDevice.address)]?.add(observeAppleState(device))
-                deviceJobs[MacAddress(bluetoothDevice.address)]?.add(observeAppleSettings(device))
-                deviceJobs[MacAddress(bluetoothDevice.address)]?.add(observeAppleMetadata(device))
-                deviceJobs[MacAddress(bluetoothDevice.address)]?.add(observeAppleMicrophoneFrames(device))
             }
         }
 
@@ -352,7 +348,6 @@ class LibrePodsService: Service() {
 
     private fun onDeviceDisconnected(mac: MacAddress) {
         Log.i(TAG, "Device disconnected: $mac")
-        deviceJobs[mac]?.forEach { it.cancel() }
         devices.value[mac]?.disconnect()
         updateDeviceNotification(device = devices.value[mac] ?: return)
     }
@@ -453,11 +448,6 @@ class LibrePodsService: Service() {
 
         val device = getDeviceFromBleMac(macAddress) ?: return
 
-        Log.d(
-            TAG,
-            "Scan result for device ${device.macAddress.toRedactedString()}"
-        )
-
         when (device) {
             is AppleDevice -> {
                 if (manufacturerData == null) return
@@ -532,19 +522,38 @@ class LibrePodsService: Service() {
 
                     rejectedRandomMac.remove(caseMac)
 
-                    val caseBattery = plaintext[3].toInt() and 0xFF
-                    val leftBattery = plaintext[4].toInt() and 0xFF
-                    val rightBattery = plaintext[5].toInt() and 0xFF
+                    val batteries = buildSet {
+                        for ((component, index) in listOf(
+                            BatteryComponent.CASE to 3,
+                            BatteryComponent.LEFT to 4,
+                            BatteryComponent.RIGHT to 5
+                        )) {
+                            val raw = plaintext[index].toInt() and 0xFF
+                            if (raw == 0xFF) continue
 
-                    Log.i(
-                        TAG,
-                        "Case advertisement for " +
-                            "${device.macAddress.toRedactedString()}: " +
-                            "${plaintext.toHexString()} | " +
-                            "C: ${formatCaseBattery(caseBattery)} " +
-                            "L: ${formatCaseBattery(leftBattery)} " +
-                            "R: ${formatCaseBattery(rightBattery)}"
-                    )
+                            val charging = raw and 0x80 != 0
+
+                            add(
+                                Battery(
+                                    component = component,
+                                    level = raw and 0x7F,
+                                    status = if (charging) {
+                                        BatteryStatus.CHARGING
+                                    } else {
+                                        BatteryStatus.NOT_CHARGING
+                                    }
+                                )
+                            )
+                        }
+                    }
+
+                    if (batteries.isNotEmpty()) {
+                        Log.i(
+                            TAG,
+                            "Battery state from case for ${device.macAddress.toRedactedString()} (address: ${caseMac.toRedactedString()}): $batteries"
+                        )
+                        device.updateBatteryState(batteries)
+                    }
 
                     return true
                 }
@@ -569,20 +578,10 @@ class LibrePodsService: Service() {
         }
     }
 
-    private fun formatCaseBattery(battery: Int): String {
-        if (battery == 0xFF) return "--"
-
-        val percentage = battery and 0x7F
-        val charging = if (battery and 0x80 != 0) "+" else ""
-
-        return "$percentage%$charging"
-    }
-
     private fun getDeviceFromBleMac(bleMac: MacAddress): Device<*, *, *>? {
         var deviceMac: MacAddress? = devices.value[bleMac]?.macAddress
 
         if (deviceMac == null) {
-            Log.d(TAG, "BLE random address found: $bleMac")
             rpasByPublicMac.forEach { (address, addresses) ->
                 if (addresses.contains(bleMac)) {
                     deviceMac = address
@@ -592,7 +591,7 @@ class LibrePodsService: Service() {
 
         if (deviceMac == null) {
             irkMap.forEach { (macAddress, irk) ->
-                Log.d(TAG, "Verifiying $bleMac against ${irk.toHexString()}")
+                Log.d(TAG, "Verifying $bleMac against ${irk.toHexString()}")
                 if (verifyRPA(bleMac.value, irk)) {
                     Log.i(TAG, "New RPA for device ${macAddress.toRedactedString()}")
                     deviceMac = macAddress
@@ -750,12 +749,10 @@ class LibrePodsService: Service() {
                     )
                 }
 
-                // assuming that the device is not already in the map
-                deviceJobs[MacAddress(bluetoothDevice.address)] = mutableListOf()
-
-                deviceJobs[MacAddress(bluetoothDevice.address)]?.add(observeAppleState(device))
-                deviceJobs[MacAddress(bluetoothDevice.address)]?.add(observeAppleSettings(device))
-                deviceJobs[MacAddress(bluetoothDevice.address)]?.add(observeAppleMetadata(device))
+                observeAppleState(device)
+                observeAppleSettings(device)
+                observeAppleMetadata(device)
+                observeAppleMicrophoneFrames(device)
             }
         }
 
@@ -778,289 +775,297 @@ class LibrePodsService: Service() {
         }
     }
 
-    fun observeAppleState(device: AppleDevice): Job = CoroutineScope(Dispatchers.IO).launch {
-        var previousState = device.state.value
+    fun observeAppleState(device: AppleDevice) {
+        serviceCoroutineScope.launch {
+            var previousState = device.state.value
 
-        device.state.collect { state ->
-            val deviceSettings = device.settings.value
+            device.state.collect { state ->
+                val deviceSettings = device.settings.value
 
 
-            if (state.aacpPackets != previousState.aacpPackets) {
-                if (!appDataRepository.state.value.hasConnectedToAACP) {
-                    appDataRepository.updateState { it.copy(hasConnectedToAACP = true) }
-                }
-                if (appDataRepository.state.value.firstSuccessfulConnectionTime == null) {
-                    appDataRepository.updateState { it.copy(firstSuccessfulConnectionTime = System.currentTimeMillis()) }
-                }
-            }
-
-            when {
-                state.capabilities != previousState.capabilities -> {
-                    Log.i(
-                        TAG,
-                        "capabilities changed for device ${device.macAddress.toRedactedString()}"
-                    )
-                    Log.d(TAG, "capabilities: ${state.capabilities}")
-
-                    if (state.capabilities.isNotEmpty()) {
-                        appleRepository.saveCacheFromState(device.macAddress, state)
+                if (state.aacpPackets != previousState.aacpPackets) {
+                    if (!appDataRepository.state.value.hasConnectedToAACP) {
+                        appDataRepository.updateState { it.copy(hasConnectedToAACP = true) }
+                    }
+                    if (appDataRepository.state.value.firstSuccessfulConnectionTime == null) {
+                        appDataRepository.updateState { it.copy(firstSuccessfulConnectionTime = System.currentTimeMillis()) }
                     }
                 }
 
-                state.battery != previousState.battery -> {
-                    Log.i(
-                        TAG,
-                        "battery state changed for device ${device.macAddress.toRedactedString()}"
-                    )
-                    Log.d(TAG, "battery state: ${state.battery}")
-
-                    Log.d(TAG, "updating widgets")
-                    updateWidgets()
-
-                    Log.d(TAG, "updating island window")
-                    if (islandWindow.isVisible) {
-                        val leftBattery = state.battery.find { it.component == BatteryComponent.LEFT }
-                        val rightBattery = state.battery.find { it.component == BatteryComponent.RIGHT }
-
-                        val leftLevel = leftBattery?.level ?: 0
-                        val rightLevel = rightBattery?.level ?: 0
-
-                        val displayBatteryLevel = when {
-                            leftLevel > 0 && rightLevel > 0 -> minOf(leftLevel, rightLevel)
-                            leftLevel > 0 -> leftLevel
-                            rightLevel > 0 -> rightLevel
-                            else -> 0
-                        }
-
-                        islandWindow.updateBattery(displayBatteryLevel)
-                    }
-
-                    Log.d(TAG, "updating notification")
-                    updateDeviceNotification(device = device)
-
-                    // TODO:Shizuku
-                    /* Log.d(TAG, "updating bluetooth metadata")
-                    shizuku.setMetadata(
-                        device.macAddress.value,
-                        BluetoothMetadata.METADATA_UNTETHERED_CASE_BATTERY,
-                        state.battery.find { it.component == BatteryComponent.CASE }?.level.toString()
-                            .toByteArray()
-                    )
-                    shizuku.setMetadata(
-                        device.macAddress.value,
-                        BluetoothMetadata.METADATA_UNTETHERED_CASE_CHARGING,
-                        (if (state.battery.find { it.component == BatteryComponent.CASE }?.status == BatteryStatus.CHARGING
-                            || state.battery.find { it.component == BatteryComponent.CASE }?.status == BatteryStatus.OPTIMIZED_CHARGING
-                        ) "1" else "0").toByteArray()
-                    )
-                    shizuku.setMetadata(
-                        device.macAddress.value,
-                        BluetoothMetadata.METADATA_UNTETHERED_LEFT_BATTERY,
-                        state.battery.find { it.component == BatteryComponent.LEFT }?.level.toString()
-                            .toByteArray()
-                    )
-                    shizuku.setMetadata(
-                        device.macAddress.value,
-                        BluetoothMetadata.METADATA_UNTETHERED_LEFT_CHARGING,
-                        (if (state.battery.find { it.component == BatteryComponent.LEFT }?.status == BatteryStatus.CHARGING
-                            || state.battery.find { it.component == BatteryComponent.LEFT }?.status == BatteryStatus.OPTIMIZED_CHARGING
-                        ) "1" else "0").toByteArray()
-                    )
-                    shizuku.setMetadata(
-                        device.macAddress.value,
-                        BluetoothMetadata.METADATA_UNTETHERED_RIGHT_BATTERY,
-                        state.battery.find { it.component == BatteryComponent.RIGHT }?.level.toString()
-                            .toByteArray()
-                    )
-                    shizuku.setMetadata(
-                        device.macAddress.value,
-                        BluetoothMetadata.METADATA_UNTETHERED_RIGHT_CHARGING,
-                        (if (state.battery.find { it.component == BatteryComponent.RIGHT }?.status == BatteryStatus.CHARGING
-                            || state.battery.find { it.component == BatteryComponent.RIGHT }?.status == BatteryStatus.OPTIMIZED_CHARGING
-                        ) "1" else "0").toByteArray()
-                    ) */
-                }
-
-                state.componentState != previousState.componentState -> {
-                    Log.i(
-                        TAG,
-                        "component state changed for device ${device.macAddress.toRedactedString()}"
-                    )
-                    Log.d(TAG, "component state: ${state.componentState}")
-
-                    val earDetectionCtrlCmdValue =
-                        state.controlStates[ControlCommandIdentifier.EAR_DETECTION_CONFIG]
-                            ?: byteArrayOf(0x01.toByte())
-                    Log.d(
-                        TAG,
-                        "ear detection control command value: ${earDetectionCtrlCmdValue.toHexString()}"
-                    )
-                    val earDetectionEnabled = earDetectionCtrlCmdValue[0] == 0x01.toByte() || deviceSettings.earDetectionEnabled // temporary, cache broken (?)
-                    Log.d(TAG, "ear detection enabled: $earDetectionEnabled")
-                    if (earDetectionEnabled) {
-                        processComponentStateChange(
-                            device = device,
-                            previousComponentState = previousState.componentState,
-                            newComponentState = state.componentState,
-                            disconnectWhenNotWearing = deviceSettings.disconnectWhenNotWearing
-                        )
-                    }
-
-                    Log.d(TAG, "updating notification")
-                    updateDeviceNotification(device = device)
-                }
-
-                state.controlStates != previousState.controlStates -> {
-                    Log.i(
-                        TAG,
-                        "control states changed for device ${device.macAddress.toRedactedString()}"
-                    )
-                    Log.d(TAG, "control states: ${state.controlStates}")
-
-                    if (state.controlStates.isNotEmpty()) {
-                        appleRepository.saveCacheFromState(device.macAddress, state)
-                    }
-
-                    Log.d(TAG, "updating notification")
-                    updateDeviceNotification(device = device)
-                }
-
-                state.conversationAwarenessState != previousState.conversationAwarenessState -> {
-                    Log.i(
-                        TAG,
-                        "conversation awareness state changed for device ${device.macAddress.toRedactedString()}"
-                    )
-                    Log.d(
-                        TAG,
-                        "conversation awareness state: ${state.conversationAwarenessState}"
-                    )
-
-                    when (state.conversationAwarenessState) {
-                        1 -> {
-                            MediaController.startSpeaking()
-                            MediaController.setVolume(
-                                deviceSettings.conversationAwarenessVolume.toInt()
-                            )
-                        }
-
-                        2 -> {
-                            MediaController.setVolume(
-                                deviceSettings.conversationAwarenessReducedVolume.toInt()
-                            )
-                        }
-
-                        3 -> {
-                            MediaController.setVolume(
-                                deviceSettings.conversationAwarenessVolume.toInt()
-                            )
-                        }
-
-                        6, 7, 8, 9 -> {
-                            MediaController.stopSpeaking()
-                        }
-                    }
-                }
-
-                state.currentHeartRate?.timestamp != previousState.currentHeartRate?.timestamp -> {
-                    state.currentHeartRate?.let { heartRateSample ->
+                when {
+                    state.capabilities != previousState.capabilities -> {
                         Log.i(
                             TAG,
-                            "current heart rate changed from device ${device.macAddress.toRedactedString()}"
+                            "capabilities changed for device ${device.macAddress.toRedactedString()}"
+                        )
+                        Log.d(TAG, "capabilities: ${state.capabilities}")
+
+                        if (state.capabilities.isNotEmpty()) {
+                            appleRepository.saveCacheFromState(device.macAddress, state)
+                        }
+                    }
+
+                    state.battery != previousState.battery -> {
+                        Log.i(
+                            TAG,
+                            "battery state changed for device ${device.macAddress.toRedactedString()}"
+                        )
+                        Log.d(TAG, "battery state: ${state.battery}")
+
+                        Log.d(TAG, "updating widgets")
+                        updateWidgets()
+
+                        Log.d(TAG, "updating island window")
+                        if (islandWindow.isVisible) {
+                            val leftBattery = state.battery.find { it.component == BatteryComponent.LEFT }
+                            val rightBattery = state.battery.find { it.component == BatteryComponent.RIGHT }
+
+                            val leftLevel = leftBattery?.level ?: 0
+                            val rightLevel = rightBattery?.level ?: 0
+
+                            val displayBatteryLevel = when {
+                                leftLevel > 0 && rightLevel > 0 -> minOf(leftLevel, rightLevel)
+                                leftLevel > 0 -> leftLevel
+                                rightLevel > 0 -> rightLevel
+                                else -> 0
+                            }
+
+                            islandWindow.updateBattery(displayBatteryLevel)
+                        }
+
+                        Log.d(TAG, "updating notification")
+                        updateDeviceNotification(device = device)
+
+                        // TODO:Shizuku
+                        /* Log.d(TAG, "updating bluetooth metadata")
+                        shizuku.setMetadata(
+                            device.macAddress.value,
+                            BluetoothMetadata.METADATA_UNTETHERED_CASE_BATTERY,
+                            state.battery.find { it.component == BatteryComponent.CASE }?.level.toString()
+                                .toByteArray()
+                        )
+                        shizuku.setMetadata(
+                            device.macAddress.value,
+                            BluetoothMetadata.METADATA_UNTETHERED_CASE_CHARGING,
+                            (if (state.battery.find { it.component == BatteryComponent.CASE }?.status == BatteryStatus.CHARGING
+                                || state.battery.find { it.component == BatteryComponent.CASE }?.status == BatteryStatus.OPTIMIZED_CHARGING
+                            ) "1" else "0").toByteArray()
+                        )
+                        shizuku.setMetadata(
+                            device.macAddress.value,
+                            BluetoothMetadata.METADATA_UNTETHERED_LEFT_BATTERY,
+                            state.battery.find { it.component == BatteryComponent.LEFT }?.level.toString()
+                                .toByteArray()
+                        )
+                        shizuku.setMetadata(
+                            device.macAddress.value,
+                            BluetoothMetadata.METADATA_UNTETHERED_LEFT_CHARGING,
+                            (if (state.battery.find { it.component == BatteryComponent.LEFT }?.status == BatteryStatus.CHARGING
+                                || state.battery.find { it.component == BatteryComponent.LEFT }?.status == BatteryStatus.OPTIMIZED_CHARGING
+                            ) "1" else "0").toByteArray()
+                        )
+                        shizuku.setMetadata(
+                            device.macAddress.value,
+                            BluetoothMetadata.METADATA_UNTETHERED_RIGHT_BATTERY,
+                            state.battery.find { it.component == BatteryComponent.RIGHT }?.level.toString()
+                                .toByteArray()
+                        )
+                        shizuku.setMetadata(
+                            device.macAddress.value,
+                            BluetoothMetadata.METADATA_UNTETHERED_RIGHT_CHARGING,
+                            (if (state.battery.find { it.component == BatteryComponent.RIGHT }?.status == BatteryStatus.CHARGING
+                                || state.battery.find { it.component == BatteryComponent.RIGHT }?.status == BatteryStatus.OPTIMIZED_CHARGING
+                            ) "1" else "0").toByteArray()
+                        ) */
+                    }
+
+                    state.componentState != previousState.componentState -> {
+                        Log.i(
+                            TAG,
+                            "component state changed for device ${device.macAddress.toRedactedString()}"
+                        )
+                        Log.d(TAG, "component state: ${state.componentState}")
+
+                        val earDetectionCtrlCmdValue =
+                            state.controlStates[ControlCommandIdentifier.EAR_DETECTION_CONFIG]
+                                ?: byteArrayOf(0x01.toByte())
+                        Log.d(
+                            TAG,
+                            "ear detection control command value: ${earDetectionCtrlCmdValue.toHexString()}"
+                        )
+                        val earDetectionEnabled = earDetectionCtrlCmdValue[0] == 0x01.toByte() || deviceSettings.earDetectionEnabled // temporary, cache broken (?)
+                        Log.d(TAG, "ear detection enabled: $earDetectionEnabled")
+                        if (earDetectionEnabled) {
+                            processComponentStateChange(
+                                device = device,
+                                previousComponentState = previousState.componentState,
+                                newComponentState = state.componentState,
+                                disconnectWhenNotWearing = deviceSettings.disconnectWhenNotWearing
+                            )
+                        }
+
+                        Log.d(TAG, "updating notification")
+                        updateDeviceNotification(device = device)
+                    }
+
+                    state.controlStates != previousState.controlStates -> {
+                        Log.i(
+                            TAG,
+                            "control states changed for device ${device.macAddress.toRedactedString()}"
+                        )
+                        Log.d(TAG, "control states: ${state.controlStates}")
+
+                        if (state.controlStates.isNotEmpty()) {
+                            appleRepository.saveCacheFromState(device.macAddress, state)
+                        }
+
+                        Log.d(TAG, "updating notification")
+                        updateDeviceNotification(device = device)
+                    }
+
+                    state.conversationAwarenessState != previousState.conversationAwarenessState -> {
+                        Log.i(
+                            TAG,
+                            "conversation awareness state changed for device ${device.macAddress.toRedactedString()}"
                         )
                         Log.d(
                             TAG,
-                            "current heart rate: ${heartRateSample.bpm} bpm, timestamp: ${heartRateSample.timestamp.toJavaInstant()}. processing."
+                            "conversation awareness state: ${state.conversationAwarenessState}"
                         )
 
-                        processHeartRateSample(
-                            heartRateSample = heartRateSample,
-                            interval = state.heartRateInterval,
-                            alertThreshold = deviceSettings.hrmAlertThreshold
-                        )
-                    }
-                }
+                        when (state.conversationAwarenessState) {
+                            1 -> {
+                                MediaController.startSpeaking()
+                                MediaController.setVolume(
+                                    deviceSettings.conversationAwarenessVolume.toInt()
+                                )
+                            }
 
-                state.recordingState != previousState.recordingState -> {
-                    Log.i(
-                        TAG,
-                        "recording state changed for device ${device.macAddress.toRedactedString()}"
-                    )
-                    Log.d(TAG, "recording state: ${state.recordingState}")
-                    if (previousState.recordingState.isRecording && !state.recordingState.isRecording) {
-                        previousState.recordingState.recording?.let { recording ->
-                            wavWriters[recording]?.close()
-                        }
-                    } else if (!previousState.recordingState.isRecording && state.recordingState.isRecording) {
-                        state.recordingState.recording?.let { recording ->
-                            try {
-                                val wavWriter = WavWriter(recording.file)
-                                wavWriters[recording] = wavWriter
-                            } catch (e: Exception) {
-                                Log.e(TAG, "Failed to create WavWriter for recording: ${recording.file}", e)
+                            2 -> {
+                                MediaController.setVolume(
+                                    deviceSettings.conversationAwarenessReducedVolume.toInt()
+                                )
+                            }
+
+                            3 -> {
+                                MediaController.setVolume(
+                                    deviceSettings.conversationAwarenessVolume.toInt()
+                                )
+                            }
+
+                            6, 7, 8, 9 -> {
+                                MediaController.stopSpeaking()
                             }
                         }
-                    } else {
-                        Log.w(TAG, "Recording state changed but no action taken. previous: ${previousState.recordingState}, current: ${state.recordingState}")
+                    }
+
+                    state.currentHeartRate?.timestamp != previousState.currentHeartRate?.timestamp -> {
+                        state.currentHeartRate?.let { heartRateSample ->
+                            Log.i(
+                                TAG,
+                                "current heart rate changed from device ${device.macAddress.toRedactedString()}"
+                            )
+                            Log.d(
+                                TAG,
+                                "current heart rate: ${heartRateSample.bpm} bpm, timestamp: ${heartRateSample.timestamp.toJavaInstant()}. processing."
+                            )
+
+                            processHeartRateSample(
+                                heartRateSample = heartRateSample,
+                                interval = state.heartRateInterval,
+                                alertThreshold = deviceSettings.hrmAlertThreshold
+                            )
+                        }
+                    }
+
+                    state.recordingState != previousState.recordingState -> {
+                        Log.i(
+                            TAG,
+                            "recording state changed for device ${device.macAddress.toRedactedString()}"
+                        )
+                        Log.d(TAG, "recording state: ${state.recordingState}")
+                        if (previousState.recordingState.isRecording && !state.recordingState.isRecording) {
+                            previousState.recordingState.recording?.let { recording ->
+                                wavWriters[recording]?.close()
+                            }
+                        } else if (!previousState.recordingState.isRecording && state.recordingState.isRecording) {
+                            state.recordingState.recording?.let { recording ->
+                                try {
+                                    val wavWriter = WavWriter(recording.file)
+                                    wavWriters[recording] = wavWriter
+                                } catch (e: Exception) {
+                                    Log.e(TAG, "Failed to create WavWriter for recording: ${recording.file}", e)
+                                }
+                            }
+                        } else {
+                            Log.w(TAG, "Recording state changed but no action taken. previous: ${previousState.recordingState}, current: ${state.recordingState}")
+                        }
                     }
                 }
+                previousState = state
             }
-            previousState = state
         }
     }
 
-    fun observeAppleSettings(device: AppleDevice): Job = CoroutineScope(Dispatchers.IO).launch {
-        var previousSettings = device.settings.value
+    fun observeAppleSettings(device: AppleDevice) {
+        serviceCoroutineScope.launch {
+            var previousSettings = device.settings.value
 
-        device.settings.collect { settings ->
-            if (settings != previousSettings) {
-                Log.i(TAG, "settings changed for device ${device.macAddress.toRedactedString()}")
-                Log.d(TAG, "settings: $settings")
+            device.settings.collect { settings ->
+                if (settings != previousSettings) {
+                    Log.i(TAG, "settings changed for device ${device.macAddress.toRedactedString()}")
+                    Log.d(TAG, "settings: $settings")
 
-                appleRepository.saveSettings(device.macAddress, settings)
+                    appleRepository.saveSettings(device.macAddress, settings)
+                }
+                previousSettings = settings
             }
-            previousSettings = settings
         }
     }
 
-    fun observeAppleMetadata(device: AppleDevice): Job = CoroutineScope(Dispatchers.IO).launch {
-        var previousMetadata = device.metadata.value
+    fun observeAppleMetadata(device: AppleDevice) {
+        serviceCoroutineScope.launch {
+            var previousMetadata = device.metadata.value
 
-        device.metadata.collect { metadata ->
-            if (metadata != previousMetadata) {
-                Log.i(TAG, "metadata changed for device ${device.macAddress.toRedactedString()}")
-                Log.d(TAG, "metadata: $metadata")
+            device.metadata.collect { metadata ->
+                if (metadata != previousMetadata) {
+                    Log.i(TAG, "metadata changed for device ${device.macAddress.toRedactedString()}")
+                    Log.d(TAG, "metadata: $metadata")
 
-                appleRepository.saveMetadata(device.macAddress, metadata)
+                    appleRepository.saveMetadata(device.macAddress, metadata)
 
-                setAppleBluetoothMetadata(device)
+                    setAppleBluetoothMetadata(device)
 
-                val notificationManager = getSystemService(NotificationManager::class.java)
-                val channel =
-                    notificationManager.getNotificationChannel("device_${device.macAddress}")
-                channel?.name = "Device ${metadata.name}"
-                notificationManager.createNotificationChannel(channel)
+                    val notificationManager = getSystemService(NotificationManager::class.java)
+                    val channel =
+                        notificationManager.getNotificationChannel("device_${device.macAddress}")
+                    channel?.name = "Device ${metadata.name}"
+                    notificationManager.createNotificationChannel(channel)
+                }
+                previousMetadata = metadata
             }
-            previousMetadata = metadata
         }
     }
 
-    fun observeAppleMicrophoneFrames(device: AppleDevice): Job = CoroutineScope(Dispatchers.IO).launch {
-        device.microphoneFrames.collect { frame ->
-            val state = device.state.value
+    fun observeAppleMicrophoneFrames(device: AppleDevice) {
+        serviceCoroutineScope.launch {
+            device.microphoneFrames.collect { frame ->
+                val state = device.state.value
 
-            if (state.recordingState.isRecording) {
-                eldDecoder.decode(
-                    accessUnit = frame.accessUnit
-                ) { pcm ->
-                    wavWriters[state.recordingState.recording]?.write(pcm)
+                if (state.recordingState.isRecording) {
+                    eldDecoder.decode(
+                        accessUnit = frame.accessUnit
+                    ) { pcm ->
+                        wavWriters[state.recordingState.recording]?.write(pcm)
 
-                    device.updateMicrophoneState {
-                        it.copy(
-                            isActive = true,
-                            packetsReceived = it.packetsReceived + 1,
-                            durationMs = it.durationMs + 30,
-                            level = calculateLevel(pcm)
-                        )
+                        device.updateMicrophoneState {
+                            it.copy(
+                                isActive = true,
+                                packetsReceived = it.packetsReceived + 1,
+                                durationMs = it.durationMs + 30,
+                                level = calculateLevel(pcm)
+                            )
+                        }
                     }
                 }
             }
@@ -1297,7 +1302,7 @@ class LibrePodsService: Service() {
 
             // TODO: device-specific widgets
             val device =
-                devices.value.values.firstOrNull { it is AppleDevice && it.connectionState.value == ConnectionState.CONNECTED } as? AppleDevice
+                devices.value.values.firstOrNull { it is AppleDevice } as? AppleDevice
 
             val leftBattery =
                 device?.state?.value?.battery?.find { it.component == BatteryComponent.LEFT }

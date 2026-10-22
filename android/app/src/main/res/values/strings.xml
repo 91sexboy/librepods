@@ -430,4 +430,6 @@
     <string name="blur_content_behind_top_bar">Blur content behind top bar</string>
     <string name="black_background">Black background</string>
     <string name="palette_style">Palette Style</string>
+    <string name="battery_not_available">Battery info not available</string>
+    <string name="not_connected">Not connected</string>
 </resources>

@@ -86,6 +86,16 @@ class AppleDevice(
         }
     }
 
+    // BLE (case and buds both)
+    fun updateBatteryState(batteries: Set<Battery>) {
+        _state.update { state ->
+            val updates = batteries.associateBy { it.component }
+            state.copy(
+                battery = state.battery.filterNot { it.component in updates }.toSet() + updates.values
+            )
+        }
+    }
+
     internal inline fun updateState(
         transform: (AppleState) -> AppleState
     ) {

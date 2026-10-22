@@ -1035,7 +1035,11 @@ class AACPManager(private val device: AppleDevice) {
         socket = null
         device.updateState {
             it.copy(
-                battery = emptySet(),
+                battery = it.battery.map { battery ->
+                    battery.copy(
+                        status = BatteryStatus.DISCONNECTED
+                    )
+                }.toSet(),
                 connectedDevices = emptyList(),
                 controlStates = emptyMap(),
                 aacpPackets = emptyList(),

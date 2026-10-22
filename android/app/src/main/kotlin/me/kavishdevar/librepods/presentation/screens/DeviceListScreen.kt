@@ -428,14 +428,6 @@ fun DeviceListScreen(
                                     }
                                 }
 
-                                ConnectionState.DISCONNECTING, ConnectionState.DISCONNECTED -> {
-                                    Text(
-                                        text = macAddress.value,
-                                        style = MaterialTheme.typography.bodySmall,
-                                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                                    )
-                                }
-
                                 ConnectionState.CONNECTING -> {
                                     Text(
                                         text = stringResource(R.string.connecting),
@@ -444,6 +436,8 @@ fun DeviceListScreen(
                                     )
                                 }
 
+                                ConnectionState.DISCONNECTING,
+                                ConnectionState.DISCONNECTED,
                                 ConnectionState.CONNECTED -> {
                                     when (deviceState) {
                                         is AppleState -> {
@@ -453,20 +447,29 @@ fun DeviceListScreen(
                                                 val deviceState = deviceState as AppleState
                                                 val deviceMetadata = deviceMetadata as AppleMetadata
 
-                                                val batteryRichText =
-                                                    createAirPodsBatteryRichText(
-                                                        battery = deviceState.battery,
-                                                        airPodsSpec = AirPodsSpecs.getSpec(
-                                                            deviceMetadata.model
-                                                        )
-                                                    )
+                                                if (deviceState.battery.isNotEmpty()) {
 
-                                                Text(
-                                                    text = batteryRichText.text,
-                                                    inlineContent = batteryRichText.inlineContent,
-                                                    style = MaterialTheme.typography.bodyMedium,
-                                                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                                                )
+                                                    val batteryRichText =
+                                                        createAirPodsBatteryRichText(
+                                                            battery = deviceState.battery,
+                                                            airPodsSpec = AirPodsSpecs.getSpec(
+                                                                deviceMetadata.model
+                                                            )
+                                                        )
+
+                                                    Text(
+                                                        text = batteryRichText.text,
+                                                        inlineContent = batteryRichText.inlineContent,
+                                                        style = MaterialTheme.typography.bodyMedium,
+                                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                                    )
+                                                } else {
+                                                    Text(
+                                                        text = stringResource(R.string.not_connected),
+                                                        style = MaterialTheme.typography.bodySmall,
+                                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                                    )
+                                                }
                                             }
                                         }
                                     }
