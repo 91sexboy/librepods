@@ -13,7 +13,6 @@ import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
-import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
@@ -119,10 +118,6 @@ private fun <T : Any> SwipeBackSceneContent(
         )
     }
 
-    var pushCompleted by remember {
-        mutableStateOf(direction != Direction.Forward)
-    }
-
     val scope = rememberCoroutineScope()
 
     LaunchedEffect(
@@ -130,15 +125,13 @@ private fun <T : Any> SwipeBackSceneContent(
         direction
     ) {
         if (direction == Direction.Forward) {
-            transitionProgress = 1f
-
             animatedOffset.animateTo(
                 0f,
                 tween(220)
-            )
-
+            ) {
+                transitionProgress = (value / screenWidthPx).coerceIn(0f, 1f)
+            }
             transitionProgress = 0f
-            pushCompleted = true
         }
     }
 
@@ -147,8 +140,9 @@ private fun <T : Any> SwipeBackSceneContent(
             animatedOffset.animateTo(
                 screenWidthPx,
                 tween(150)
-            )
-
+            ) {
+                transitionProgress = -(value / screenWidthPx).coerceIn(0f, 1f)
+            }
             transitionProgress = -1f
             onDismiss()
             completed.complete(Unit)
@@ -171,16 +165,18 @@ private fun <T : Any> SwipeBackSceneContent(
             animatedOffset.animateTo(
                 screenWidthPx,
                 tween(150)
-            )
-
+            ) {
+                transitionProgress = -(value / screenWidthPx).coerceIn(0f, 1f)
+            }
             transitionProgress = -1f
             onDismiss()
         } catch (_: CancellationException) {
             animatedOffset.animateTo(
                 0f,
                 tween(150)
-            )
-
+            ) {
+                transitionProgress = -(value / screenWidthPx).coerceIn(0f, 1f)
+            }
             transitionProgress = 0f
         }
     }
@@ -210,12 +206,8 @@ private fun <T : Any> SwipeBackSceneContent(
                     Modifier
                         .fillMaxSize()
                         .graphicsLayer {
-                            if (direction == Direction.Forward && !pushCompleted) {
-                                translationX = 0f
-                            } else {
-                                val progress = (animatedOffset.value / screenWidthPx).coerceIn(0f, 1f)
-                                translationX = -(screenWidthPx / 3f) * (1f - progress)
-                            }
+                            val progress = (animatedOffset.value / screenWidthPx).coerceIn(0f, 1f)
+                            translationX = -(screenWidthPx / 3f) * (1f - progress)
                         }
                 ) {
                     previousEntry?.Content()

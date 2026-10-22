@@ -92,11 +92,10 @@ fun StyledList(
             Spacer(modifier = Modifier.height(if(m3eEnabled) 4.dp else 0.dp))
         }
         if (!m3eEnabled && description != null) {
-            Spacer(modifier = Modifier.height(4.dp))
             Box(
                 modifier = Modifier
                     .background(if (surfaceColor.isSpecified) surfaceColor else if (design.colorStyle == ColorStyle.Custom) MaterialTheme.colorScheme.surface else MaterialTheme.colorScheme.surfaceContainer)
-                    .padding(horizontal = 16.dp)
+                    .padding(vertical = 8.dp, horizontal = 16.dp)
             ) {
                 Text(
                     text = description,
@@ -104,7 +103,6 @@ fun StyledList(
                     color = MaterialTheme.colorScheme.onBackground.copy(0.6f),
                 )
             }
-            Spacer(modifier = Modifier.height(4.dp))
         }
     }
 }

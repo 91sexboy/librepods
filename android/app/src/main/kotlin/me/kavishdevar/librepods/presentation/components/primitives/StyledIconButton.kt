@@ -138,6 +138,7 @@ fun StyledIconButton(
             var pressStartPosition by remember { mutableStateOf(Offset.Zero) }
 
             val isDarkTheme = MaterialTheme.colorScheme.surfaceContainer.luminance() < 0.5f
+            val tintColor = MaterialTheme.colorScheme.surfaceContainerHigh
 
             val density = LocalDensity.current
 
@@ -176,14 +177,18 @@ fun StyledIconButton(
                     }
                     .hazeGlass(
                         input = hazeInput,
-                        style = GlassStyle.regular.then {
+                        style = if (isDarkTheme) GlassStyle.regular.then {
                             shape(CircleShape)
-                            lightPosition(BiasAlignment(horizontalBias = 1.2f, verticalBias = -1.5f))
+                            lightPosition(BiasAlignment(horizontalBias = -1.2f, verticalBias = -1.5f))
                             edgeShadow(Color.Black.copy(alpha = 0.2f))
                             edgeSoftness(1.5.dp)
-                            tint(
-                                if (isDarkTheme) Color.DarkGray.copy(0.4f) else Color.LightGray.copy(0.1f)
-                            )
+                            tint(tintColor.copy(0.8f))
+                        } else GlassStyle.clear.then {
+                            shape(CircleShape)
+                            lightPosition(BiasAlignment(horizontalBias = -1.2f, verticalBias = -1.5f))
+                            edgeShadow(Color.Black.copy(alpha = 0.2f))
+                            edgeSoftness(1.25.dp)
+                            tint(tintColor.copy(alpha = 0.4f))
                         }
                     )
                     .pointerInput(scope) {

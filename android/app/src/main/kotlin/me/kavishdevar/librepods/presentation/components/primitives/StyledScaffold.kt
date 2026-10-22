@@ -21,6 +21,7 @@ package me.kavishdevar.librepods.presentation.components.primitives
 import android.annotation.SuppressLint
 import android.graphics.RenderEffect
 import android.graphics.Shader
+import android.view.RoundedCorner
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.Crossfade
 import androidx.compose.animation.SharedTransitionScope
@@ -36,8 +37,10 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.calculateEndPadding
 import androidx.compose.foundation.layout.calculateStartPadding
+import androidx.compose.foundation.layout.displayCutout
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -71,6 +74,7 @@ import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalLayoutDirection
+import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.platform.LocalWindowInfo
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
@@ -103,11 +107,44 @@ fun StyledScaffold(
 
     val hazeState = rememberHazeState()
 
+    val windowInsets = LocalView.current.rootWindowInsets
+    val density = LocalDensity.current
+
+    val topRadius = with(density) {
+        windowInsets
+            ?.getRoundedCorner(RoundedCorner.POSITION_TOP_LEFT)
+            ?.radius
+            ?.toDp() ?: 0.dp
+    }
+    val bottomRadius = with(density) {
+        windowInsets
+            ?.getRoundedCorner(RoundedCorner.POSITION_BOTTOM_LEFT)
+            ?.radius
+            ?.toDp() ?: 0.dp
+    }
+
+    val screenCutoutShape = RoundedCornerShape(topStart = topRadius, topEnd = topRadius, bottomStart = bottomRadius, bottomEnd = bottomRadius)
+
     when (design.system) {
         DesignSystem.Material -> {
             Scaffold(
                 containerColor = if (design.colorStyle == ColorStyle.Custom) MaterialTheme.colorScheme.surface else MaterialTheme.colorScheme.surfaceContainer,
                 snackbarHost = { SnackbarHost(snackbarHostState) },
+                modifier = Modifier
+                    .then(
+                        if (MaterialTheme.colorScheme.surface.luminance() > 0.5) Modifier.shadow(
+                            elevation = 36.dp,
+                            shape = screenCutoutShape,
+                            ambientColor = Color.Black,
+                            spotColor = Color.Black
+                        ) else Modifier.shadow(
+                            elevation = 36.dp,
+                            shape = screenCutoutShape,
+                            ambientColor = Color.Gray,
+                            spotColor = Color.Gray
+                        )
+                    )
+                    .clip(screenCutoutShape),
                 topBar = {
                     AnimatedVisibility(
                         visible = visible,
@@ -176,6 +213,7 @@ fun StyledScaffold(
                         )
                         .fillMaxSize()
                         .hazeSource(hazeState)
+                        .clip(screenCutoutShape)
                 ) {
                     content(paddingValues.calculateTopPadding(), paddingValues.calculateBottomPadding())
                 }
@@ -189,11 +227,17 @@ fun StyledScaffold(
                     .then(
                         if (MaterialTheme.colorScheme.surface.luminance() > 0.5) Modifier.shadow(
                             elevation = 36.dp,
-                            shape = RoundedCornerShape(52.dp),
+                            shape = screenCutoutShape,
                             ambientColor = Color.Black,
                             spotColor = Color.Black
-                        ) else Modifier
+                        ) else Modifier.shadow(
+                            elevation = 36.dp,
+                            shape = screenCutoutShape,
+                            ambientColor = Color.Gray,
+                            spotColor = Color.Gray
+                        )
                     )
+                    .clip(screenCutoutShape)
             ) { paddingValues ->
                 val topPadding = paddingValues.calculateTopPadding()
                 val bottomPadding = paddingValues.calculateBottomPadding()
@@ -203,7 +247,7 @@ fun StyledScaffold(
                 Box(
                     modifier = Modifier
                         .fillMaxSize()
-                        .clip(RoundedCornerShape(52.dp))
+                        .clip(screenCutoutShape)
                         .padding(start = startPadding, end = endPadding)
                 ) {
                     val density = LocalDensity.current

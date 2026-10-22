@@ -432,4 +432,8 @@
     <string name="palette_style">Palette Style</string>
     <string name="battery_not_available">Battery info not available</string>
     <string name="not_connected">Not connected</string>
+    <string name="hue">Hue</string>
+    <string name="saturation">Saturation</string>
+    <string name="lightness">Lightness</string>
+    <string name="contrast">Contrast</string>
 </resources>

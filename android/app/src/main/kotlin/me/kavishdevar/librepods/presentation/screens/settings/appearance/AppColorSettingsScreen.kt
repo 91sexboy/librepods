@@ -293,11 +293,11 @@ fun AppColorSettingsScreen(
                     }
 
                     if (LocalDesign.current.system == DesignSystem.Material) {
-                        StyledList(title = "HSL Channels") {
+                        StyledList {
                             styledListItem(
                                 content = {
                                     HSLSliderRow(
-                                        label = "Hue",
+                                        label = stringResource(R.string.hue),
                                         valueText = "${hue.toInt()}°",
                                         value = hue,
                                         valueRange = 0f..360f,
@@ -312,7 +312,7 @@ fun AppColorSettingsScreen(
                             styledListItem(
                                 content = {
                                     HSLSliderRow(
-                                        label = "Saturation",
+                                        label = stringResource(R.string.saturation),
                                         valueText = "${(saturation * 100).toInt()}%",
                                         value = saturation,
                                         valueRange = 0f..1f,
@@ -327,7 +327,7 @@ fun AppColorSettingsScreen(
                             styledListItem(
                                 content = {
                                     HSLSliderRow(
-                                        label = "Lightness",
+                                        label = stringResource(R.string.lightness),
                                         valueText = "${(lightness * 100).toInt()}%",
                                         value = lightness,
                                         valueRange = 0f..1f,
@@ -345,7 +345,7 @@ fun AppColorSettingsScreen(
                         ) {
                             StyledListItem(
                                 onClick = null,
-                                title = "Hue",
+                                title = stringResource(R.string.hue),
                                 content = @Composable {
                                     Box(
                                         modifier = Modifier.padding(vertical = 16.dp)
@@ -364,7 +364,7 @@ fun AppColorSettingsScreen(
 
                             StyledListItem(
                                 onClick = null,
-                                title = "Saturation",
+                                title = stringResource(R.string.saturation),
                                 content = @Composable {
                                     Box(
                                         modifier = Modifier.padding(vertical = 16.dp)
@@ -383,7 +383,7 @@ fun AppColorSettingsScreen(
 
                             StyledListItem(
                                 onClick = null,
-                                title = "Lightness",
+                                title = stringResource(R.string.lightness),
                                 content = @Composable {
                                     Box(
                                         modifier = Modifier.padding(vertical = 16.dp)
@@ -409,7 +409,7 @@ fun AppColorSettingsScreen(
                             contrastSliderValue.floatValue = it
                         },
                         independent = true,
-                        label = "Contrast"
+                        label = stringResource(R.string.contrast)
                     )
                 }
             }
