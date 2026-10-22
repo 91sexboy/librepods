@@ -296,6 +296,8 @@ jobs:
           path: artifacts/release-bundle
 
       - name: Upload to Google Play (Main branch only)
+        id: upload_main
+        continue-on-error: true
         if: github.ref == 'refs/heads/main' && (steps.prev_code.outputs.previous_code != env.VERSION_CODE)
         env:
           APP_VERSION: ${{ needs.build.outputs.app_version }}
@@ -310,6 +312,7 @@ jobs:
 
       - name: Upload to Google Play (Rewrite Internal Track)
         id: upload_rewrite
+        continue-on-error: true
         if: github.ref == 'refs/heads/android/rewrite'
         env:
           APP_VERSION: ${{ needs.build.outputs.app_version }}
