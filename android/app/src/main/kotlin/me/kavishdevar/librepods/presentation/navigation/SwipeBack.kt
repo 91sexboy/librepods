@@ -155,7 +155,7 @@ private fun <T : Any> SwipeBackSceneContent(
         }
     }
 
-    PredictiveBackHandler { progressFlow ->
+    PredictiveBackHandler(enabled = previousEntry != null) { progressFlow ->
         try {
             progressFlow.collect { backEvent ->
                 if (previousEntry == null) return@collect
