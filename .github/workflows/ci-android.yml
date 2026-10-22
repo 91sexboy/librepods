@@ -323,7 +323,7 @@ jobs:
           packageName: me.kavishdevar.librepods
           releaseFiles: artifacts/release-bundle/*.aab
           tracks: internal
-          releaseName: "rewrite v${{ env.APP_VERSION }} (${{ env.VERSION_CODE }}-play)"
+          releaseName: "rewrite ${{ env.VERSION_CODE }} (v${{ env.APP_VERSION }}-play)"
 
       - name: Get timestamp
         if: steps.release.outputs.posted == 'true'
