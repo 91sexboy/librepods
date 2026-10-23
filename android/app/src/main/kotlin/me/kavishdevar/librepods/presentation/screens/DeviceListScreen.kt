@@ -150,7 +150,7 @@ fun DeviceListScreen(
                     ConnectionState.CONNECTING -> MaterialShapes.SoftBurst.normalized()
                     ConnectionState.CONNECTED -> MaterialShapes.SoftBurst.normalized()
                     ConnectionState.DISCONNECTING -> MaterialShapes.Cookie4Sided.normalized()
-                    ConnectionState.AVAILABLE -> MaterialShapes.Circle.normalized()
+                    ConnectionState.AVAILABLE -> MaterialShapes.Cookie12Sided.normalized()
                 }
 
                 val connectingShapes = remember {
@@ -286,11 +286,11 @@ fun DeviceListScreen(
 
                 val iconBackgroundColor by animateColorAsState(
                     targetValue = when (connectionState) {
-                        ConnectionState.CONNECTING -> MaterialTheme.colorScheme.secondaryContainer
-                        ConnectionState.CONNECTED -> MaterialTheme.colorScheme.primaryContainer
-                        ConnectionState.DISCONNECTING -> MaterialTheme.colorScheme.surfaceContainer
+                        ConnectionState.CONNECTING,
+                        ConnectionState.DISCONNECTING,
                         ConnectionState.DISCONNECTED -> MaterialTheme.colorScheme.surfaceDim
-                        ConnectionState.AVAILABLE -> MaterialTheme.colorScheme.surfaceBright
+                        ConnectionState.AVAILABLE -> MaterialTheme.colorScheme.secondaryContainer
+                        ConnectionState.CONNECTED -> MaterialTheme.colorScheme.primaryContainer
                     },
                     animationSpec = spring(
                         dampingRatio = Spring.DampingRatioMediumBouncy,
@@ -301,16 +301,13 @@ fun DeviceListScreen(
 
                 val iconColor by animateColorAsState(
                     targetValue = when (connectionState) {
-                        ConnectionState.CONNECTING -> MaterialTheme.colorScheme.onSecondaryContainer
-                        ConnectionState.CONNECTED -> MaterialTheme.colorScheme.onPrimaryContainer
-                        ConnectionState.DISCONNECTING -> MaterialTheme.colorScheme.onSurface
-                        ConnectionState.DISCONNECTED -> MaterialTheme.colorScheme.contentColorFor(
+                        ConnectionState.CONNECTING,
+                        ConnectionState.DISCONNECTING,
+                        ConnectionState.DISCONNECTED -> contentColorFor(
                             MaterialTheme.colorScheme.surfaceDim
                         )
-
-                        ConnectionState.AVAILABLE -> MaterialTheme.colorScheme.contentColorFor(
-                            MaterialTheme.colorScheme.surfaceBright
-                        )
+                        ConnectionState.AVAILABLE -> MaterialTheme.colorScheme.onSecondaryContainer
+                        ConnectionState.CONNECTED -> MaterialTheme.colorScheme.onPrimaryContainer
                     },
                     animationSpec = spring(
                         dampingRatio = Spring.DampingRatioMediumBouncy,
@@ -345,7 +342,7 @@ fun DeviceListScreen(
                                                 CoroutineScope(Dispatchers.IO).launch {
                                                     when (connectionState) {
                                                         ConnectionState.CONNECTED -> device.disconnect()
-                                                        ConnectionState.DISCONNECTED -> device.connect()
+                                                        ConnectionState.AVAILABLE -> device.connect()
                                                         else -> {}
                                                     }
                                                 }
@@ -414,20 +411,6 @@ fun DeviceListScreen(
                         },
                         supportingContent = {
                             when (connectionState) {
-                                ConnectionState.AVAILABLE -> {
-                                    when (deviceState) {
-                                        is AppleState -> {
-//                                        battery from BLE
-                                        }
-
-                                        else -> Text(
-                                            text = "????",
-                                            style = MaterialTheme.typography.bodySmall,
-                                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                                        )
-                                    }
-                                }
-
                                 ConnectionState.CONNECTING -> {
                                     Text(
                                         text = stringResource(R.string.connecting),
@@ -438,6 +421,7 @@ fun DeviceListScreen(
 
                                 ConnectionState.DISCONNECTING,
                                 ConnectionState.DISCONNECTED,
+                                ConnectionState.AVAILABLE,
                                 ConnectionState.CONNECTED -> {
                                     when (deviceState) {
                                         is AppleState -> {

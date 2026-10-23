@@ -51,10 +51,10 @@ import me.kavishdevar.librepods.core.devices.BaseCapability
 import me.kavishdevar.librepods.presentation.components.primitives.StyledButton
 import me.kavishdevar.librepods.presentation.components.primitives.StyledList
 import me.kavishdevar.librepods.presentation.components.primitives.StyledListItem
-import me.kavishdevar.librepods.presentation.components.primitives.styledListItem
 import me.kavishdevar.librepods.presentation.components.primitives.StyledScaffold
 import me.kavishdevar.librepods.presentation.components.primitives.StyledSlider
 import me.kavishdevar.librepods.presentation.components.primitives.StyledToggle
+import me.kavishdevar.librepods.presentation.components.primitives.styledListItem
 import me.kavishdevar.librepods.presentation.icons.LocalIcons
 import me.kavishdevar.librepods.presentation.viewmodel.AppleViewModel
 import kotlin.time.Duration.Companion.milliseconds
@@ -283,13 +283,13 @@ fun AccessibilitySettingsScreen(
 
             StyledSlider(
                 label = stringResource(R.string.tone_volume),
-                description = stringResource(R.string.tone_volume_description),
+                description = if (toneVolumeValue.floatValue > 80f) stringResource(R.string.tone_volume_above_recommended_description) else stringResource(R.string.tone_volume_description),
                 value = toneVolumeValue.floatValue,
                 onValueChange = {
                     toneVolumeValue.floatValue = it
                 },
-                valueRange = 0f..100f,
-                snapPoints = listOf(75f),
+                valueRange = 15f..100f,
+                snapPoints = listOf(80f),
                 startImageVector = LocalIcons.current.SpeakerMin,
                 endImageVector = LocalIcons.current.SpeakerMax,
                 independent = true,

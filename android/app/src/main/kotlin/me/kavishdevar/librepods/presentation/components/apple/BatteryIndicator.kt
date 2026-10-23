@@ -46,6 +46,7 @@ import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.graphics.isSpecified
 import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.platform.LocalDensity
@@ -71,7 +72,8 @@ fun BatteryIndicator(
     status: BatteryStatus,
     imageVectorName: String? = null,
     previousCharging: Boolean = false,
-    showLabel: Boolean = true
+    showLabel: Boolean = true,
+    surfaceColor: Color = Color.Unspecified
 ) {
     val design = LocalDesign.current
     val isDarkTheme = MaterialTheme.colorScheme.surface.luminance() < 0.5f
@@ -92,7 +94,7 @@ fun BatteryIndicator(
 
     Column(
         modifier = Modifier
-            .background(if (design.colorStyle == ColorStyle.Custom) MaterialTheme.colorScheme.surface else MaterialTheme.colorScheme.surfaceContainer) // just for haze to work
+            .background(if (surfaceColor.isSpecified) surfaceColor else if (design.colorStyle == ColorStyle.Custom) MaterialTheme.colorScheme.surface else MaterialTheme.colorScheme.surfaceContainer) // just for haze to work
             .padding(4.dp)
             .visible(batteryPercentage > 0),
         horizontalAlignment = Alignment.CenterHorizontally

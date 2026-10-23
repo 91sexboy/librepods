@@ -12,6 +12,7 @@ import me.kavishdevar.librepods.core.devices.AppleSettings
 import me.kavishdevar.librepods.data.app.AccessibilitySettings
 import me.kavishdevar.librepods.data.app.FontSettings
 import me.kavishdevar.librepods.data.app.IslandSettings
+import me.kavishdevar.librepods.data.app.ProximityCardSettings
 import kotlin.time.Instant
 
 object Converters {
@@ -79,6 +80,14 @@ object Converters {
 
     @ColumnTypeConverter
     fun bytesToIslandSettings(bytes: ByteArray): IslandSettings =
+        cbor.decodeFromByteArray(bytes)
+
+    @ColumnTypeConverter
+    fun proximityCardSettingsToByte(settings: ProximityCardSettings): ByteArray =
+        cbor.encodeToByteArray(settings)
+
+    @ColumnTypeConverter
+    fun bytesToProximityCardSettings(bytes: ByteArray): ProximityCardSettings =
         cbor.decodeFromByteArray(bytes)
 
     @ColumnTypeConverter

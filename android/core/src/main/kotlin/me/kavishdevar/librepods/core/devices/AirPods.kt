@@ -19,6 +19,7 @@
 package me.kavishdevar.librepods.core.devices
 
 import androidx.annotation.DrawableRes
+import androidx.annotation.RawRes
 import kotlinx.serialization.Serializable
 import me.kavishdevar.librepods.core.R
 
@@ -63,6 +64,7 @@ data class AirPodsSpec(
     val genericIconName: String = "AirPodsPro3",
     @DrawableRes val primaryImageRes: Int = R.drawable.img_airpods_pro_2_buds,
     @DrawableRes val caseImageRes: Int? = R.drawable.img_airpods_pro_2_case,
+    @RawRes val videoResId: Int = R.raw.airpods_pro_2_prox_loop,
     val baseCapabilities: Set<BaseCapability>,
 )
 

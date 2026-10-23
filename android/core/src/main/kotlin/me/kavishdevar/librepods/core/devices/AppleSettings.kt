@@ -25,13 +25,15 @@ data class AppleSettings(
     val showIslandPopup: Boolean = true, // show_island_popup
     val showBottomSheetPopup: Boolean = true, // show_bottom_sheet_popup
 
-    val takeoverWhenDisconnected: Boolean = true, // takeover_when_disconnected
-    val takeoverWhenIdle: Boolean = true, // takeover_when_idle
-    val takeoverWhenMusic: Boolean = true, // takeover_when_music
-    val takeoverWhenCall: Boolean = true, // takeover_when_call
+    val alwaysConnectWhenAccessoryDisconnected: Boolean = true,
 
-    val takeoverWhenRingingCall: Boolean = true, // takeover_when_ringing_call
-    val takeoverWhenMediaStart: Boolean = true, // takeover_when_media_start
+    val connectOnPhoneWhenAccessoryDisconnected: Boolean = true,
+    val connectOnPhoneWhenAccessoryIdle: Boolean = true,
+    val connectOnPhoneWhenAccessoryMusic: Boolean = true,
+
+    val connectOnMediaWhenAccessoryDisconnected: Boolean = true,
+    val connectOnMediaWhenAccessoryIdle: Boolean = true,
+    val connectOnMediaWhenAccessoryMusic: Boolean = false,
 
     val conversationAwarenessPauseMusicEnabled: Boolean = false, // conversation_awareness_pause_music
     val relativeConversationAwarenessVolumeEnabled: Boolean = true, // relative_conversation_awareness_volume

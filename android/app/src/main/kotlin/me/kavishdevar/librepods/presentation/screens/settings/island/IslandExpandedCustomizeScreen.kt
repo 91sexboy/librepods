@@ -25,10 +25,11 @@ import androidx.compose.ui.unit.dp
 import me.kavishdevar.librepods.LibrePodsApplication
 import me.kavishdevar.librepods.R
 import me.kavishdevar.librepods.data.app.Design
+import me.kavishdevar.librepods.data.app.DesignSystem
 import me.kavishdevar.librepods.data.app.FontFamilyOption
 import me.kavishdevar.librepods.data.app.FontSettings
-import me.kavishdevar.librepods.data.app.IslandBatteryStyle
 import me.kavishdevar.librepods.data.app.IslandSettings
+import me.kavishdevar.librepods.data.app.OverlayBatteryStyle
 import me.kavishdevar.librepods.presentation.components.primitives.MaterialButtonStyle
 import me.kavishdevar.librepods.presentation.components.primitives.StyledButton
 import me.kavishdevar.librepods.presentation.components.primitives.StyledList
@@ -36,7 +37,6 @@ import me.kavishdevar.librepods.presentation.components.primitives.StyledScaffol
 import me.kavishdevar.librepods.presentation.components.primitives.StyledSlider
 import me.kavishdevar.librepods.presentation.components.primitives.StyledToggle
 import me.kavishdevar.librepods.presentation.components.primitives.styledListItem
-import me.kavishdevar.librepods.data.app.DesignSystem
 import me.kavishdevar.librepods.presentation.design.LibrePodsTheme
 import me.kavishdevar.librepods.presentation.overlays.IslandState
 import me.kavishdevar.librepods.presentation.utils.LocalDebugMode
@@ -248,44 +248,44 @@ fun IslandExpandedSettingsScreen(
                 ) {
                     styledListItem(
                         contentText = stringResource(R.string.don_t_show),
-                        selected = islandSettings.expandedBatteryStyle == IslandBatteryStyle.NONE,
+                        selected = islandSettings.expandedBatteryStyle == OverlayBatteryStyle.NONE,
                         onClick = {
                             updateIslandSettings(
                                 islandSettings.copy(
-                                    expandedBatteryStyle = IslandBatteryStyle.NONE
+                                    expandedBatteryStyle = OverlayBatteryStyle.NONE
                                 )
                             )
                         }
                     )
                     styledListItem(
                         contentText = stringResource(R.string.ring),
-                        selected = islandSettings.expandedBatteryStyle == IslandBatteryStyle.CIRCLE,
+                        selected = islandSettings.expandedBatteryStyle == OverlayBatteryStyle.CIRCLE,
                         onClick = {
                             updateIslandSettings(
                                 islandSettings.copy(
-                                    expandedBatteryStyle = IslandBatteryStyle.CIRCLE
+                                    expandedBatteryStyle = OverlayBatteryStyle.CIRCLE
                                 )
                             )
                         }
                     )
                     styledListItem(
                         contentText = stringResource(R.string.text),
-                        selected = islandSettings.expandedBatteryStyle == IslandBatteryStyle.TEXT,
+                        selected = islandSettings.expandedBatteryStyle == OverlayBatteryStyle.TEXT,
                         onClick = {
                             updateIslandSettings(
                                 islandSettings.copy(
-                                    expandedBatteryStyle = IslandBatteryStyle.TEXT
+                                    expandedBatteryStyle = OverlayBatteryStyle.TEXT
                                 )
                             )
                         }
                     )
                     styledListItem(
                         contentText = stringResource(R.string.both),
-                        selected = islandSettings.expandedBatteryStyle == IslandBatteryStyle.CIRCLE_TEXT,
+                        selected = islandSettings.expandedBatteryStyle == OverlayBatteryStyle.CIRCLE_TEXT,
                         onClick = {
                             updateIslandSettings(
                                 islandSettings.copy(
-                                    expandedBatteryStyle = IslandBatteryStyle.CIRCLE_TEXT
+                                    expandedBatteryStyle = OverlayBatteryStyle.CIRCLE_TEXT
                                 )
                             )
                         }

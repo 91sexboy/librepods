@@ -86,15 +86,10 @@ class AppleDevice(
         }
     }
 
-    // BLE (case and buds both)
-    fun updateBatteryState(batteries: Set<Battery>) {
-        _state.update { state ->
-            val updates = batteries.associateBy { it.component }
-            state.copy(
-                battery = state.battery.filterNot { it.component in updates }.toSet() + updates.values
-            )
-        }
-    }
+    // should use applestate.state which gives the actual state from proximity instead of creating our own ConnectionSTate.AVAILABLE... well
+    internal fun updateConnectionState(
+        connectionState: ConnectionState
+    ) = _connectionState.update { connectionState }
 
     internal inline fun updateState(
         transform: (AppleState) -> AppleState
@@ -171,6 +166,11 @@ class AppleDevice(
     }
 
     override fun disconnect() {
+        _state.update {
+            it.copy(
+                lastDisconnected = System.currentTimeMillis()
+            )
+        }
         _connectionState.update {
             ConnectionState.DISCONNECTING
         }

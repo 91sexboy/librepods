@@ -150,6 +150,21 @@ sealed interface Screen: NavKey {
 
     @Serializable
     data object HazeSettings: Screen
+
+    @Serializable
+    data object ProxCardSizeAndPosition: Screen
+
+    @Serializable
+    data object ProxCardCustomize: Screen
+
+    @Serializable
+    data class OverlaySettings(
+        override val macAddress: MacAddress
+    ): DeviceScreen
+    @Serializable
+    data class ProxConnectSettings(
+        override val macAddress: MacAddress
+    ): DeviceScreen
 }
 
 @Serializable

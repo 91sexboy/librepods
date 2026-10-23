@@ -120,9 +120,10 @@ fun BLESettingsScreen(
                 label = stringResource(R.string.ble_report_delay),
                 value = sliderValue.floatValue,
                 onValueChange = { sliderValue.floatValue = it },
-                valueRange = 0f..1000f,
+                valueRange = 50f..2500f,
+                snapPoints = listOf(50f, 100f, 250f, 500f, 750f, 1000f, 1500f, 2000f, 2500f),
                 description = sliderValue.floatValue.toString() + "ms",
-                independent = true // i thought I got rid of all this lol
+                independent = true // i thought I got rid of all this lol <- TODO
             )
 
             Spacer(modifier = Modifier.height(bottomPadding))

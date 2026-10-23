@@ -10,9 +10,6 @@ import android.app.Service
 import android.appwidget.AppWidgetManager
 import android.bluetooth.BluetoothDevice
 import android.bluetooth.BluetoothManager
-import android.bluetooth.le.ScanCallback
-import android.bluetooth.le.ScanFilter
-import android.bluetooth.le.ScanResult
 import android.bluetooth.le.ScanSettings
 import android.content.BroadcastReceiver
 import android.content.ComponentName
@@ -44,7 +41,6 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
@@ -56,31 +52,35 @@ import me.kavishdevar.librepods.audio.WavWriter
 import me.kavishdevar.librepods.core.bluetooth.MacAddress
 import me.kavishdevar.librepods.core.bluetooth.aacp.types.ControlCommandIdentifier
 import me.kavishdevar.librepods.core.bluetooth.aacp.types.MagicKeyType
-import me.kavishdevar.librepods.core.bluetooth.verifyRPA
+import me.kavishdevar.librepods.core.bluetooth.ble.BLEManager
+import me.kavishdevar.librepods.core.data.apple.AccessoryState
 import me.kavishdevar.librepods.core.data.heartrate.HeartRateSample
 import me.kavishdevar.librepods.core.data.recording.Recording
+import me.kavishdevar.librepods.core.devices.AirPodsSpecs
 import me.kavishdevar.librepods.core.devices.AppleDevice
 import me.kavishdevar.librepods.core.devices.AppleSettings
 import me.kavishdevar.librepods.core.devices.AppleState
-import me.kavishdevar.librepods.core.devices.Battery
 import me.kavishdevar.librepods.core.devices.BatteryComponent
 import me.kavishdevar.librepods.core.devices.BatteryStatus
 import me.kavishdevar.librepods.core.devices.ComponentStatus
 import me.kavishdevar.librepods.core.devices.ConnectionState
 import me.kavishdevar.librepods.core.devices.Device
+import me.kavishdevar.librepods.core.devices.DeviceComponent
 import me.kavishdevar.librepods.core.devices.DeviceComponentState
+import me.kavishdevar.librepods.core.devices.format
 import me.kavishdevar.librepods.core.utils.redactMac
+import me.kavishdevar.librepods.data.app.LibrePodsIntents
 import me.kavishdevar.librepods.database.app.AppSettingsEntity
 import me.kavishdevar.librepods.presentation.activities.MainActivity
 import me.kavishdevar.librepods.presentation.overlays.IslandType
 import me.kavishdevar.librepods.presentation.overlays.IslandWindow
+import me.kavishdevar.librepods.presentation.overlays.ProximityCardWindow
 import me.kavishdevar.librepods.presentation.widgets.BatteryWidget
 import me.kavishdevar.librepods.utils.MediaController
 import me.kavishdevar.librepods.utils.calculateLevel
 import java.time.ZoneOffset
-import javax.crypto.Cipher
+import kotlin.collections.getOrNull
 import kotlin.time.Duration
-import kotlin.time.Duration.Companion.seconds
 import kotlin.time.toJavaInstant
 
 private const val TAG = "LibrePodsService"
@@ -99,12 +99,8 @@ class LibrePodsService: Service() {
     private val serviceCoroutineScope = CoroutineScope(Dispatchers.IO + SupervisorJob())
 
     val irkMap = mutableMapOf<MacAddress, ByteArray>()
-    val rpasByPublicMac = mutableMapOf<MacAddress, MutableSet<MacAddress>>()
-
     val encKeyMap = mutableMapOf<MacAddress, ByteArray>()
-    val caseAddressByPublicMac = mutableMapOf<MacAddress, MutableSet<MacAddress>>()
 
-    val rejectedRandomMac = mutableSetOf<MacAddress>()
     private val eldDecoder = EldDecoder()
 
     private val wavWriters = mutableMapOf<Recording, WavWriter>()
@@ -125,6 +121,22 @@ class LibrePodsService: Service() {
         (application as LibrePodsApplication).heartRateRepository
     }
 
+
+    private val bleManager by lazy {
+        BLEManager(
+            context = this,
+            scope = serviceCoroutineScope,
+
+            scanMode = ScanSettings.SCAN_MODE_BALANCED,
+            reportDelay = 500L,
+
+            getDevices = { devices.value },
+
+            irkMap = irkMap,
+            encKeyMap = encKeyMap
+        )
+    }
+
     @Suppress("unused")
     private val recordingRepository by lazy {
         (application as LibrePodsApplication).recordingRepository
@@ -136,6 +148,10 @@ class LibrePodsService: Service() {
 
     private val islandWindow: IslandWindow by lazy {
         (application as LibrePodsApplication).islandWindow
+    }
+
+    private val proximityCardWindow: ProximityCardWindow by lazy {
+        (application as LibrePodsApplication).proximityCardWindow
     }
 
     @Suppress("unused")
@@ -157,6 +173,7 @@ class LibrePodsService: Service() {
         override fun onCallStateChanged(state: Int) {
             if (state == TelephonyManager.CALL_STATE_RINGING) {
                 isCallRinging = true
+                attemptConnect("phone")
                 _devices.value.values.firstOrNull { device ->
                     device is AppleDevice &&
                     device.connectionState.value == ConnectionState.CONNECTED &&
@@ -209,6 +226,42 @@ class LibrePodsService: Service() {
         }
     }
 
+    private fun attemptConnect(trigger: String) {
+        val candidates = bleManager.getCandidateDevicesForProxConnect()
+        if (candidates.isEmpty()) {
+            Log.d(TAG, "No valid BLE candidates found for $trigger takeover")
+            return
+        }
+
+        for ((device, accessoryState) in candidates) {
+            val settings = device.settings.value
+
+            val shouldConnect = when (trigger) {
+                "phone" -> when (accessoryState) {
+                    AccessoryState.Disconnected -> settings.connectOnPhoneWhenAccessoryDisconnected
+                    AccessoryState.Idle -> settings.connectOnPhoneWhenAccessoryIdle
+                    AccessoryState.Music -> settings.connectOnPhoneWhenAccessoryMusic
+                    else -> false
+                }
+                "media" -> when (accessoryState) {
+                    AccessoryState.Disconnected -> settings.connectOnMediaWhenAccessoryDisconnected
+                    AccessoryState.Idle -> settings.connectOnMediaWhenAccessoryIdle
+                    AccessoryState.Music -> settings.connectOnMediaWhenAccessoryMusic
+                    else -> false
+                } else -> false
+            }
+
+            if (shouldConnect) {
+                Log.i(
+                    TAG,
+                    "Connecting to ${device.macAddress.toRedactedString()} (state state: $accessoryState) for $trigger"
+                )
+                device.connect()
+                break
+            }
+        }
+    }
+
     override fun onCreate() {
         super.onCreate()
 
@@ -218,12 +271,15 @@ class LibrePodsService: Service() {
 
         loadDevices()
 
-        startBleScanner()
+        bleManager.start()
 
         MediaController.initialize(
             audioManager = getSystemService(AudioManager::class.java),
             sharedPreferences = getSharedPreferences("settings", MODE_PRIVATE),
-            localMac = null // TODO: smart routing. MAC_ADDRESS message gives host mac?
+            localMac = null, // TODO: smart routing. MAC_ADDRESS message gives host mac?,
+            musicPlayed = {
+                attemptConnect("media")
+            }
         )
 
         if (
@@ -242,33 +298,39 @@ class LibrePodsService: Service() {
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        when (intent?.action) {
-            // TODO: make this a sealed class or something, instead of stringly typed. also, make this different for widget so other apps can use it too
-            "ACTION_SET_ANC_MODE" -> {
-                val appWidgetId = intent.getIntExtra(AppWidgetManager.EXTRA_APPWIDGET_ID, -1)
-                val macAddress = intent.getStringExtra("MAC_ADDRESS")?.let { MacAddress(it) }
+        if (intent != null) {
+            when (intent.action) {
+                LibrePodsIntents.ACTION_CONNECT -> {
+                    val macAddress = intent.getStringExtra(LibrePodsIntents.Extras.MAC_ADDRESS)?.let { MacAddress(it) }
+                    val device = devices.value[macAddress]
+                    device?.connect()
+                }
+                LibrePodsIntents.ACTION_SET_ANC_MODE -> {
+                    val appWidgetId = intent.getIntExtra(AppWidgetManager.EXTRA_APPWIDGET_ID, -1)
+                    val macAddress = intent.getStringExtra(LibrePodsIntents.Extras.MAC_ADDRESS)?.let { MacAddress(it) }
 
-                val ancMode = intent.getIntExtra("ANC_MODE", -1)
-                val device =
-                    widgetConfigRepository.widgetConfigs.value.find { it.appWidgetId == appWidgetId }
-                        ?.let { config ->
-                            devices.value[config.macAddress]
-                        } ?: devices.value[macAddress]
-                    ?: devices.value.values.firstOrNull { it.connectionState.value == ConnectionState.CONNECTED }
+                    val ancMode = intent.getIntExtra(LibrePodsIntents.Extras.ANC_MODE, -1)
+                    val device =
+                        widgetConfigRepository.widgetConfigs.value.find { it.appWidgetId == appWidgetId }
+                            ?.let { config ->
+                                devices.value[config.macAddress]
+                            } ?: devices.value[macAddress]
+                        ?: devices.value.values.firstOrNull { it.connectionState.value == ConnectionState.CONNECTED }
 
-                if (device != null && ancMode != -1) {
-                    Log.i(
-                        TAG,
-                        "Setting ANC mode to $ancMode for device ${device.macAddress.toRedactedString()}"
-                    )
-                    when (device) {
-                        is AppleDevice -> device.setControlCommand(
-                            ControlCommandIdentifier.LISTENING_MODE,
-                            ancMode
+                    if (device != null && ancMode != -1) {
+                        Log.i(
+                            TAG,
+                            "Setting ANC mode to $ancMode for device ${device.macAddress.toRedactedString()}"
                         )
+                        when (device) {
+                            is AppleDevice -> device.setControlCommand(
+                                ControlCommandIdentifier.LISTENING_MODE,
+                                ancMode
+                            )
+                        }
+                    } else {
+                        Log.w(TAG, "No connected Apple device found or invalid ANC mode: $ancMode")
                     }
-                } else {
-                    Log.w(TAG, "No connected Apple device found or invalid ANC mode: $ancMode")
                 }
             }
         }
@@ -278,7 +340,7 @@ class LibrePodsService: Service() {
 
     override fun onDestroy() {
         unregisterBluetoothReceivers()
-        stopBleScanner()
+        bleManager.stop()
         serviceCoroutineScope.cancel("Service stopped")
         super.onDestroy()
     }
@@ -348,8 +410,9 @@ class LibrePodsService: Service() {
 
     private fun onDeviceDisconnected(mac: MacAddress) {
         Log.i(TAG, "Device disconnected: $mac")
-        devices.value[mac]?.disconnect()
-        updateDeviceNotification(device = devices.value[mac] ?: return)
+        val device = devices.value[mac]?: return
+        device.disconnect()
+        updateDeviceNotification(device = device)
     }
 
     private fun loadDevices() {
@@ -417,265 +480,6 @@ class LibrePodsService: Service() {
         unregisterReceiver(bluetoothReceiver)
     }
 
-    private val bleScanCallback = object : ScanCallback() {
-        override fun onScanResult(callbackType: Int, result: ScanResult) {
-            handleScanResult(result)
-        }
-
-        override fun onBatchScanResults(results: List<ScanResult?>?) {
-            if (results == null) return
-            for (result in results) {
-                if (result != null) {
-                    handleScanResult(result)
-                }
-            }
-        }
-    }
-
-    private fun handleScanResult(result: ScanResult) {
-        val macAddress = MacAddress(result.device.address)
-
-        val manufacturerData = result.scanRecord
-            ?.getManufacturerSpecificData(0x004C)
-
-        if (manufacturerData != null &&
-            handleCaseAdvertisement(macAddress, manufacturerData)
-        ) {
-            return
-        }
-
-        if (rejectedRandomMac.contains(macAddress)) return
-
-        val device = getDeviceFromBleMac(macAddress) ?: return
-
-        when (device) {
-            is AppleDevice -> {
-                if (manufacturerData == null) return
-
-                Log.i(
-                    TAG,
-                    "Apple device scan result: ${manufacturerData.toHexString()}"
-                )
-            }
-        }
-    }
-
-    private fun handleCaseAdvertisement(
-        caseMac: MacAddress,
-        data: ByteArray
-    ): Boolean {
-        var offset = 0
-
-        while (offset + 2 <= data.size) {
-            val kind = data[offset].toInt() and 0xFF
-            val rawLength = data[offset + 1].toInt() and 0xFF
-            val length = rawLength and 0x1F
-            val payloadStart = offset + 2
-            val payloadEnd = payloadStart + length
-
-            if (payloadEnd > data.size) break
-
-            if (
-                kind == 0x07 &&
-                length >= 17 &&
-                data[payloadStart] == 0x06.toByte()
-            ) {
-                val encrypted = data.copyOfRange(
-                    payloadStart + 1,
-                    payloadStart + 17
-                )
-
-                for ((publicMac, key) in encKeyMap.toMap()) {
-                    val plaintext = try {
-                        @SuppressLint("GetInstance")
-                        val cipher = Cipher.getInstance(
-                            "AES/ECB/NoPadding"
-                        )
-                        cipher.init(
-                            Cipher.DECRYPT_MODE,
-                            javax.crypto.spec.SecretKeySpec(key, "AES")
-                        )
-                        cipher.doFinal(encrypted)
-                    } catch (_: Exception) {
-                        continue
-                    }
-
-                    if (!isValidCasePlaintext(plaintext)) continue
-
-                    val device = devices.value.values.firstOrNull {
-                        it.macAddress == publicMac
-                    } as? AppleDevice ?: continue
-
-                    val oldCaseMac = caseAddressByPublicMac[publicMac]
-                        ?.firstOrNull()
-
-                    if (oldCaseMac != caseMac) {
-                        caseAddressByPublicMac[publicMac] =
-                            mutableSetOf(caseMac)
-
-                        Log.i(
-                            TAG,
-                            "Case address for ${publicMac.toRedactedString()} " +
-                                "updated: $oldCaseMac -> $caseMac"
-                        )
-                    }
-
-                    rejectedRandomMac.remove(caseMac)
-
-                    val batteries = buildSet {
-                        for ((component, index) in listOf(
-                            BatteryComponent.CASE to 3,
-                            BatteryComponent.LEFT to 4,
-                            BatteryComponent.RIGHT to 5
-                        )) {
-                            val raw = plaintext[index].toInt() and 0xFF
-                            if (raw == 0xFF) continue
-
-                            val charging = raw and 0x80 != 0
-
-                            add(
-                                Battery(
-                                    component = component,
-                                    level = raw and 0x7F,
-                                    status = if (charging) {
-                                        BatteryStatus.CHARGING
-                                    } else {
-                                        BatteryStatus.NOT_CHARGING
-                                    }
-                                )
-                            )
-                        }
-                    }
-
-                    if (batteries.isNotEmpty()) {
-                        Log.i(
-                            TAG,
-                            "Battery state from case for ${device.macAddress.toRedactedString()} (address: ${caseMac.toRedactedString()}): $batteries"
-                        )
-                        device.updateBatteryState(batteries)
-                    }
-
-                    return true
-                }
-            }
-
-            offset = payloadEnd
-        }
-
-        return false
-    }
-
-    private fun isValidCasePlaintext(pt: ByteArray): Boolean {
-        if (pt.size != 16) return false
-
-        if (pt[1] != 0x20.toByte()) return false
-
-        if (pt[15] != 0.toByte()) return false
-
-        return (3..5).all { index ->
-            val battery = pt[index].toInt() and 0xFF
-            battery == 0xFF || (battery and 0x7F) <= 100
-        }
-    }
-
-    private fun getDeviceFromBleMac(bleMac: MacAddress): Device<*, *, *>? {
-        var deviceMac: MacAddress? = devices.value[bleMac]?.macAddress
-
-        if (deviceMac == null) {
-            rpasByPublicMac.forEach { (address, addresses) ->
-                if (addresses.contains(bleMac)) {
-                    deviceMac = address
-                }
-            }
-        }
-
-        if (deviceMac == null) {
-            irkMap.forEach { (macAddress, irk) ->
-                Log.d(TAG, "Verifying $bleMac against ${irk.toHexString()}")
-                if (verifyRPA(bleMac.value, irk)) {
-                    Log.i(TAG, "New RPA for device ${macAddress.toRedactedString()}")
-                    deviceMac = macAddress
-                    val newSet = rpasByPublicMac[macAddress] ?: mutableSetOf()
-                    newSet.add(bleMac)
-                    rpasByPublicMac[macAddress] = newSet
-                }
-            }
-        }
-
-        if (deviceMac == null) {
-            rejectedRandomMac.add(bleMac)
-        }
-
-        return devices.value.values.firstOrNull { it.macAddress == deviceMac }
-    }
-
-    private fun startBleScanner() {
-        val bluetoothManager = getSystemService(BluetoothManager::class.java)
-        val bluetoothAdapter = bluetoothManager.adapter
-
-        val bleScanner = bluetoothAdapter.bluetoothLeScanner
-
-        if (bleScanner == null) {
-            Log.w(TAG, "startBleScanner: ble scanner not available")
-            return
-        }
-
-        val appSettings = appDataRepository.settings.value
-
-        val scanSettings = ScanSettings.Builder()
-            .setScanMode(appSettings.bleScanMode)
-            .setMatchMode(ScanSettings.MATCH_MODE_AGGRESSIVE)
-            .setCallbackType(ScanSettings.CALLBACK_TYPE_ALL_MATCHES)
-            .setNumOfMatches(ScanSettings.MATCH_NUM_MAX_ADVERTISEMENT)
-            .setReportDelay(appSettings.bleReportDelay)
-            .build()
-
-        val appleFilter = ScanFilter.Builder()
-            .setManufacturerData(
-                0x004C,
-                null,
-                null
-            )
-            .build()
-
-        val scanFilters = listOf(
-            appleFilter
-        )
-
-        try {
-            bleScanner.startScan(scanFilters, scanSettings, bleScanCallback)
-            Log.i(TAG, "Started BLE scan with user-set params: scanMode: ${appSettings.bleScanMode}, reportDelay: ${appSettings.bleReportDelay}")
-        } catch (e: Exception) {
-            if (e.message?.contains("too frequently") == true) {
-                CoroutineScope(Dispatchers.IO).launch {
-                    delay(5.seconds)
-                    startBleScanner()
-                }
-            } else {
-                Log.e(TAG, "Error starting BLE scan", e)
-            }
-        }
-    }
-
-    private fun stopBleScanner() {
-        val bluetoothManager = getSystemService(BluetoothManager::class.java)
-        val bluetoothAdapter = bluetoothManager.adapter
-
-        val bleScanner = bluetoothAdapter.bluetoothLeScanner
-
-        if (bleScanner == null) {
-            Log.w(TAG, "stopBleScanner: ble scanner not available")
-            return
-        }
-
-        try {
-            bleScanner.stopScan(bleScanCallback)
-            Log.i(TAG, "Stopped BLE scan")
-        } catch (e: Exception) {
-            Log.e(TAG, "Error stopping BLE scan", e)
-        }
-    }
-
     private fun createDevice(
         bluetoothDevice: BluetoothDevice
     ): Device<*, *, *>? {
@@ -713,13 +517,14 @@ class LibrePodsService: Service() {
                     val irk = entity.cache.magicKeys[MagicKeyType.IRK]
                     if (irk != null) {
                         irkMap[device.macAddress] = irk
-                        rejectedRandomMac.clear()
+                        bleManager.updateIrkMap(irkMap)
                         Log.d(TAG, "Loaded IRK for device ${device.macAddress.toRedactedString()}")
                     }
 
                     val encKey = entity.cache.magicKeys[MagicKeyType.ENC_KEY]
                     if (encKey != null) {
                         encKeyMap[device.macAddress] = encKey
+                        bleManager.updateEncKeyMap(encKeyMap)
                         Log.d(TAG, "Loaded ENC_KEY for device ${device.macAddress.toRedactedString()}")
                     }
 
@@ -756,19 +561,47 @@ class LibrePodsService: Service() {
             }
         }
 
+        if (device != null) observeConnectionState(device)
+
         return device
+    }
+
+    fun observeConnectionState(device: Device<*, *, *>) {
+        serviceCoroutineScope.launch {
+            var previousConnectionState = ConnectionState.DISCONNECTED
+            device.connectionState.collect { state ->
+                if (proximityCardWindow.isVisible) proximityCardWindow.updateConnectionState(state == ConnectionState.CONNECTED)
+
+                if (previousConnectionState == ConnectionState.DISCONNECTED && state == ConnectionState.AVAILABLE) {
+                    when (device) {
+                        is AppleDevice -> {
+                            val settings = device.settings.value
+                            val state = device.state.value
+                            if (settings.alwaysConnectWhenAccessoryDisconnected && System.currentTimeMillis() - state.lastDisconnected > 5_000) {
+                                Log.i(TAG, "device ${device.macAddress.toRedactedString()} is nearby, connecting")
+                                device.connect()
+                            }
+                        }
+                    }
+                }
+
+                previousConnectionState = state
+            }
+        }
     }
 
     fun observeAppSettings(): Job {
         var oldAppSettings: AppSettingsEntity = appDataRepository.settings.value
 
-        return CoroutineScope(Dispatchers.IO).launch {
+        return serviceCoroutineScope.launch {
             appDataRepository.settings.collect { settings ->
-                if (oldAppSettings.bleReportDelay != settings.bleReportDelay || oldAppSettings.bleScanMode != settings.bleScanMode) {
-                    Log.d(TAG, "BLE settings changed: $settings, restarting scanner")
-                    stopBleScanner()
-                    startBleScanner()
+                if (oldAppSettings.bleReportDelay != settings.bleReportDelay) {
+                    bleManager.updateReportDelay(settings.bleReportDelay)
                 }
+                if (oldAppSettings.bleScanMode != settings.bleScanMode) {
+                    bleManager.updateScanMode(settings.bleScanMode)
+                }
+
                 islandWindow.updateSettings(settings)
                 oldAppSettings = settings
             }
@@ -782,7 +615,6 @@ class LibrePodsService: Service() {
             device.state.collect { state ->
                 val deviceSettings = device.settings.value
 
-
                 if (state.aacpPackets != previousState.aacpPackets) {
                     if (!appDataRepository.state.value.hasConnectedToAACP) {
                         appDataRepository.updateState { it.copy(hasConnectedToAACP = true) }
@@ -793,6 +625,53 @@ class LibrePodsService: Service() {
                 }
 
                 when {
+                    state.state != previousState.state -> {
+                        if (state.state == AccessoryState.Disconnected) {
+                            if (deviceSettings.alwaysConnectWhenAccessoryDisconnected && System.currentTimeMillis() - state.lastDisconnected > 5_000) {
+                                Log.d(TAG, "device ${device.macAddress.toRedactedString()} is now disconnected, connecting")
+                            }
+                        }
+
+                        if (MediaController.getMusicActive()) {
+                            attemptConnect("media")
+                        }
+                    }
+
+                    state.caseLidOpen != previousState.caseLidOpen -> {
+                        if (state.caseLidOpen) {
+                            if (appDataRepository.settings.value.proximityCardSettings.requireBothBudsInCase) {
+                                val leftInCase = state.componentState.find { it.component == DeviceComponent.LEFT }?.status == ComponentStatus.IN_CASE ||
+                                    state.battery.find { it.component == BatteryComponent.LEFT }?.status == BatteryStatus.CHARGING ||
+                                    state.battery.find { it.component == BatteryComponent.LEFT }?.status == BatteryStatus.OPTIMIZED_CHARGING
+
+                                val rightInCase = state.componentState.find { it.component == DeviceComponent.RIGHT }?.status == ComponentStatus.IN_CASE ||
+                                    state.battery.find { it.component == BatteryComponent.RIGHT }?.status == BatteryStatus.CHARGING ||
+                                    state.battery.find { it.component == BatteryComponent.RIGHT }?.status == BatteryStatus.OPTIMIZED_CHARGING
+
+                                if (state.componentState.all { it.status == ComponentStatus.IN_CASE } || (leftInCase && rightInCase)) {
+                                    proximityCardWindow.show(
+                                        name = device.metadata.value.name,
+                                        batteries = state.battery,
+                                        spec = AirPodsSpecs.getSpec(device.metadata.value.model),
+                                        onConnect = {
+                                            device.connect()
+                                        },
+                                        airPodsConnected = device.connectionState.value == ConnectionState.CONNECTED
+                                    )
+                                } else proximityCardWindow.close()
+                            } else {
+                                proximityCardWindow.show(
+                                    name = device.metadata.value.name,
+                                    batteries = state.battery,
+                                    spec = AirPodsSpecs.getSpec(device.metadata.value.model),
+                                    onConnect = {
+                                        device.connect()
+                                    },
+                                    airPodsConnected = device.connectionState.value == ConnectionState.CONNECTED
+                                )
+                            }
+                        } else proximityCardWindow.close()
+                    }
                     state.capabilities != previousState.capabilities -> {
                         Log.i(
                             TAG,
@@ -810,13 +689,13 @@ class LibrePodsService: Service() {
                             TAG,
                             "battery state changed for device ${device.macAddress.toRedactedString()}"
                         )
-                        Log.d(TAG, "battery state: ${state.battery}")
+                        Log.d(TAG, "battery state: ${state.battery.format()}")
 
                         Log.d(TAG, "updating widgets")
                         updateWidgets()
 
-                        Log.d(TAG, "updating island window")
                         if (islandWindow.isVisible) {
+                            Log.d(TAG, "updating island window")
                             val leftBattery = state.battery.find { it.component == BatteryComponent.LEFT }
                             val rightBattery = state.battery.find { it.component == BatteryComponent.RIGHT }
 
@@ -833,7 +712,8 @@ class LibrePodsService: Service() {
                             islandWindow.updateBattery(displayBatteryLevel)
                         }
 
-                        Log.d(TAG, "updating notification")
+                        if (proximityCardWindow.isVisible) proximityCardWindow.updateBatteries(state.battery)
+
                         updateDeviceNotification(device = device)
 
                         // TODO:Shizuku
@@ -1115,7 +995,6 @@ class LibrePodsService: Service() {
                         otherDeviceName = otherDeviceName,
 
                         openApp = {
-                            Log.d(TAG, "Opening app")
                             val intent = Intent(
                                 this,
                                 MainActivity::class.java,
@@ -1184,48 +1063,81 @@ class LibrePodsService: Service() {
                             .setCategory(Notification.CATEGORY_STATUS)
                             .setPriority(NotificationCompat.PRIORITY_LOW)
                             .setOngoing(true)
+                    if (device.connectionState.value == ConnectionState.CONNECTED) {
+                        if (device.state.value.controlStates[ControlCommandIdentifier.ALLOW_OFF_OPTION]?.getOrNull(0) == 0x01.toByte()) {
+                            updatedNotificationBuilder.addAction(
+                                R.drawable.ic_noise_cancellation,
+                                getString(R.string.off),
+                                PendingIntent.getService(
+                                    this,
+                                    notificationId + 1,
+                                    Intent(this, LibrePodsService::class.java).apply {
+                                        action = LibrePodsIntents.ACTION_SET_ANC_MODE
+                                        putExtra(LibrePodsIntents.Extras.MAC_ADDRESS, device.macAddress.toString())
+                                        putExtra(LibrePodsIntents.Extras.ANC_MODE, 1)
+                                    },
+                                    PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+                                ),
+                            )
+                        }
+                        updatedNotificationBuilder
                             .addAction(
                                 R.drawable.ic_transparency, // icon never shows up?? (tested on AOSP ROMs)
-                                "Transparency",
+                                getString(R.string.transparency),
                                 PendingIntent.getService(
                                     this,
                                     notificationId + 3,
                                     Intent(this, LibrePodsService::class.java).apply {
-                                        action = "ACTION_SET_ANC_MODE"
-                                        putExtra("MAC_ADDRESS", device.macAddress.toString())
-                                        putExtra("ANC_MODE", 3)
+                                        action = LibrePodsIntents.ACTION_SET_ANC_MODE
+                                        putExtra(LibrePodsIntents.Extras.MAC_ADDRESS, device.macAddress.toString())
+                                        putExtra(LibrePodsIntents.Extras.ANC_MODE, 3)
                                     },
                                     PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
                                 ),
                             )
                             .addAction(
                                 R.drawable.ic_adaptive,
-                                "Adaptive",
+                                getString(R.string.adaptive),
                                 PendingIntent.getService(
                                     this,
                                     notificationId + 4,
                                     Intent(this, LibrePodsService::class.java).apply {
-                                        action = "ACTION_SET_ANC_MODE"
-                                        putExtra("MAC_ADDRESS", device.macAddress.toString())
-                                        putExtra("ANC_MODE", 4)
+                                        action = LibrePodsIntents.ACTION_SET_ANC_MODE
+                                        putExtra(LibrePodsIntents.Extras.MAC_ADDRESS, device.macAddress.toString())
+                                        putExtra(LibrePodsIntents.Extras.ANC_MODE, 4)
                                     },
                                     PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
                                 ),
                             )
                             .addAction(
                                 R.drawable.ic_noise_cancellation,
-                                "Noise Cancellation",
+                                getString(R.string.noise_cancellation),
                                 PendingIntent.getService(
                                     this,
                                     notificationId + 2,
                                     Intent(this, LibrePodsService::class.java).apply {
-                                        action = "ACTION_SET_ANC_MODE"
-                                        putExtra("MAC_ADDRESS", device.macAddress.toString())
-                                        putExtra("ANC_MODE", 2)
+                                        action = LibrePodsIntents.ACTION_SET_ANC_MODE
+                                        putExtra(LibrePodsIntents.Extras.MAC_ADDRESS, device.macAddress.toString())
+                                        putExtra(LibrePodsIntents.Extras.ANC_MODE, 2)
                                     },
                                     PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
                                 ),
                             )
+                    } else {
+                        updatedNotificationBuilder.addAction(
+                            R.drawable.ic_power,
+                            getString(R.string.connect),
+                            PendingIntent.getService(
+                                this,
+                                notificationId + 5,
+                                Intent(this, LibrePodsService::class.java).apply {
+                                    action = LibrePodsIntents.ACTION_CONNECT
+                                    putExtra(LibrePodsIntents.Extras.MAC_ADDRESS, device.macAddress.toString())
+                                },
+                                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+                            )
+                        )
+                    }
 
                     val updatedNotification = updatedNotificationBuilder.build()
 

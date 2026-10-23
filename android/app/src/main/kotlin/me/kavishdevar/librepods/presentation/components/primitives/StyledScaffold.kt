@@ -34,6 +34,7 @@ import androidx.compose.animation.slideInVertically
 import androidx.compose.animation.slideOutVertically
 import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxScope
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -101,7 +102,7 @@ fun StyledScaffold(
     navigateBack: (() -> Unit)?,
     actionButtons: List<@Composable (hazeInput: HazeInput) -> Unit> = emptyList(),
     snackbarHostState: SnackbarHostState = remember { SnackbarHostState() },
-    content: @Composable (topPadding: Dp, bottomPadding: Dp) -> Unit
+    content: @Composable BoxScope.(topPadding: Dp, bottomPadding: Dp) -> Unit
 ) {
     val design = LocalDesign.current
 

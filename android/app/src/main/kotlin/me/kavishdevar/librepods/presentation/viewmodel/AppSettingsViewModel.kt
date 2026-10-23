@@ -98,8 +98,9 @@ class AppSettingsViewModel(
         _showResetDialog.value = false
     }
 
-    fun resetAppSettings() {
+    fun resetAppSettings(onComplete: () -> Unit = {}) {
         appDataRepository.resetAppSettings()
         _showResetDialog.value = false
+        onComplete()
     }
 }

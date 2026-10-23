@@ -25,11 +25,13 @@ import androidx.compose.animation.fadeOut
 import androidx.compose.animation.slideInVertically
 import androidx.compose.animation.slideOutVertically
 import androidx.compose.foundation.background
+import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.material3.MaterialTheme
@@ -39,14 +41,21 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.tooling.preview.Preview
+import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
+import androidx.compose.ui.zIndex
 import com.kyant.backdrop.backdrops.rememberLayerBackdrop
 import kotlinx.coroutines.flow.debounce
 import me.kavishdevar.librepods.R
@@ -56,6 +65,7 @@ import me.kavishdevar.librepods.core.data.apple.BuddyState
 import me.kavishdevar.librepods.core.devices.AirPodsSpecs
 import me.kavishdevar.librepods.core.devices.AppleSettings
 import me.kavishdevar.librepods.core.devices.BaseCapability
+import me.kavishdevar.librepods.core.devices.format
 import me.kavishdevar.librepods.data.app.Design
 import me.kavishdevar.librepods.data.app.DesignSystem
 import me.kavishdevar.librepods.presentation.components.apple.AboutCard
@@ -78,6 +88,7 @@ import me.kavishdevar.librepods.presentation.icons.LocalIcons
 import me.kavishdevar.librepods.presentation.utils.LocalDebugMode
 import me.kavishdevar.librepods.presentation.viewmodel.AppleUiState
 import me.kavishdevar.librepods.presentation.viewmodel.AppleViewModel
+import kotlin.math.roundToInt
 import kotlin.time.Duration.Companion.milliseconds
 
 @Composable
@@ -98,7 +109,9 @@ fun AppleSettingsRoute(
     navigateToMicrophoneSettings: () -> Unit,
     navigateToRecordingScreen: () -> Unit,
     navigateToDebugScreen: () -> Unit,
-    navigateToHeartRateScreen: () -> Unit
+    navigateToHeartRateScreen: () -> Unit,
+    navigateToOverlaySettings: () -> Unit,
+    navigateToProxConnectSettings: () -> Unit
 ) {
     val uiState by viewModel.uiState.collectAsState()
 
@@ -132,7 +145,9 @@ fun AppleSettingsRoute(
         navigateToMicrophoneSettings = navigateToMicrophoneSettings,
         navigateToRecordingScreen = navigateToRecordingScreen,
         navigateToHeartRateScreen = navigateToHeartRateScreen,
-        navigateToDebugScreen = navigateToDebugScreen
+        navigateToDebugScreen = navigateToDebugScreen,
+        navigateToOverlaySettings = navigateToOverlaySettings,
+        navigateToProxConnectSettings = navigateToProxConnectSettings
     )
 }
 
@@ -170,7 +185,9 @@ fun AppleSettingsScreen(
     navigateToMicrophoneSettings: () -> Unit,
     navigateToRecordingScreen: () -> Unit,
     navigateToHeartRateScreen: () -> Unit,
-    navigateToDebugScreen: () -> Unit
+    navigateToDebugScreen: () -> Unit,
+    navigateToOverlaySettings: () -> Unit,
+    navigateToProxConnectSettings: () -> Unit
 ) {
     val state = uiState.state
     val settings = uiState.settings
@@ -187,6 +204,42 @@ fun AppleSettingsScreen(
         title = uiState.metadata.name,
         navigateBack = navigateBack
     ) { topPadding, bottomPadding ->
+        if (debugMode) {
+            var offset by remember { mutableStateOf(Offset.Zero) }
+
+            Box(
+                modifier = Modifier
+                    .align(Alignment.CenterEnd)
+                    .fillMaxWidth(0.35f)
+                    .zIndex(999f)
+                    .offset {
+                        IntOffset(offset.x.roundToInt(), offset.y.roundToInt())
+                    }
+                    .background(MaterialTheme.colorScheme.surfaceDim.copy(0.4f))
+                    .pointerInput(Unit) {
+                        detectDragGestures { change, dragAmount ->
+                            change.consume()
+                            offset += dragAmount
+                        }
+                    }
+            ) {
+                Text(
+                    text = "[debug]" +
+                        "\n${state.aacpPackets.size} aacp packets" +
+                        "\nstate: ${state.state}" +
+                        "\ncase lid: ${state.caseLidOpen}" +
+                        "\nbattery: ${state.battery.format()}" +
+                        "\nconnectedDevices: ${state.connectedDevices.joinToString(separator = ",") { it.macAddress.value }}" +
+                        "\naudioSource: ${state.audioSource.mac} (${state.audioSource.type})" +
+                        "\nprimary: ${state.primaryComponent}",
+                    style = MaterialTheme.typography.bodySmall.copy(fontSize = 8.sp),
+                    color = MaterialTheme.colorScheme.onSurface,
+                    modifier = Modifier
+                        .padding(8.dp)
+                )
+            }
+        }
+
         LazyColumn(
             modifier = Modifier.padding(horizontal = 16.dp),
             horizontalAlignment = Alignment.CenterHorizontally
@@ -445,22 +498,7 @@ fun AppleSettingsScreen(
                     onAutomaticConnectionChanged = { setControlCommandBoolean(ControlCommandIdentifier.SMART_ROUTING_MODE, it) },
                     disconnectWhenNotWearing = settings.disconnectWhenNotWearing,
                     onDisconnectWhenNotWearingChanged = { enabled -> updateSettings { it.copy(disconnectWhenNotWearing = enabled) } },
-
-                    takeoverWhenDisconnected = settings.takeoverWhenDisconnected,
-                    onTakeoverWhenDisconnectedChanged = { enabled -> updateSettings { it.copy(takeoverWhenDisconnected = enabled) } },
-                    takeoverWhenIdle = settings.takeoverWhenIdle,
-                    onTakeoverWhenIdleChanged = { enabled -> updateSettings { it.copy(takeoverWhenIdle = enabled) } },
-                    takeoverWhenMusic = settings.takeoverWhenMusic,
-                    onTakeoverWhenMusicChanged = { enabled -> updateSettings { it.copy(takeoverWhenMusic = enabled) } },
-                    takeoverWhenCall = settings.takeoverWhenCall,
-                    onTakeoverWhenCallChanged = { enabled -> updateSettings { it.copy(takeoverWhenCall = enabled) } },
-
-                    takeoverWhenRingingCall = settings.takeoverWhenRingingCall,
-                    onTakeoverWhenRingingCallChanged = { enabled -> updateSettings { it.copy(takeoverWhenRingingCall = enabled) } },
-                    takeoverWhenMediaStart = settings.takeoverWhenMediaStart,
-                    onTakeoverWhenMediaStartChanged = { enabled -> updateSettings { it.copy(takeoverWhenMediaStart = enabled) } },
-
-                    isPremium = uiState.isPremium
+                    navigateToProxConnectSettings = navigateToProxConnectSettings
                 )
             }
 
@@ -535,6 +573,14 @@ fun AppleSettingsScreen(
                         onCheckedChange = { setControlCommandBoolean(id, it) }
                     )
                 }
+            }
+
+            item(key = "spacer_overlay_settings") { Spacer(modifier = Modifier.height(16.dp)) }
+            item(key = "overlay_settings") {
+                StyledListItem(
+                    contentText = stringResource(R.string.overlay_settings),
+                    onClick = navigateToOverlaySettings
+                )
             }
 
             item(key = "spacer_about") { Spacer(modifier = Modifier.height(32.dp)) }
@@ -626,7 +672,9 @@ fun AppleSettingsScreenPreviewApple() {
             navigateToMicrophoneSettings = {},
             navigateToRecordingScreen = {},
             navigateToHeartRateScreen = {},
-            navigateToDebugScreen = {}
+            navigateToDebugScreen = {},
+            navigateToOverlaySettings = {},
+            navigateToProxConnectSettings = {}
         )
     }
 }
@@ -665,7 +713,9 @@ fun AppleSettingsScreenPreviewMaterial() {
             navigateToMicrophoneSettings = {},
             navigateToRecordingScreen = {},
             navigateToHeartRateScreen = {},
-            navigateToDebugScreen = {}
+            navigateToDebugScreen = {},
+            navigateToOverlaySettings = {},
+            navigateToProxConnectSettings = {}
         )
     }
 }

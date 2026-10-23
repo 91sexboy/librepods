@@ -69,7 +69,6 @@ import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.graphicsLayer
-import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.input.pointer.util.VelocityTracker
 import androidx.compose.ui.layout.onGloballyPositioned
@@ -629,8 +628,8 @@ fun NoiseControlSettings(
                     modifier = Modifier
                         .graphicsLayer {
                             translationX = with(density) { offset.value.coerceAtLeast(0f).dp.toPx() }
-                            scaleX = 1f + tapProgress.value * 0.2f + (stretch.value * 0.6f)
-                            scaleY = 1f + tapProgress.value * 0.2f - (stretch.value * 0.3f)
+                            scaleX = 1f + tapProgress.value * 0.3f + (stretch.value * 0.6f)
+                            scaleY = 1f + tapProgress.value * 0.3f - (stretch.value * 0.3f)
                         }
                         .width(modeWidth.dp)
                         .height(iconRowHeight.value)

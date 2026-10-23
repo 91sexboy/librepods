@@ -5,6 +5,7 @@
     <string name="accessibility">Accessibility</string>
     <string name="tone_volume">Tone Volume</string>
     <string name="tone_volume_description">Adjust the tone volume of sound effects played by AirPods.</string>
+    <string name="tone_volume_above_recommended_description">Adjust the tone volume of sound effects played by AirPods. Sounds played are now louder than the recommended default volume.</string>
     <string name="audio">Audio</string>
     <string name="adaptive_audio">Adaptive Audio</string>
     <string name="customize_adaptive_audio">Customize Adaptive Audio</string>
@@ -436,4 +437,27 @@
     <string name="saturation">Saturation</string>
     <string name="lightness">Lightness</string>
     <string name="contrast">Contrast</string>
+    <string name="connect">Connect</string>
+    <string name="show_prox_card">Show card</string>
+    <string name="hide_prox_card">Hide card</string>
+    <string name="use_video_loop">Play a looping video</string>
+    <string name="proximity_card">Proximity card</string>
+    <string name="proximity_card_description">Show a popup when you open the charging case near your phone.</string>
+    <string name="show_connect_button">Show connect button</string>
+    <string name="overlay_settings">Overlays</string>
+    <string name="island_popup">Island popup</string>
+    <string name="island_popup_description">Shown when you wear AirPods. You can choose to keep it shown while wearing, or hide after a few seconds.</string>
+    <string name="more_settings">More settings</string>
+    <string name="overlay_more_settings_description">Customize size, position, looks, and behavior of the overlays.</string>
+    <string name="always_connect_when_disconnected">Connect when no other device is connected</string>
+    <string name="always_connect_when_disconnected_description">If enabled, the app will automatically connect to AirPods when no other device is connected to it.</string>
+    <string name="prox_connect_on_phone">Phone Call Rules</string>
+    <string name="prox_connect_on_phone_description">Choose when to automatically route phone audio to AirPods.</string>
+    <string name="prox_connect_on_media">Media Audio Rules</string>
+    <string name="prox_connect_on_media_description">Choose when to automatically route music, video, and media audio to AirPods.</string>
+    <string name="prox_disconnected_label">Not connected to any device</string>
+    <string name="prox_idle_label">Connected to other device but idle</string>
+    <string name="prox_music_label">Connected to another device playing media</string>
+    <string name="prox_connect_settings">Configure automatic connections</string>
+    <string name="require_both_buds_in_case">Require both AirPods in case to show</string>
 </resources>

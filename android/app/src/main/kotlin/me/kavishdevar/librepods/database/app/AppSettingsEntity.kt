@@ -15,13 +15,16 @@ import me.kavishdevar.librepods.data.app.IconStyle
 import me.kavishdevar.librepods.data.app.IslandSettings
 import me.kavishdevar.librepods.data.app.LibrePodsHazeBlurStyle
 import me.kavishdevar.librepods.data.app.NightTheme
+import me.kavishdevar.librepods.data.app.ProximityCardSettings
 
 @Entity
 data class AppSettingsEntity(
     @PrimaryKey
     val id: Int = 0,
 
+    @ColumnInfo(defaultValue = "System")
     val nightMode: NightTheme = NightTheme.System,
+    @ColumnInfo(defaultValue = "Material")
     val designSystem: DesignSystem = DesignSystem.Material,
 
     @ColumnInfo(defaultValue = "Default")
@@ -32,6 +35,7 @@ data class AppSettingsEntity(
 
     val overrideMaterialColor: Color = Color(0xFF007AFF),
 
+    @ColumnInfo(defaultValue = "X'BFFF'")
     val fontSettings: FontSettings = FontSettings(),
 
     @ColumnInfo(defaultValue = "Material")
@@ -55,15 +59,27 @@ data class AppSettingsEntity(
     @ColumnInfo(defaultValue = "Regular")
     val hazeBlurStyle: LibrePodsHazeBlurStyle = LibrePodsHazeBlurStyle.Regular,
 
+    @ColumnInfo(defaultValue = "0")
     val useHighestRefreshRate: Boolean = false,
 
+    @ColumnInfo(defaultValue = "0")
     val debugMode: Boolean = false,
 
+    @ColumnInfo(defaultValue = "1")
     val bleScanMode: Int = ScanSettings.SCAN_MODE_BALANCED,
-    val bleReportDelay: Long = 0,
 
+    @ColumnInfo(defaultValue = "250")
+    val bleReportDelay: Long = 250L,
+
+    @ColumnInfo(defaultValue = "1")
     val swipeAnywhereForBack: Boolean = true,
 
+    @ColumnInfo(defaultValue = "X'BFFF'")
     val accessibilitySettings: AccessibilitySettings = AccessibilitySettings(),
-    val islandSettings: IslandSettings = IslandSettings()
+
+    @ColumnInfo(defaultValue = "X'BFFF'")
+    val islandSettings: IslandSettings = IslandSettings(),
+
+    @ColumnInfo(defaultValue = "X'BFFF'")
+    val proximityCardSettings: ProximityCardSettings = ProximityCardSettings()
 )

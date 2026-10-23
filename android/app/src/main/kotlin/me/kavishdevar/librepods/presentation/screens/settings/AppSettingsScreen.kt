@@ -21,6 +21,7 @@ package me.kavishdevar.librepods.presentation.screens.settings
 import android.content.Intent
 import android.net.Uri
 import android.os.Build
+import android.os.Process
 import android.widget.Toast
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -80,6 +81,7 @@ import me.kavishdevar.librepods.presentation.icons.LocalIcons
 import me.kavishdevar.librepods.presentation.viewmodel.AppSettingsViewModel
 import me.kavishdevar.librepods.utils.XposedState
 import java.util.concurrent.TimeUnit
+import kotlin.system.exitProcess
 
 @Composable
 fun AppSettingsScreen(
@@ -91,7 +93,9 @@ fun AppSettingsScreen(
     navigateToBleSettingsScreen: () -> Unit,
     navigateToAppAppearanceScreen: () -> Unit,
     navigateToAppAccessibilityScreen: () -> Unit,
-    navigateToIslandSettingsScreen: () -> Unit
+    navigateToIslandSettingsScreen: () -> Unit,
+    navigateToProxCardSizeAndPosition: () -> Unit,
+    navigateToProxCardCustomize: () -> Unit
 ) {
     val context = LocalContext.current
     val scrollState = rememberScrollState()
@@ -212,6 +216,22 @@ fun AppSettingsScreen(
                     contentText = stringResource(R.string.island_settings),
                     onClick = navigateToIslandSettingsScreen
                 )
+
+                Spacer(modifier = Modifier.height(16.dp))
+
+                StyledList(
+                    title = stringResource(R.string.proximity_card),
+                    description = stringResource(R.string.proximity_card_description)
+                ) {
+                    styledListItem(
+                        contentText = stringResource(R.string.size_and_position),
+                        onClick = navigateToProxCardSizeAndPosition
+                    )
+                    styledListItem(
+                        contentText = stringResource(R.string.customize),
+                        onClick = navigateToProxCardCustomize
+                    )
+                }
             }
 
             Spacer(modifier = Modifier.height(16.dp))
@@ -427,7 +447,12 @@ fun AppSettingsScreen(
         message = stringResource(R.string.reset_app_settings_description),
         confirmText = stringResource(R.string.reset),
         dismissText = stringResource(R.string.cancel),
-        onConfirm = viewModel::resetAppSettings,
+        onConfirm = {
+            viewModel.resetAppSettings {
+                Process.killProcess(Process.myPid())
+                exitProcess(0)
+            }
+        },
         onDismiss = viewModel::resetDialogDismissed,
         backdrop = backdrop
     )

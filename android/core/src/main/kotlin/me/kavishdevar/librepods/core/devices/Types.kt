@@ -2,8 +2,6 @@ package me.kavishdevar.librepods.core.devices
 
 import android.os.Parcelable
 import kotlinx.parcelize.Parcelize
-import kotlinx.serialization.Serializable
-import me.kavishdevar.librepods.core.utils.redactMac
 
 // TODO: differentiate between bluetooth connected and oem-specific stuff connected. available is reserved for BLE based things, hence not used bluetooth connected
 enum class ConnectionState {
@@ -54,12 +52,38 @@ enum class BatteryStatus {
     }
 }
 
+enum class BatterySource {
+    AACP,
+    CASE_ADVERT,
+    BUDS_ADVERT
+}
+
 @Parcelize
 data class Battery(
     val component: BatteryComponent,
     val level: Int,
-    val status: BatteryStatus
-): Parcelable
+    val status: BatteryStatus,
+    val source: BatterySource
+): Parcelable {
+    override fun toString(): String {
+        return "$component: $status at $level% ($source)"
+    }
+}
+
+fun Set<Battery>.hasSameBatteryState(other: Set<Battery>): Boolean {
+    val currentByComponent = associateBy { it.component }
+
+    return other.all { battery ->
+        val current = currentByComponent[battery.component]
+        current != null &&
+            current.level == battery.level &&
+            current.status == battery.status
+    }
+}
+
+fun Set<Battery>.format(): String {
+    return this.joinToString(separator = "\n") { it.toString() }
+}
 
 // TODO: use this for battery too. BatteryComponent is very redundant
 enum class DeviceComponent {

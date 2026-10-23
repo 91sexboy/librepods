@@ -30,8 +30,8 @@ import me.kavishdevar.librepods.data.app.Design
 import me.kavishdevar.librepods.data.app.DesignSystem
 import me.kavishdevar.librepods.data.app.FontFamilyOption
 import me.kavishdevar.librepods.data.app.FontSettings
-import me.kavishdevar.librepods.data.app.IslandBatteryStyle
 import me.kavishdevar.librepods.data.app.IslandSettings
+import me.kavishdevar.librepods.data.app.OverlayBatteryStyle
 import me.kavishdevar.librepods.presentation.components.primitives.MaterialButtonStyle
 import me.kavishdevar.librepods.presentation.components.primitives.StyledButton
 import me.kavishdevar.librepods.presentation.components.primitives.StyledList
@@ -271,44 +271,44 @@ fun IslandCompactCustomizeScreen(
                 ) {
                     styledListItem(
                         contentText = stringResource(R.string.don_t_show),
-                        selected = islandSettings.compactBatteryStyle == IslandBatteryStyle.NONE,
+                        selected = islandSettings.compactBatteryStyle == OverlayBatteryStyle.NONE,
                         onClick = {
                             updateIslandSettings(
                                 islandSettings.copy(
-                                    compactBatteryStyle = IslandBatteryStyle.NONE
+                                    compactBatteryStyle = OverlayBatteryStyle.NONE
                                 )
                             )
                         }
                     )
                     styledListItem(
                         contentText = stringResource(R.string.ring),
-                        selected = islandSettings.compactBatteryStyle == IslandBatteryStyle.CIRCLE,
+                        selected = islandSettings.compactBatteryStyle == OverlayBatteryStyle.CIRCLE,
                         onClick = {
                             updateIslandSettings(
                                 islandSettings.copy(
-                                    compactBatteryStyle = IslandBatteryStyle.CIRCLE
+                                    compactBatteryStyle = OverlayBatteryStyle.CIRCLE
                                 )
                             )
                         }
                     )
                     styledListItem(
                         contentText = stringResource(R.string.text),
-                        selected = islandSettings.compactBatteryStyle == IslandBatteryStyle.TEXT,
+                        selected = islandSettings.compactBatteryStyle == OverlayBatteryStyle.TEXT,
                         onClick = {
                             updateIslandSettings(
                                 islandSettings.copy(
-                                    compactBatteryStyle = IslandBatteryStyle.TEXT
+                                    compactBatteryStyle = OverlayBatteryStyle.TEXT
                                 )
                             )
                         }
                     )
                     styledListItem(
                         contentText = stringResource(R.string.both),
-                        selected = islandSettings.compactBatteryStyle == IslandBatteryStyle.CIRCLE_TEXT,
+                        selected = islandSettings.compactBatteryStyle == OverlayBatteryStyle.CIRCLE_TEXT,
                         onClick = {
                             updateIslandSettings(
                                 islandSettings.copy(
-                                    compactBatteryStyle = IslandBatteryStyle.CIRCLE_TEXT
+                                    compactBatteryStyle = OverlayBatteryStyle.CIRCLE_TEXT
                                 )
                             )
                         }

@@ -1,0 +1,325 @@
+{
+  "formatVersion": 1,
+  "database": {
+    "version": 3,
+    "identityHash": "8d4b3871a64b17a4dad80164d8d806c7",
+    "entities": [
+      {
+        "tableName": "AppleEntity",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`macAddress` TEXT NOT NULL, `settings` BLOB NOT NULL, `metadata` BLOB NOT NULL, `cache` BLOB NOT NULL, PRIMARY KEY(`macAddress`))",
+        "fields": [
+          {
+            "fieldPath": "macAddress",
+            "columnName": "macAddress",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "settings",
+            "columnName": "settings",
+            "affinity": "BLOB",
+            "notNull": true
+          },
+          {
+            "fieldPath": "metadata",
+            "columnName": "metadata",
+            "affinity": "BLOB",
+            "notNull": true
+          },
+          {
+            "fieldPath": "cache",
+            "columnName": "cache",
+            "affinity": "BLOB",
+            "notNull": true
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": false,
+          "columnNames": [
+            "macAddress"
+          ]
+        }
+      },
+      {
+        "tableName": "AppSettingsEntity",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`id` INTEGER NOT NULL, `nightMode` TEXT NOT NULL DEFAULT 'System', `designSystem` TEXT NOT NULL DEFAULT 'Material', `colorStyle` TEXT NOT NULL DEFAULT 'Default', `paletteStyle` TEXT NOT NULL DEFAULT 'TonalSpot', `overrideMaterialColor` INTEGER NOT NULL, `fontSettings` BLOB NOT NULL DEFAULT X'BFFF', `iconStyle` TEXT NOT NULL DEFAULT 'Material', `blurTopBarInMaterial` INTEGER NOT NULL DEFAULT 1, `contrastLevel` REAL NOT NULL DEFAULT 0, `amoledMode` INTEGER NOT NULL DEFAULT 0, `progressiveBlurTopBar` INTEGER NOT NULL DEFAULT 0, `hazePerformanceMode` REAL NOT NULL DEFAULT 0.5, `hazeBlurStyle` TEXT NOT NULL DEFAULT 'Regular', `useHighestRefreshRate` INTEGER NOT NULL DEFAULT 0, `debugMode` INTEGER NOT NULL DEFAULT 0, `bleScanMode` INTEGER NOT NULL DEFAULT 1, `bleReportDelay` INTEGER NOT NULL DEFAULT 250, `swipeAnywhereForBack` INTEGER NOT NULL DEFAULT 1, `accessibilitySettings` BLOB NOT NULL DEFAULT X'BFFF', `islandSettings` BLOB NOT NULL DEFAULT X'BFFF', `proximityCardSettings` BLOB NOT NULL DEFAULT X'BFFF', PRIMARY KEY(`id`))",
+        "fields": [
+          {
+            "fieldPath": "id",
+            "columnName": "id",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "nightMode",
+            "columnName": "nightMode",
+            "affinity": "TEXT",
+            "notNull": true,
+            "defaultValue": "'System'"
+          },
+          {
+            "fieldPath": "designSystem",
+            "columnName": "designSystem",
+            "affinity": "TEXT",
+            "notNull": true,
+            "defaultValue": "'Material'"
+          },
+          {
+            "fieldPath": "colorStyle",
+            "columnName": "colorStyle",
+            "affinity": "TEXT",
+            "notNull": true,
+            "defaultValue": "'Default'"
+          },
+          {
+            "fieldPath": "paletteStyle",
+            "columnName": "paletteStyle",
+            "affinity": "TEXT",
+            "notNull": true,
+            "defaultValue": "'TonalSpot'"
+          },
+          {
+            "fieldPath": "overrideMaterialColor",
+            "columnName": "overrideMaterialColor",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "fontSettings",
+            "columnName": "fontSettings",
+            "affinity": "BLOB",
+            "notNull": true,
+            "defaultValue": "X'BFFF'"
+          },
+          {
+            "fieldPath": "iconStyle",
+            "columnName": "iconStyle",
+            "affinity": "TEXT",
+            "notNull": true,
+            "defaultValue": "'Material'"
+          },
+          {
+            "fieldPath": "blurTopBarInMaterial",
+            "columnName": "blurTopBarInMaterial",
+            "affinity": "INTEGER",
+            "notNull": true,
+            "defaultValue": "1"
+          },
+          {
+            "fieldPath": "contrastLevel",
+            "columnName": "contrastLevel",
+            "affinity": "REAL",
+            "notNull": true,
+            "defaultValue": "0"
+          },
+          {
+            "fieldPath": "amoledMode",
+            "columnName": "amoledMode",
+            "affinity": "INTEGER",
+            "notNull": true,
+            "defaultValue": "0"
+          },
+          {
+            "fieldPath": "progressiveBlurTopBar",
+            "columnName": "progressiveBlurTopBar",
+            "affinity": "INTEGER",
+            "notNull": true,
+            "defaultValue": "0"
+          },
+          {
+            "fieldPath": "hazePerformanceMode",
+            "columnName": "hazePerformanceMode",
+            "affinity": "REAL",
+            "notNull": true,
+            "defaultValue": "0.5"
+          },
+          {
+            "fieldPath": "hazeBlurStyle",
+            "columnName": "hazeBlurStyle",
+            "affinity": "TEXT",
+            "notNull": true,
+            "defaultValue": "'Regular'"
+          },
+          {
+            "fieldPath": "useHighestRefreshRate",
+            "columnName": "useHighestRefreshRate",
+            "affinity": "INTEGER",
+            "notNull": true,
+            "defaultValue": "0"
+          },
+          {
+            "fieldPath": "debugMode",
+            "columnName": "debugMode",
+            "affinity": "INTEGER",
+            "notNull": true,
+            "defaultValue": "0"
+          },
+          {
+            "fieldPath": "bleScanMode",
+            "columnName": "bleScanMode",
+            "affinity": "INTEGER",
+            "notNull": true,
+            "defaultValue": "1"
+          },
+          {
+            "fieldPath": "bleReportDelay",
+            "columnName": "bleReportDelay",
+            "affinity": "INTEGER",
+            "notNull": true,
+            "defaultValue": "250"
+          },
+          {
+            "fieldPath": "swipeAnywhereForBack",
+            "columnName": "swipeAnywhereForBack",
+            "affinity": "INTEGER",
+            "notNull": true,
+            "defaultValue": "1"
+          },
+          {
+            "fieldPath": "accessibilitySettings",
+            "columnName": "accessibilitySettings",
+            "affinity": "BLOB",
+            "notNull": true,
+            "defaultValue": "X'BFFF'"
+          },
+          {
+            "fieldPath": "islandSettings",
+            "columnName": "islandSettings",
+            "affinity": "BLOB",
+            "notNull": true,
+            "defaultValue": "X'BFFF'"
+          },
+          {
+            "fieldPath": "proximityCardSettings",
+            "columnName": "proximityCardSettings",
+            "affinity": "BLOB",
+            "notNull": true,
+            "defaultValue": "X'BFFF'"
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": false,
+          "columnNames": [
+            "id"
+          ]
+        }
+      },
+      {
+        "tableName": "AppStateEntity",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`id` INTEGER NOT NULL, `isPremium` INTEGER NOT NULL, `hasCompletedOnboarding` INTEGER NOT NULL, `lastVersionShown` TEXT, `hasConnectedToAACP` INTEGER NOT NULL, `firstSuccessfulConnectionTime` INTEGER, `reviewPrompted` INTEGER NOT NULL, `timeUntilFOSSPremiumExpiry` INTEGER NOT NULL, PRIMARY KEY(`id`))",
+        "fields": [
+          {
+            "fieldPath": "id",
+            "columnName": "id",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "isPremium",
+            "columnName": "isPremium",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "hasCompletedOnboarding",
+            "columnName": "hasCompletedOnboarding",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "lastVersionShown",
+            "columnName": "lastVersionShown",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "hasConnectedToAACP",
+            "columnName": "hasConnectedToAACP",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "firstSuccessfulConnectionTime",
+            "columnName": "firstSuccessfulConnectionTime",
+            "affinity": "INTEGER"
+          },
+          {
+            "fieldPath": "reviewPrompted",
+            "columnName": "reviewPrompted",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "timeUntilFOSSPremiumExpiry",
+            "columnName": "timeUntilFOSSPremiumExpiry",
+            "affinity": "INTEGER",
+            "notNull": true
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": false,
+          "columnNames": [
+            "id"
+          ]
+        }
+      },
+      {
+        "tableName": "WidgetConfigEntity",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`appWidgetId` INTEGER NOT NULL, `macAddress` TEXT NOT NULL, PRIMARY KEY(`appWidgetId`))",
+        "fields": [
+          {
+            "fieldPath": "appWidgetId",
+            "columnName": "appWidgetId",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "macAddress",
+            "columnName": "macAddress",
+            "affinity": "TEXT",
+            "notNull": true
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": false,
+          "columnNames": [
+            "appWidgetId"
+          ]
+        }
+      },
+      {
+        "tableName": "HeartRateSampleEntity",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, `timestamp` INTEGER NOT NULL, `bpm` INTEGER NOT NULL)",
+        "fields": [
+          {
+            "fieldPath": "id",
+            "columnName": "id",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "timestamp",
+            "columnName": "timestamp",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "bpm",
+            "columnName": "bpm",
+            "affinity": "INTEGER",
+            "notNull": true
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": true,
+          "columnNames": [
+            "id"
+          ]
+        }
+      }
+    ],
+    "setupQueries": [
+      "CREATE TABLE IF NOT EXISTS room_master_table (id INTEGER PRIMARY KEY,identity_hash TEXT)",
+      "INSERT OR REPLACE INTO room_master_table (id,identity_hash) VALUES(42, '8d4b3871a64b17a4dad80164d8d806c7')"
+    ]
+  }
+}

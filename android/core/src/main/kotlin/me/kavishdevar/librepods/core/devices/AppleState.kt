@@ -9,6 +9,7 @@ import me.kavishdevar.librepods.core.bluetooth.aacp.types.ConnectedDevice
 import me.kavishdevar.librepods.core.bluetooth.aacp.types.ControlCommandIdentifier
 import me.kavishdevar.librepods.core.bluetooth.aacp.types.CustomEq
 import me.kavishdevar.librepods.core.bluetooth.aacp.types.MagicKeyType
+import me.kavishdevar.librepods.core.data.apple.AccessoryState
 import me.kavishdevar.librepods.core.data.apple.BuddyState
 import me.kavishdevar.librepods.core.data.audio.MicrophoneState
 import me.kavishdevar.librepods.core.data.heartrate.HeartRateSample
@@ -20,6 +21,10 @@ data class AppleState(
     val isLocallyConnected: Boolean = false,
 
     val owns: Boolean = true,
+
+    val state: AccessoryState = AccessoryState.Unknown, // from BLE
+    val caseLidOpen: Boolean = false,
+    val lastDisconnected: Long = -1L,
 
     val componentState: Set<DeviceComponentState> = emptySet(),
 
@@ -46,7 +51,7 @@ data class AppleState(
     val audioSource: AudioSource = AudioSource(MacAddress("00:00:00:00:00:00"), AudioSourceType.NONE),
     var connectedDevices: List<ConnectedDevice> = emptyList(),
 
-    val leftIsPrimary: Boolean = true,
+    val primaryComponent: DeviceComponent = DeviceComponent.LEFT,
 
     val headphoneAccommodation: FloatArray = FloatArray(8),
     val headphoneAccommodationEnabledForMedia: Boolean = false,

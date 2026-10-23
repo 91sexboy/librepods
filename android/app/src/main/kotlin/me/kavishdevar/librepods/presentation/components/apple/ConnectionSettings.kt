@@ -24,6 +24,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.ui.res.stringResource
 import me.kavishdevar.librepods.R
 import me.kavishdevar.librepods.presentation.components.primitives.StyledList
+import me.kavishdevar.librepods.presentation.components.primitives.styledListItem
 import me.kavishdevar.librepods.presentation.components.primitives.styledToggle
 import kotlin.io.encoding.ExperimentalEncodingApi
 
@@ -36,21 +37,7 @@ fun ConnectionSettings(
     disconnectWhenNotWearing: Boolean,
     onDisconnectWhenNotWearingChanged: (Boolean) -> Unit,
 
-    takeoverWhenDisconnected: Boolean,
-    onTakeoverWhenDisconnectedChanged: (Boolean) -> Unit,
-    takeoverWhenIdle: Boolean,
-    onTakeoverWhenIdleChanged: (Boolean) -> Unit,
-    takeoverWhenMusic: Boolean,
-    onTakeoverWhenMusicChanged: (Boolean) -> Unit,
-    takeoverWhenCall: Boolean,
-    onTakeoverWhenCallChanged: (Boolean) -> Unit,
-
-    takeoverWhenRingingCall: Boolean,
-    onTakeoverWhenRingingCallChanged: (Boolean) -> Unit,
-    takeoverWhenMediaStart: Boolean,
-    onTakeoverWhenMediaStartChanged: (Boolean) -> Unit,
-
-    isPremium: Boolean
+    navigateToProxConnectSettings: () -> Unit
 ) {
     StyledList {
         styledToggle(
@@ -71,6 +58,11 @@ fun ConnectionSettings(
             description = stringResource(R.string.disconnect_when_not_wearing_description),
             checked = disconnectWhenNotWearing,
             onCheckedChange = onDisconnectWhenNotWearingChanged
+        )
+
+        styledListItem(
+            contentText = stringResource(R.string.prox_connect_settings),
+            onClick = navigateToProxConnectSettings
         )
     }
 

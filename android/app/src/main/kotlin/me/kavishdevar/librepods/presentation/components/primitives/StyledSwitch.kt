@@ -108,7 +108,7 @@ fun StyledSwitch(
         else if (enabled) SwitchDefaults.colors().uncheckedTrackColor else SwitchDefaults.colors().disabledUncheckedTrackColor
 
     val thumbColor =
-        if (design.colorStyle == ColorStyle.Default) if (enabled) Color(0xFFFFFFFF) else if (isDarkTheme) Color(0xFF5B5B5E) else Color(0xFFD1D1D6)
+        if (design.colorStyle == ColorStyle.Default) if (enabled) Color(0xFFFFFFFF) else Color.DarkGray
         else if (enabled) if (checked) SwitchDefaults.colors().checkedThumbColor else SwitchDefaults.colors().uncheckedThumbColor
         else if (checked) SwitchDefaults.colors().disabledCheckedThumbColor else SwitchDefaults.colors().disabledUncheckedThumbColor
 

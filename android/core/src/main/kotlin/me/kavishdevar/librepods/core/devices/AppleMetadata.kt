@@ -1,6 +1,7 @@
 package me.kavishdevar.librepods.core.devices
 
 import kotlinx.serialization.Serializable
+import me.kavishdevar.librepods.core.data.apple.DeviceColor
 
 @Serializable
 data class AppleMetadata(
@@ -21,6 +22,8 @@ data class AppleMetadata(
 
     val hardwareRevision: String = "",
     val updaterIdentifier: String = "",
+
+    val color: DeviceColor = DeviceColor.Unknown
 ): DeviceMetadata {
     override val iconName: String
         get() = AirPodsSpecs.getSpec(model).genericIconName

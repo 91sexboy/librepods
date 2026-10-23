@@ -16,15 +16,16 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import me.kavishdevar.librepods.billing.BillingManager
 import me.kavishdevar.librepods.billing.BillingProviderFactory
+import me.kavishdevar.librepods.core.utils.GestureFeedback
 import me.kavishdevar.librepods.database.LibrePodsDatabase
 import me.kavishdevar.librepods.presentation.overlays.IslandWindow
+import me.kavishdevar.librepods.presentation.overlays.ProximityCardWindow
 import me.kavishdevar.librepods.repository.AppDataRepository
 import me.kavishdevar.librepods.repository.AppleRepository
 import me.kavishdevar.librepods.repository.HeartRateRepository
 import me.kavishdevar.librepods.repository.RecordingRepository
 import me.kavishdevar.librepods.repository.WidgetConfigRepository
 import me.kavishdevar.librepods.services.LibrePodsAccessibilityService
-import me.kavishdevar.librepods.core.utils.GestureFeedback
 import me.kavishdevar.librepods.utils.XposedServiceHolder
 import me.kavishdevar.librepods.utils.XposedState
 
@@ -51,6 +52,9 @@ class LibrePodsApplication: Application(), XposedServiceHelper.OnServiceListener
     lateinit var islandWindow: IslandWindow
         private set
 
+    lateinit var proximityCardWindow: ProximityCardWindow
+        private set
+
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
 
     override fun onCreate() {
@@ -69,17 +73,20 @@ class LibrePodsApplication: Application(), XposedServiceHelper.OnServiceListener
         }
 
         islandWindow = IslandWindow(applicationContext, appDataRepository.settings.value)
+        proximityCardWindow = ProximityCardWindow(applicationContext, appDataRepository.settings.value)
 
         scope.launch {
             LibrePodsAccessibilityService.instance.collect {
                 Log.d("LibrePodsApplication", "LibrePodsAccessibilityService instance: $it")
                 islandWindow.updateContext(it?: applicationContext)
+                proximityCardWindow.updateContext(it?: applicationContext)
             }
         }
 
         scope.launch {
             appDataRepository.settings.collect {
                 islandWindow.updateSettings(it)
+                proximityCardWindow.updateSettings(it)
             }
         }
 

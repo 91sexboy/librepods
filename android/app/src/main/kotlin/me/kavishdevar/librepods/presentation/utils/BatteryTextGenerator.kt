@@ -86,6 +86,8 @@ fun createAirPodsBatteryRichText(
     return richText(
         if (left != null && right != null && case != null) {
             "$budsBatteryText  $caseBatteryText"
+        } else if (case != null) {
+            caseBatteryText
         } else {
             if (headset != null) {
                 val statusIcon = when (headset.status) {
@@ -93,7 +95,7 @@ fun createAirPodsBatteryRichText(
                     BatteryStatus.NOT_CHARGING -> "\\icon{Circle}"
                     BatteryStatus.UNKNOWN, BatteryStatus.DISCONNECTED -> "\\icon{CircleDotted}"
                 }
-                headsetIconName + statusIcon + " ${headsetLevel}%"
+                "\\icon{$headsetIconName} " + statusIcon + " ${headsetLevel}%"
             } else {
                 stringResource(R.string.battery_not_available)
             }

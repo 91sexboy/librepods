@@ -5,6 +5,7 @@ import me.kavishdevar.librepods.core.bluetooth.aacp.types.MessageOpcode
 import me.kavishdevar.librepods.core.bluetooth.aacp.types.Opcode
 import me.kavishdevar.librepods.core.devices.Battery
 import me.kavishdevar.librepods.core.devices.BatteryComponent
+import me.kavishdevar.librepods.core.devices.BatterySource
 import me.kavishdevar.librepods.core.devices.BatteryStatus
 import me.kavishdevar.librepods.core.devices.PacketDestination
 
@@ -41,7 +42,7 @@ data class BatteryInfoPacket(
 
                 Log.i(TAG, "parsed battery#$i: component=${component.name}, level=$level, status=${status.name}")
 
-                batteries.add(Battery(component, level, status))
+                batteries.add(Battery(component, level, status, BatterySource.AACP))
                 offset += 5
             }
             Log.i(TAG, "parsed Battery Info: $batteries")

@@ -66,13 +66,16 @@ object MediaController {
 
     private var localMac: String? = null
 
-    fun initialize(audioManager: AudioManager, sharedPreferences: SharedPreferences, localMac: String?) {
+    private var musicPlayed: () -> Unit = {}
+
+    fun initialize(audioManager: AudioManager, sharedPreferences: SharedPreferences, localMac: String?, musicPlayed: () -> Unit) {
         this.localMac = localMac
         if (this::audioManager.isInitialized) {
             return
         }
         this.audioManager = audioManager
         this.sharedPreferences = sharedPreferences
+        this.musicPlayed = MediaController.musicPlayed
         Log.d("MediaController", "Initializing MediaController")
         relativeVolume = sharedPreferences.getBoolean("relative_conversation_awareness_volume", false)
         conversationAwarenessVolume = sharedPreferences.getInt("conversation_awareness_volume", (audioManager.getStreamMaxVolume(AudioManager.STREAM_MUSIC) / 0.4).toInt())
@@ -159,6 +162,7 @@ object MediaController {
                         if (!pausedWhileTakingOver) {
 //                            TODO
 //                            ServiceManager.getService()?.takeOver("music")
+                            musicPlayed()
                         }
                     } else {
                         Log.d("MediaController", "Skipping take-over due to recent ownership loss or no new music/movie")
@@ -193,6 +197,7 @@ object MediaController {
                         Log.d("MediaController", "Music/movie is active and not pausedWhileTakingOver; requesting takeOver")
 //                        TODO
 //                        ServiceManager.getService()?.takeOver("music")
+                        musicPlayed()
                     } else {
                         Log.d("MediaController", "Skipping take-over due to recent ownership loss")
                     }

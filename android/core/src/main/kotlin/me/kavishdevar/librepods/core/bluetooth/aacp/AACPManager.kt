@@ -29,6 +29,7 @@ import me.kavishdevar.librepods.core.bluetooth.aacp.packet.AACPPacket
 import me.kavishdevar.librepods.core.bluetooth.aacp.packet.AACPPacketType
 import me.kavishdevar.librepods.core.bluetooth.aacp.packet.AudioSourcePacket
 import me.kavishdevar.librepods.core.bluetooth.aacp.packet.BatteryInfoPacket
+import me.kavishdevar.librepods.core.bluetooth.aacp.packet.BudRolePacket
 import me.kavishdevar.librepods.core.bluetooth.aacp.packet.ConnectedDevicesPacket
 import me.kavishdevar.librepods.core.bluetooth.aacp.packet.ControlCommandPacket
 import me.kavishdevar.librepods.core.bluetooth.aacp.packet.CustomEqPacket
@@ -55,7 +56,10 @@ import me.kavishdevar.librepods.core.data.apple.BuddyState
 import me.kavishdevar.librepods.core.data.audio.MicrophoneFrame
 import me.kavishdevar.librepods.core.data.heartrate.HeartRateSample
 import me.kavishdevar.librepods.core.devices.AppleDevice
+import me.kavishdevar.librepods.core.devices.BatterySource
 import me.kavishdevar.librepods.core.devices.BatteryStatus
+import me.kavishdevar.librepods.core.devices.DeviceComponent
+import me.kavishdevar.librepods.core.devices.hasSameBatteryState
 import me.kavishdevar.librepods.core.utils.HeadTracking
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
@@ -218,15 +222,11 @@ class AACPManager(private val device: AppleDevice) {
         val opcode = packet[4]
         when (MessageOpcode.fromByte(opcode)) {
             MessageOpcode.BUD_ROLE -> {
-                val payload = packet.copyOfRange(6, packet.size)
-                val packet = AACPPacket.createUnknownPacket(
-                    opcode = MessageOpcode.BUD_ROLE,
-                    payload = payload
-                )
+                val packet = BudRolePacket.parse(packet)
 
                 device.updateState {
                     it.copy(
-                        leftIsPrimary = payload[0] == 0x01.toByte(),
+                        primaryComponent = packet.primary,
                         aacpPackets = it.aacpPackets + packet
                     )
                 }
@@ -245,37 +245,40 @@ class AACPManager(private val device: AppleDevice) {
                     )
                 }
             }
+
             MessageOpcode.BATTERY_INFO -> {
                 val batteryPacket = BatteryInfoPacket.parse(packet)
+                val cacheDisconnectedComponentBattery =
+                    device.settings.value.cacheDisconnectedComponentBattery
 
-                val cacheDisconnectedComponentBattery = device.settings.value.cacheDisconnectedComponentBattery
+                device.updateState { state ->
+                    val previous = state.battery.associateBy { it.component }
 
-                if (!cacheDisconnectedComponentBattery) {
-                    device.updateState {
-                        it.copy(
-                            battery = batteryPacket.batteries,
-                            aacpPackets = it.aacpPackets + batteryPacket
-                        )
+                    val updates = batteryPacket.batteries.associate { battery ->
+                        val existing = previous[battery.component]
+
+                        battery.component to if (
+                            cacheDisconnectedComponentBattery &&
+                            battery.status == BatteryStatus.DISCONNECTED &&
+                            existing != null &&
+                            battery.source != BatterySource.CASE_ADVERT
+                        ) {
+                            battery.copy(level = existing.level)
+                        } else {
+                            battery
+                        }
                     }
-                } else {
-                    device.updateState { state ->
-                        val previous = state.battery.associateBy { it.component }
 
-                        val updated = batteryPacket.batteries.map { battery ->
-                            val existing = previous[battery.component]
-
-                            if (battery.status == BatteryStatus.DISCONNECTED && existing != null) {
-                                battery.copy(level = existing.level)
-                            } else {
-                                battery
-                            }
-                        }.toSet()
-
-                        state.copy(
-                            battery = updated,
-                            aacpPackets = state.aacpPackets + batteryPacket
-                        )
+                    val merged = if (cacheDisconnectedComponentBattery) {
+                        (state.battery.filterNot { it.component in updates } + updates.values).toSet()
+                    } else {
+                        updates.values.toSet()
                     }
+
+                    state.copy(
+                        battery = merged.takeUnless { state.battery.hasSameBatteryState(it) }?: state.battery,
+                        aacpPackets = state.aacpPackets + batteryPacket
+                    )
                 }
             }
 
@@ -311,7 +314,7 @@ class AACPManager(private val device: AppleDevice) {
             }
 
             MessageOpcode.EAR_DETECTION -> {
-                val earDetectionResponsePacket = EarDetectionResponsePacket.parse(packet, device.state.value.leftIsPrimary)
+                val earDetectionResponsePacket = EarDetectionResponsePacket.parse(packet, device.state.value.primaryComponent == DeviceComponent.LEFT)
 
                 device.updateState {
                     it.copy(
@@ -596,7 +599,7 @@ class AACPManager(private val device: AppleDevice) {
                         aacpPackets = it.aacpPackets + packet
                     )
                 }
-                Log.w(TAG, "Unhandled messageOpcode received: ${opcode.toHexString()}")
+                Log.d(TAG, "Unhandled messageOpcode received: 0x${opcode.toHexString()}")
             }
         }
     }

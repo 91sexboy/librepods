@@ -60,10 +60,13 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import kotlinx.coroutines.launch
 import me.kavishdevar.librepods.R
-import me.kavishdevar.librepods.data.app.IslandBatteryStyle
 import me.kavishdevar.librepods.data.app.IslandSettings
+import me.kavishdevar.librepods.data.app.OverlayBackgroundColor
+import me.kavishdevar.librepods.data.app.OverlayBatteryStyle
 import me.kavishdevar.librepods.data.app.resolve
 import me.kavishdevar.librepods.presentation.components.apple.NoiseControlSettings
+import me.kavishdevar.librepods.presentation.design.LibrePodsTheme
+import me.kavishdevar.librepods.presentation.design.LocalDesign
 import me.kavishdevar.librepods.presentation.icons.LocalIcons
 import me.kavishdevar.librepods.core.R as coreR
 
@@ -171,7 +174,7 @@ fun IslandContent(
         animationSpec = tween(100)
     )
 
-    val textColor = contentColorFor(backgroundColor)
+    val textColor = if (islandSettings.expandedBackgroundColor is OverlayBackgroundColor.Default) Color.White else contentColorFor(backgroundColor)
     val shape = RoundedCornerShape(with(density) { animRadius.value.toDp() } )
 
     val typeText = when (type) {
@@ -307,6 +310,7 @@ fun IslandContent(
                             contentDescription = null,
                             modifier = Modifier
                                 .heightIn(max = 64.dp)
+                                .aspectRatio(1f)
                                 .fillMaxHeight(0.8f)
                         )
                     }
@@ -348,8 +352,8 @@ fun IslandContent(
                     IslandState.CLOSE -> islandSettings.compactBatteryStyle
                 }
 
-                val showRing = currentBatteryStyle == IslandBatteryStyle.CIRCLE || currentBatteryStyle == IslandBatteryStyle.CIRCLE_TEXT
-                val showText = currentBatteryStyle == IslandBatteryStyle.TEXT || currentBatteryStyle == IslandBatteryStyle.CIRCLE_TEXT
+                val showRing = currentBatteryStyle == OverlayBatteryStyle.CIRCLE || currentBatteryStyle == OverlayBatteryStyle.CIRCLE_TEXT
+                val showText = currentBatteryStyle == OverlayBatteryStyle.TEXT || currentBatteryStyle == OverlayBatteryStyle.CIRCLE_TEXT
 
                 BoxWithConstraints(
                     modifier = Modifier
@@ -427,15 +431,20 @@ fun IslandContent(
                     .requiredWidth(with(density) { islandSettings.expandedWidth.toDp() - padding.value.dp - 12.dp })
                     .weight(1f)
             ) {
-                NoiseControlSettings(
-                    modifier = Modifier.fillMaxHeight(),
-                    showOffListeningMode = showOffListeningMode,
-                    noiseControlModeValue = noiseControlModeValue,
-                    onNoiseControlModeChanged = onNoiseControlModeChanged,
-                    adaptiveStrength = adaptiveStrength,
-                    onAdaptiveStrengthChanged = onAdaptiveStrengthChanged,
-                    showLabels = false
-                )
+                LibrePodsTheme(
+                    design = LocalDesign.current,
+                    darkTheme = backgroundColor.luminance() < 0.5f
+                ){
+                    NoiseControlSettings(
+                        modifier = Modifier.fillMaxHeight(),
+                        showOffListeningMode = showOffListeningMode,
+                        noiseControlModeValue = noiseControlModeValue,
+                        onNoiseControlModeChanged = onNoiseControlModeChanged,
+                        adaptiveStrength = adaptiveStrength,
+                        onAdaptiveStrengthChanged = onAdaptiveStrengthChanged,
+                        showLabels = false
+                    )
+                }
             }
         }
     }

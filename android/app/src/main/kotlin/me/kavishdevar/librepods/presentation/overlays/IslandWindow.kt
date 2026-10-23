@@ -31,7 +31,6 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.ComposeView
 import androidx.compose.ui.platform.ViewCompositionStrategy
 import androidx.lifecycle.Lifecycle
@@ -72,7 +71,7 @@ class IslandWindow(
 ) {
     private var windowManager: WindowManager = context.getSystemService(WindowManager::class.java)
     private var composeView: ComposeView? = null
-    private var lifecycleOwner: OverlayLifecycleOwner? = null
+    private var lifecycleOwner: IslandLifecycleOwner? = null
 
     private var autoCloseHandler: Handler? = null
     private var autoCloseRunnable: Runnable? = null
@@ -277,7 +276,7 @@ class IslandWindow(
     }
 
     private fun setupComposeView() {
-        lifecycleOwner = OverlayLifecycleOwner()
+        lifecycleOwner = IslandLifecycleOwner()
 
         composeView = ComposeView(context).apply {
             setViewCompositionStrategy(ViewCompositionStrategy.DisposeOnViewTreeLifecycleDestroyed)
@@ -378,7 +377,7 @@ class IslandWindow(
     }
 }
 
-private class OverlayLifecycleOwner: LifecycleOwner, ViewModelStoreOwner, SavedStateRegistryOwner {
+private class IslandLifecycleOwner: LifecycleOwner, ViewModelStoreOwner, SavedStateRegistryOwner {
     private val savedStateRegistryController = SavedStateRegistryController.create(this)
     private val store = ViewModelStore()
 
