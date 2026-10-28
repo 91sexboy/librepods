@@ -42,7 +42,7 @@ data class BatteryInfoPacket(
 
                 Log.i(TAG, "parsed battery#$i: component=${component.name}, level=$level, status=${status.name}")
 
-                batteries.add(Battery(component, level, status, BatterySource.AACP))
+                batteries.add(Battery(component, level, status, BatterySource.AACP, System.currentTimeMillis()))
                 offset += 5
             }
             Log.i(TAG, "parsed Battery Info: $batteries")

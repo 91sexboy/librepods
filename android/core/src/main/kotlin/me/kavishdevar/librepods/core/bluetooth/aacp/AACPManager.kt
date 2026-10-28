@@ -59,7 +59,6 @@ import me.kavishdevar.librepods.core.devices.AppleDevice
 import me.kavishdevar.librepods.core.devices.BatterySource
 import me.kavishdevar.librepods.core.devices.BatteryStatus
 import me.kavishdevar.librepods.core.devices.DeviceComponent
-import me.kavishdevar.librepods.core.devices.hasSameBatteryState
 import me.kavishdevar.librepods.core.utils.HeadTracking
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
@@ -261,7 +260,7 @@ class AACPManager(private val device: AppleDevice) {
                             cacheDisconnectedComponentBattery &&
                             battery.status == BatteryStatus.DISCONNECTED &&
                             existing != null &&
-                            battery.source != BatterySource.CASE_ADVERT
+                            battery.source == BatterySource.AACP
                         ) {
                             battery.copy(level = existing.level)
                         } else {
@@ -276,7 +275,7 @@ class AACPManager(private val device: AppleDevice) {
                     }
 
                     state.copy(
-                        battery = merged.takeUnless { state.battery.hasSameBatteryState(it) }?: state.battery,
+                        battery = merged,
                         aacpPackets = state.aacpPackets + batteryPacket
                     )
                 }

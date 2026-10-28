@@ -68,6 +68,7 @@ import me.kavishdevar.librepods.core.devices.Device
 import me.kavishdevar.librepods.core.devices.DeviceComponent
 import me.kavishdevar.librepods.core.devices.DeviceComponentState
 import me.kavishdevar.librepods.core.devices.format
+import me.kavishdevar.librepods.core.devices.hasSameState
 import me.kavishdevar.librepods.core.utils.redactMac
 import me.kavishdevar.librepods.data.app.LibrePodsIntents
 import me.kavishdevar.librepods.database.app.AppSettingsEntity
@@ -684,12 +685,12 @@ class LibrePodsService: Service() {
                         }
                     }
 
-                    state.battery != previousState.battery -> {
+                    !state.battery.hasSameState(previousState.battery) -> {
                         Log.i(
                             TAG,
                             "battery state changed for device ${device.macAddress.toRedactedString()}"
                         )
-                        Log.d(TAG, "battery state: ${state.battery.format()}")
+                        Log.d(TAG, "battery state: ${state.battery.format()}. prev: ${previousState.battery.format()}")
 
                         Log.d(TAG, "updating widgets")
                         updateWidgets()
@@ -1214,7 +1215,9 @@ class LibrePodsService: Service() {
 
             // TODO: device-specific widgets
             val device =
-                devices.value.values.firstOrNull { it is AppleDevice } as? AppleDevice
+                devices.value.values.firstOrNull { it is AppleDevice && it.state.value.battery.any { it.level > 0 } } as? AppleDevice
+
+            Log.d(TAG, "picked device: ${device?.macAddress?.toRedactedString()} for widget update")
 
             val leftBattery =
                 device?.state?.value?.battery?.find { it.component == BatteryComponent.LEFT }

@@ -775,6 +775,9 @@ private fun StyledListItemContent(
                 }
             }
 
+            val leadingContentWidth = remember { mutableStateOf(0.dp) }
+            val trailingContentWidth = remember { mutableStateOf(0.dp) }
+
             Column (
                 modifier = Modifier
                     .background(
@@ -831,13 +834,9 @@ private fun StyledListItemContent(
                         }
                     }
                     .heightIn(min = height)
-                    .padding(horizontal = 16.dp)
+                    .padding(start = if (leadingContentWidth.value == 0.dp) 16.dp else 8.dp, end = if (trailingContentWidth.value == 0.dp) 16.dp else 8.dp)
             ) {
                 val density = LocalDensity.current
-
-                val leadingContentWidth = remember { mutableStateOf(0.dp) }
-                val trailingContentWidth = remember { mutableStateOf(0.dp) }
-
                 Row(
                     modifier = Modifier
                         .heightIn(min = height)
@@ -854,7 +853,7 @@ private fun StyledListItemContent(
                             }
                         ) {
                             leadingContent()
-                            Spacer(modifier = Modifier.width(12.dp))
+                            Spacer(modifier = Modifier.width(8.dp))
                         }
                     }
                     Column(

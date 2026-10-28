@@ -30,7 +30,7 @@ import me.kavishdevar.librepods.core.devices.Device
 import me.kavishdevar.librepods.core.devices.DeviceComponent
 import me.kavishdevar.librepods.core.devices.DeviceComponentState
 import me.kavishdevar.librepods.core.devices.format
-import me.kavishdevar.librepods.core.devices.hasSameBatteryState
+import me.kavishdevar.librepods.core.devices.hasSameState
 import javax.crypto.Cipher
 import javax.crypto.spec.SecretKeySpec
 import kotlin.time.Duration.Companion.milliseconds
@@ -303,7 +303,8 @@ class BLEManager(
                         component = component,
                         level = raw and 0x7F,
                         status = if (charging) BatteryStatus.CHARGING else BatteryStatus.NOT_CHARGING,
-                        source = BatterySource.BUDS_ADVERT
+                        source = BatterySource.BUDS_ADVERT,
+                        timestamp = System.currentTimeMillis()
                     )
                 )
             }
@@ -320,16 +321,25 @@ class BLEManager(
             val updates = batteries.associateBy { it.component }
             val merged = (previousState.battery.filterNot { it.component in updates } + updates.values).toSet()
 
-            if (!previousState.battery.hasSameBatteryState(merged)) {
-                device.updateState { state ->
-                    state.copy(
-                        battery = merged
-                    )
-                }
-                Log.d(TAG, "battery changed for ${device.macAddress.toRedactedString()}: ${device.state.value.battery.format()}")
+            val budInCase = batteries.find { it.component == BatteryComponent.LEFT }?.status != BatteryStatus.CHARGING ||
+                    batteries.find { it.component == BatteryComponent.LEFT }?.status != BatteryStatus.OPTIMIZED_CHARGING ||
+                    batteries.find { it.component == BatteryComponent.RIGHT }?.status != BatteryStatus.CHARGING ||
+                    batteries.find { it.component == BatteryComponent.RIGHT }?.status != BatteryStatus.OPTIMIZED_CHARGING
+
+            device.updateState { state ->
+                state.copy(
+                    battery = merged
+                )
             }
 
-            if (previousState.primaryComponent != if (primaryLeft) DeviceComponent.LEFT else DeviceComponent.RIGHT) {
+            if (!previousState.battery.hasSameState(merged)) {
+                Log.d(
+                    TAG,
+                    "battery changed for ${device.macAddress.toRedactedString()}: ${device.state.value.battery.format()}"
+                )
+            }
+
+            if ((previousState.primaryComponent != if (primaryLeft) DeviceComponent.LEFT else DeviceComponent.RIGHT) && !budInCase) {
                 device.updateState { state ->
                     state.copy(
                         primaryComponent = if (primaryLeft) DeviceComponent.LEFT else DeviceComponent.RIGHT
@@ -451,7 +461,8 @@ class BLEManager(
                                     component,
                                     raw and 0x7F,
                                     if (charging) BatteryStatus.CHARGING else BatteryStatus.NOT_CHARGING,
-                                    BatterySource.CASE_ADVERT
+                                    BatterySource.CASE_ADVERT,
+                                    System.currentTimeMillis()
                                 )
                             )
                         }
@@ -464,13 +475,13 @@ class BLEManager(
                         val updates = batteries.associateBy { it.component }
                         val merged = (previousState.battery.filterNot { it.component in updates } + updates.values).toSet()
 
-                        if (!previousState.battery.hasSameBatteryState(merged)) {
-                            device.updateState { state ->
-                                state.copy(
-                                    battery = merged
-                                )
-                            }
+                        device.updateState { state ->
+                            state.copy(
+                                battery = merged
+                            )
+                        }
 
+                        if (!previousState.battery.hasSameState(merged)) {
                             Log.d(
                                 TAG,
                                 "battery changed for ${device.macAddress.toRedactedString()} from case: ${device.state.value.battery.format()}"

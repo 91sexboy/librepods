@@ -6,7 +6,6 @@ import android.graphics.SurfaceTexture
 import android.media.MediaMetadataRetriever
 import android.media.MediaPlayer
 import android.net.Uri
-import android.view.Surface as AndroidSurface
 import android.view.TextureView
 import androidx.annotation.DrawableRes
 import androidx.annotation.RawRes
@@ -20,6 +19,7 @@ import androidx.compose.animation.slideInVertically
 import androidx.compose.animation.slideOutVertically
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.Orientation
 import androidx.compose.foundation.gestures.draggable
 import androidx.compose.foundation.gestures.rememberDraggableState
@@ -36,13 +36,11 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.requiredSize
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material3.Button
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
@@ -66,15 +64,14 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import kotlinx.coroutines.launch
 import me.kavishdevar.librepods.R
-import me.kavishdevar.librepods.core.R as coreR
 import me.kavishdevar.librepods.core.devices.Battery
 import me.kavishdevar.librepods.core.devices.BatteryComponent
-import me.kavishdevar.librepods.core.devices.BatteryStatus
 import me.kavishdevar.librepods.data.app.OverlayBackgroundColor
 import me.kavishdevar.librepods.data.app.ProximityCardSettings
 import me.kavishdevar.librepods.data.app.resolve
@@ -83,7 +80,10 @@ import me.kavishdevar.librepods.presentation.components.apple.BatteryView
 import me.kavishdevar.librepods.presentation.components.primitives.MaterialButtonStyle
 import me.kavishdevar.librepods.presentation.components.primitives.StyledButton
 import me.kavishdevar.librepods.presentation.icons.LocalIcons
+import kotlin.math.absoluteValue
 import kotlin.math.roundToInt
+import android.view.Surface as AndroidSurface
+import me.kavishdevar.librepods.core.R as coreR
 
 @SuppressLint("LocalContextResourcesRead", "LocalContextConfigurationRead")
 @Composable
@@ -210,19 +210,29 @@ fun ProximityCardContent(
                 color = backgroundColor,
                 shape = shape
             ) {
-                Box(Modifier.fillMaxSize()) {
-                    Icon(
-                        imageVector = LocalIcons.current.Close,
-                        contentDescription = stringResource(R.string.hide_prox_card),
-                        tint = textColor,
-                        modifier = Modifier
-                            .align(Alignment.TopEnd)
-                            .offset(x = (-28).dp, y = 28.dp)
-                            .size(32.dp)
-                            .clip(CircleShape)
-                            .background(textColor.copy(alpha = 0.2f))
-                            .padding(10.dp)
-                    )
+                if (settings.showCloseButton){
+                    Box(Modifier.fillMaxSize()) {
+                        Icon(
+                            imageVector = LocalIcons.current.Close,
+                            contentDescription = stringResource(R.string.hide_prox_card),
+                            tint = textColor,
+                            modifier = Modifier
+                                .clickable(
+                                    onClick = {
+                                        coroutineScope.launch {
+                                            offsetY.animateTo(600f, tween(150))
+                                            onClosed()
+                                        }
+                                    }
+                                )
+                                .align(Alignment.TopEnd)
+                                .offset(x = (-24).dp, y = 24.dp)
+                                .size(32.dp)
+                                .clip(CircleShape)
+                                .background(textColor.copy(alpha = 0.2f))
+                                .padding(10.dp)
+                        )
+                    }
                 }
                 Column(
                     modifier = Modifier
@@ -233,8 +243,12 @@ fun ProximityCardContent(
                 ) {
                     Text(
                         text = name,
-                        style = MaterialTheme.typography.headlineMediumEmphasized.copy(fontWeight = FontWeight.SemiBold),
-                        color = textColor
+                        style = MaterialTheme.typography.headlineSmallEmphasized.copy(fontWeight = FontWeight.SemiBold),
+                        color = textColor,
+                        maxLines = 2,
+                        softWrap = true,
+                        modifier = Modifier.padding(horizontal = 32.dp),
+                        textAlign = TextAlign.Center
                     )
 
                     Box(
@@ -310,20 +324,16 @@ private fun VideoBatteryLayout(
 
         if (headsetBattery != null) {
             BatteryIndicator(
-                headsetBattery.level,
-                headsetBattery.status,
-                surfaceColor = surfaceColor
+                battery = headsetBattery,
+                surfaceColor = surfaceColor,
+                showIcon = false
             )
         } else {
             val left = batteryList.find { it.component == BatteryComponent.LEFT }
             val right = batteryList.find { it.component == BatteryComponent.RIGHT }
             val case = batteryList.find { it.component == BatteryComponent.CASE }
 
-            val leftLevel = left?.level ?: 0
-            val rightLevel = right?.level ?: 0
-            val caseLevel = case?.level ?: 0
-
-            val singleDisplayed = left?.status == right?.status && (leftLevel - rightLevel) in -3..3
+            val singleDisplayed = left != null && right != null && left.status == right.status && (left.level - right.level).absoluteValue < 3
 
             Row(
                 modifier = Modifier
@@ -337,33 +347,29 @@ private fun VideoBatteryLayout(
                 ) {
                     if (singleDisplayed) {
                         BatteryIndicator(
-                            leftLevel.coerceAtMost(rightLevel),
-                            left?.status ?: BatteryStatus.NOT_CHARGING,
-                            surfaceColor = surfaceColor
+                            battery = left,
+                            surfaceColor = surfaceColor,
+                            showIcon = false
                         )
                     } else {
                         Row(
                             modifier = Modifier.fillMaxWidth(),
                             horizontalArrangement = Arrangement.Center
                         ) {
-                            if (leftLevel > 0 || left?.status != BatteryStatus.DISCONNECTED) {
+                            if (left != null && left.level > 0) {
                                 BatteryIndicator(
-                                    leftLevel,
-                                    left?.status ?: BatteryStatus.NOT_CHARGING,
-                                    "LeftCircleFill",
+                                    battery = left,
                                     surfaceColor = surfaceColor
                                 )
                             }
 
-                            if (leftLevel > 0 && rightLevel > 0) {
+                            if (left != null && right != null && left.level > 0 && right.level > 0) {
                                 Spacer(modifier = Modifier.width(16.dp))
                             }
 
-                            if (rightLevel > 0 || right?.status != BatteryStatus.DISCONNECTED) {
+                            if (right != null && right.level > 0) {
                                 BatteryIndicator(
-                                    rightLevel,
-                                    right?.status ?: BatteryStatus.NOT_CHARGING,
-                                    "RightCircleFill",
+                                    battery = right,
                                     surfaceColor = surfaceColor
                                 )
                             }
@@ -375,12 +381,13 @@ private fun VideoBatteryLayout(
                     modifier = Modifier.weight(1f),
                     contentAlignment = Alignment.Center
                 ) {
-                    BatteryIndicator(
-                        caseLevel,
-                        case?.status ?: BatteryStatus.NOT_CHARGING,
-                        if (!singleDisplayed) "AirPodsPro3CaseFill" else null,
-                        surfaceColor = surfaceColor
-                    )
+                    if (case != null) {
+                        BatteryIndicator(
+                            battery = case,
+                            surfaceColor = surfaceColor,
+                            showIcon = !singleDisplayed
+                        )
+                    }
                 }
             }
         }

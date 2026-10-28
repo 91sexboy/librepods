@@ -53,6 +53,8 @@ import me.kavishdevar.librepods.core.devices.BatteryStatus
 import me.kavishdevar.librepods.data.app.Design
 import me.kavishdevar.librepods.data.app.DesignSystem
 import me.kavishdevar.librepods.presentation.design.LibrePodsTheme
+import me.kavishdevar.librepods.presentation.utils.LocalDebugMode
+import kotlin.math.absoluteValue
 import me.kavishdevar.librepods.core.R as coreR
 
 @Composable
@@ -86,18 +88,15 @@ fun BatteryView(
                 )
 
                 BatteryIndicator(
-                    headsetBattery.level,
-                    headsetBattery.status,
+                    battery = headsetBattery,
+                    surfaceColor = surfaceColor,
+                    showIcon = false
                 )
             }
         } else {
             val left = batteryList.find { it.component == BatteryComponent.LEFT }
             val right = batteryList.find { it.component == BatteryComponent.RIGHT }
             val case = batteryList.find { it.component == BatteryComponent.CASE }
-
-            val leftLevel = left?.level ?: 0
-            val rightLevel = right?.level ?: 0
-            val caseLevel = case?.level ?: 0
 
             val singleDisplayed = remember { mutableStateOf(false) }
 
@@ -126,13 +125,15 @@ fun BatteryView(
                     contentAlignment = Alignment.Center
                 ) {
                     if (
-                        left?.status == right?.status &&
-                        (leftLevel - rightLevel) in -3..3
+                        left != null && right != null &&
+                        left.status == right.status &&
+                        (left.level - right.level).absoluteValue < 3 &&
+                        !LocalDebugMode.current
                     ) {
                         BatteryIndicator(
-                            leftLevel.coerceAtMost(rightLevel),
-                            left?.status ?: BatteryStatus.NOT_CHARGING,
-                            surfaceColor = surfaceColor
+                            battery = left,
+                            surfaceColor = surfaceColor,
+                            showIcon = false
                         )
                         singleDisplayed.value = true
                     } else {
@@ -142,24 +143,20 @@ fun BatteryView(
                             modifier = Modifier.fillMaxWidth(),
                             horizontalArrangement = Arrangement.Center
                         ) {
-                            if (leftLevel > 0 || left?.status != BatteryStatus.DISCONNECTED) {
+                            if (left != null && left.level > 0) {
                                 BatteryIndicator(
-                                    leftLevel,
-                                    left?.status ?: BatteryStatus.NOT_CHARGING,
-                                    "LeftCircleFill",
+                                    battery = left,
                                     surfaceColor = surfaceColor
                                 )
                             }
 
-                            if (leftLevel > 0 && rightLevel > 0) {
+                            if (left != null && left.level > 0 && right != null && right.level > 0) {
                                 Spacer(modifier = Modifier.width(16.dp))
                             }
 
-                            if (rightLevel > 0 || right?.status != BatteryStatus.DISCONNECTED) {
+                            if (right != null && right.level > 0) {
                                 BatteryIndicator(
-                                    rightLevel,
-                                    right?.status ?: BatteryStatus.NOT_CHARGING,
-                                    "RightCircleFill",
+                                    battery = right,
                                     surfaceColor = surfaceColor
                                 )
                             }
@@ -187,16 +184,11 @@ fun BatteryView(
                         modifier = Modifier.fillMaxWidth()
                     )
                 }
-
-                Box(
-                    modifier = Modifier.fillMaxWidth(),
-                    contentAlignment = Alignment.Center
-                ) {
+                if (case != null) {
                     BatteryIndicator(
-                        caseLevel,
-                        case?.status ?: BatteryStatus.NOT_CHARGING,
-                        if (!singleDisplayed.value) "AirPodsPro3CaseFill" else null,
-                        surfaceColor = surfaceColor
+                        battery = case,
+                        surfaceColor = surfaceColor,
+                        showIcon = !singleDisplayed.value
                     )
                 }
             }
@@ -209,9 +201,9 @@ fun BatteryView(
 @Composable
 fun BatteryViewPreview() {
     val fakeBattery = setOf(
-        Battery(BatteryComponent.LEFT, 85, BatteryStatus.CHARGING, BatterySource.AACP),
-        Battery(BatteryComponent.RIGHT, 40, BatteryStatus.OPTIMIZED_CHARGING, BatterySource.AACP),
-        Battery(BatteryComponent.CASE, 60, BatteryStatus.NOT_CHARGING, BatterySource.AACP)
+        Battery(BatteryComponent.LEFT, 85, BatteryStatus.CHARGING, BatterySource.AACP, System.currentTimeMillis()),
+        Battery(BatteryComponent.RIGHT, 40, BatteryStatus.OPTIMIZED_CHARGING, BatterySource.AACP, System.currentTimeMillis()),
+        Battery(BatteryComponent.CASE, 60, BatteryStatus.NOT_CHARGING, BatterySource.AACP, System.currentTimeMillis())
     )
 
     LibrePodsTheme(
@@ -242,7 +234,7 @@ fun BatteryViewHeadsetPreview() {
         )
     ) {
         val fakeBatteryHeadset = setOf(
-            Battery(BatteryComponent.HEADSET, 50, BatteryStatus.CHARGING, BatterySource.AACP),
+            Battery(BatteryComponent.HEADSET, 50, BatteryStatus.CHARGING, BatterySource.AACP, System.currentTimeMillis()),
         )
 
         Box(

@@ -131,7 +131,7 @@ fun ProxConnectSettingsScreen(
     val scrollState = rememberScrollState()
 
     StyledScaffold(
-        title = stringResource(R.string.overlay_settings),
+        title = stringResource(R.string.prox_connect_settings),
         navigateBack = navigateBack
     ) { topPadding, bottomPadding ->
         Column(

@@ -65,19 +65,22 @@ fun ProximityCardSizeAndPositionRoute(
                     BatteryComponent.LEFT,
                     70,
                     BatteryStatus.CHARGING,
-                    BatterySource.AACP
+                    BatterySource.AACP,
+                    System.currentTimeMillis()
                 ),
                 Battery(
                     BatteryComponent.RIGHT,
                     68,
                     BatteryStatus.NOT_CHARGING,
-                    BatterySource.AACP
+                    BatterySource.AACP,
+                    System.currentTimeMillis()
                 ),
                 Battery(
                     BatteryComponent.CASE,
                     20,
                     BatteryStatus.CHARGING,
-                    BatterySource.AACP
+                    BatterySource.AACP,
+                    System.currentTimeMillis()
                 )
             ),
             spec = AirPodsSpecs.getSpec(AirPodsModel.AIRPODS_PRO_3)

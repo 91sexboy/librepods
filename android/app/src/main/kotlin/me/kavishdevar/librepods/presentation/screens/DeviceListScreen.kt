@@ -1,6 +1,5 @@
 package me.kavishdevar.librepods.presentation.screens
 
-import android.util.Log
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.LinearEasing
@@ -47,9 +46,12 @@ import androidx.compose.ui.graphics.Matrix
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.drawscope.rotate
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
+import androidx.graphics.shapes.CornerRounding
 import androidx.graphics.shapes.Morph
+import androidx.graphics.shapes.RoundedPolygon
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
@@ -95,6 +97,22 @@ fun DeviceListScreen(
 
     val isPremium by BillingManager.provider.isPremium.collectAsState()
 
+    val density = LocalDensity.current
+
+    val squircleBorderRadiusPx = with(density) { 12.dp.toPx() }
+    val squircleSizePx = with(density) { 72.dp.toPx() }
+
+    val squirclePolygon = remember(squircleSizePx, squircleBorderRadiusPx) {
+        RoundedPolygon(
+            numVertices = 4,
+            radius = squircleSizePx / 2f,
+            rounding = CornerRounding(
+                radius = squircleBorderRadiusPx,
+                smoothing = 0.8f
+            ),
+        )
+    }
+
     StyledScaffold(
         title = stringResource(R.string.app_name),
         navigateBack = null,
@@ -138,32 +156,39 @@ fun DeviceListScreen(
         ) {
             Spacer(modifier = Modifier.height(topPadding))
 
-            Log.d("DeviceListScreen", "Rendering device list with ${devices.size} devices")
-
             devices.forEach { (macAddress, device) ->
                 val connectionState by device.connectionState.collectAsState()
                 val deviceState by device.state.collectAsState()
                 val deviceMetadata by device.metadata.collectAsState()
 
-                fun ConnectionState.shape() = when (this) {
-                    ConnectionState.DISCONNECTED -> MaterialShapes.Circle.normalized()
-                    ConnectionState.CONNECTING -> MaterialShapes.SoftBurst.normalized()
-                    ConnectionState.CONNECTED -> MaterialShapes.SoftBurst.normalized()
-                    ConnectionState.DISCONNECTING -> MaterialShapes.Cookie4Sided.normalized()
-                    ConnectionState.AVAILABLE -> MaterialShapes.Cookie12Sided.normalized()
-                }
+                fun ConnectionState.shape() =
+                    if (design.system == DesignSystem.Apple) {
+                        squirclePolygon
+                    } else {
+                        when (this) {
+                            ConnectionState.DISCONNECTED -> MaterialShapes.Circle.normalized()
+                            ConnectionState.CONNECTING -> MaterialShapes.SoftBurst.normalized()
+                            ConnectionState.CONNECTED -> MaterialShapes.SoftBurst.normalized()
+                            ConnectionState.DISCONNECTING -> MaterialShapes.Cookie4Sided.normalized()
+                            ConnectionState.AVAILABLE -> MaterialShapes.Cookie12Sided.normalized()
+                        }
+                    }
 
                 val connectingShapes = remember {
-                    listOf(
-                        MaterialShapes.Cookie4Sided.normalized(),
-                        MaterialShapes.SoftBurst.normalized(),
-                        MaterialShapes.Cookie9Sided.normalized(),
-                        MaterialShapes.Pentagon.normalized(),
-                        MaterialShapes.Pill.normalized(),
-                        MaterialShapes.Sunny.normalized(),
-                        MaterialShapes.Cookie4Sided.normalized(),
-                        MaterialShapes.Oval.normalized(),
-                    )
+                    if (design.system == DesignSystem.Apple) {
+                        listOf(squirclePolygon)
+                    } else {
+                        listOf(
+                            MaterialShapes.Cookie4Sided.normalized(),
+                            MaterialShapes.SoftBurst.normalized(),
+                            MaterialShapes.Cookie9Sided.normalized(),
+                            MaterialShapes.Pentagon.normalized(),
+                            MaterialShapes.Pill.normalized(),
+                            MaterialShapes.Sunny.normalized(),
+                            MaterialShapes.Cookie4Sided.normalized(),
+                            MaterialShapes.Oval.normalized(),
+                        )
+                    }
                 }
 
                 val connectingMorphs = remember {
@@ -189,14 +214,16 @@ fun DeviceListScreen(
                 val touchProgress = remember { Animatable(0f) }
 
                 LaunchedEffect(pressed) {
-                    touchProgress.animateTo(
-                        targetValue = if (pressed) 1f else 0f,
-                        animationSpec = spring(
-                            dampingRatio = 0.6f,
-                            stiffness = 200f,
-                            visibilityThreshold = 0.1f
+                    if (design.system == DesignSystem.Material) {
+                        touchProgress.animateTo(
+                            targetValue = if (pressed) 1f else 0f,
+                            animationSpec = spring(
+                                dampingRatio = 0.6f,
+                                stiffness = 200f,
+                                visibilityThreshold = 0.1f
+                            )
                         )
-                    )
+                    }
                 }
 
                 var currentMorphIndex by remember { mutableIntStateOf(0) }
@@ -326,11 +353,17 @@ fun DeviceListScreen(
                         onClick = if (connectionState == ConnectionState.CONNECTED) {
                             { navigateToDevice(macAddress) }
                         } else null,
-                        contentText = deviceMetadata.name,
+                        content = {
+                            Text(
+                                text = deviceMetadata.name,
+                                style = MaterialTheme.typography.titleMedium,
+                                color = MaterialTheme.colorScheme.onSurface
+                            )
+                        },
                         leadingContent = {
                             Box(
                                 modifier = Modifier
-                                    .size(56.dp)
+                                    .size(72.dp)
                                     .pointerInput(Unit) {
                                         detectTapGestures(
                                             onPress = {
@@ -382,7 +415,9 @@ fun DeviceListScreen(
                                             size.center - shapePath.getBounds().center
                                         )
 
-                                        val rotation =
+                                        val rotation = if (design.system == DesignSystem.Apple) {
+                                            45f
+                                        } else {
                                             if (connectionState == ConnectionState.CONNECTING) {
                                                 morphProgress.value * 90f +
                                                     morphRotationTarget +
@@ -390,6 +425,7 @@ fun DeviceListScreen(
                                             } else {
                                                 0f
                                             }
+                                        }
 
                                         rotate(rotation) {
                                             drawPath(

@@ -23,5 +23,7 @@ data class ProximityCardSettings(
 
     val useVideo: Boolean = false,
 
-    val requireBothBudsInCase: Boolean = true
+    val requireBothBudsInCase: Boolean = true,
+
+    val showCloseButton: Boolean = true
 )

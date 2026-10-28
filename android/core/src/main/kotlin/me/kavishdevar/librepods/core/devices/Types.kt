@@ -63,21 +63,21 @@ data class Battery(
     val component: BatteryComponent,
     val level: Int,
     val status: BatteryStatus,
-    val source: BatterySource
+    val source: BatterySource,
+    val timestamp: Long,
 ): Parcelable {
     override fun toString(): String {
-        return "$component: $status at $level% ($source)"
+        return "$component: $status at $level% from $source ($timestamp)"
     }
 }
 
-fun Set<Battery>.hasSameBatteryState(other: Set<Battery>): Boolean {
+fun Set<Battery>.hasSameState(other: Set<Battery>): Boolean {
     val currentByComponent = associateBy { it.component }
+    val otherByComponent = other.associateBy { it.component }
 
-    return other.all { battery ->
-        val current = currentByComponent[battery.component]
-        current != null &&
-            current.level == battery.level &&
-            current.status == battery.status
+    return currentByComponent.keys == otherByComponent.keys && currentByComponent.all { (component, current) ->
+        val otherBattery = otherByComponent[component] ?: return@all false
+        current.level == otherBattery.level && current.status == otherBattery.status
     }
 }
 

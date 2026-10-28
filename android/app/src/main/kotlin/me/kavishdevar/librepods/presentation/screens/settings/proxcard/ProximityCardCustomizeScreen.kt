@@ -65,19 +65,22 @@ fun ProximityCardCustomizeRoute(
                     BatteryComponent.LEFT,
                     70,
                     BatteryStatus.CHARGING,
-                    BatterySource.AACP
+                    BatterySource.AACP,
+                    System.currentTimeMillis()
                 ),
                 Battery(
                     BatteryComponent.RIGHT,
                     68,
                     BatteryStatus.NOT_CHARGING,
-                    BatterySource.AACP
+                    BatterySource.AACP,
+                    System.currentTimeMillis()
                 ),
                 Battery(
                     BatteryComponent.CASE,
                     20,
                     BatteryStatus.CHARGING,
-                    BatterySource.AACP
+                    BatterySource.AACP,
+                    System.currentTimeMillis()
                 )
             ),
             spec = AirPodsSpecs.getSpec(AirPodsModel.AIRPODS_PRO_3)
@@ -155,6 +158,18 @@ fun ProximityCardCustomizeScreen(
                     },
                     valueRange = 0f..1f,
                     independent = true
+                )
+
+                StyledToggle(
+                    label = stringResource(R.string.show_close_button),
+                    checked = proximityCardSettings.showCloseButton,
+                    onCheckedChange = {
+                        updateProximityCardSettings(
+                            proximityCardSettings.copy(
+                                showCloseButton = it
+                            )
+                        )
+                    }
                 )
 
                 StyledToggle(

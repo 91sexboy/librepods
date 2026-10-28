@@ -53,6 +53,9 @@ import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import me.kavishdevar.librepods.core.devices.Battery
+import me.kavishdevar.librepods.core.devices.BatteryComponent
+import me.kavishdevar.librepods.core.devices.BatterySource
 import me.kavishdevar.librepods.core.devices.BatteryStatus
 import me.kavishdevar.librepods.data.app.ColorStyle
 import me.kavishdevar.librepods.data.app.Design
@@ -61,6 +64,8 @@ import me.kavishdevar.librepods.presentation.design.LibrePodsTheme
 import me.kavishdevar.librepods.presentation.design.LocalDesign
 import me.kavishdevar.librepods.presentation.icons.LocalIcons
 import me.kavishdevar.librepods.presentation.icons.richText
+import me.kavishdevar.librepods.presentation.utils.LocalDebugMode
+import me.kavishdevar.librepods.presentation.utils.rememberRelativeTime
 import kotlin.math.cos
 import kotlin.math.min
 import kotlin.math.sin
@@ -68,47 +73,53 @@ import kotlin.math.sqrt
 
 @Composable
 fun BatteryIndicator(
-    batteryPercentage: Int,
-    status: BatteryStatus,
-    imageVectorName: String? = null,
-    previousCharging: Boolean = false,
+    battery: Battery,
     showLabel: Boolean = true,
-    surfaceColor: Color = Color.Unspecified
+    surfaceColor: Color = Color.Unspecified,
+    showIcon: Boolean = true
 ) {
     val design = LocalDesign.current
     val isDarkTheme = MaterialTheme.colorScheme.surface.luminance() < 0.5f
-    val batteryFillColor = if (status != BatteryStatus.DISCONNECTED) {
-        if (batteryPercentage > 25) if (isDarkTheme) Color(0xFF2ED158) else Color(0xFF35C759)
+    val batteryFillColor = if (battery.status != BatteryStatus.DISCONNECTED) {
+        if (battery.level > 25) if (isDarkTheme) Color(0xFF2ED158) else Color(0xFF35C759)
             else if (isDarkTheme) Color(0xFFFC4244) else Color(0xFFfe373C)
         }
         else MaterialTheme.colorScheme.surfaceContainerHighest
 
-    val initialScale = if (previousCharging) 1f else 0f
-    val scaleAnim = remember { Animatable(initialScale) }
-    val charging = status == BatteryStatus.CHARGING || status == BatteryStatus.OPTIMIZED_CHARGING
-    val targetScale = if (charging) 1f else 0f
+    val charging = battery.status == BatteryStatus.CHARGING || battery.status == BatteryStatus.OPTIMIZED_CHARGING
+    val scaleAnim = remember { Animatable(if (charging) 1f else 0f) }
 
-    LaunchedEffect(previousCharging, charging) {
-        scaleAnim.animateTo(targetScale, animationSpec = tween(durationMillis = 250))
+    LaunchedEffect(charging) {
+        scaleAnim.animateTo(
+            targetValue = if (charging) 1f else 0f,
+            animationSpec = tween(durationMillis = 250)
+        )
     }
 
     Column(
         modifier = Modifier
             .background(if (surfaceColor.isSpecified) surfaceColor else if (design.colorStyle == ColorStyle.Custom) MaterialTheme.colorScheme.surface else MaterialTheme.colorScheme.surfaceContainer) // just for haze to work
             .padding(4.dp)
-            .visible(batteryPercentage > 0),
+            .visible(battery.level > 0),
         horizontalAlignment = Alignment.CenterHorizontally
     ) {
         Box(
             modifier = Modifier.padding(bottom = 4.dp),
             contentAlignment = Alignment.Center
         ) {
+            if (LocalDebugMode.current ){
+                Text(
+                    text = "${battery.source} ${rememberRelativeTime(battery.timestamp)}",
+                    style = MaterialTheme.typography.bodySmall.copy(fontSize = 10.sp),
+                    modifier = Modifier.align(Alignment.BottomCenter)
+                )
+            }
             val strokeWidthPx = with(LocalDensity.current) { 4.dp.toPx() }
             val gapFromCenterPx = with(LocalDensity.current) { 8.sp.toPx() }
 
             val trackColor = MaterialTheme.colorScheme.surfaceContainerLow
             val optimizedLimit = 0.8f
-            val progress = batteryPercentage / 100f
+            val progress = battery.level / 100f
 
             Canvas(modifier = Modifier.size(34.dp)) {
                 val startAngle = -90f
@@ -122,7 +133,7 @@ fun BatteryIndicator(
                 )
                 val radius = size.minDimension / 2
 
-                if (status == BatteryStatus.OPTIMIZED_CHARGING) {
+                if (battery.status == BatteryStatus.OPTIMIZED_CHARGING) {
                     drawArc(
                         color = trackColor,
                         startAngle = startAngle,
@@ -162,7 +173,7 @@ fun BatteryIndicator(
                     val endY = center.y - normY * gapFromCenterPx
 
                     drawLine(
-                        color = if (batteryPercentage >= 80) batteryFillColor else trackColor,
+                        color = if (battery.level >= 80) batteryFillColor else trackColor,
                         start = Offset(startX, startY),
                         end = Offset(endX, endY),
                         strokeWidth = strokeWidthPx,
@@ -201,16 +212,23 @@ fun BatteryIndicator(
 
         if (showLabel) {
             Row {
-                val color = MaterialTheme.colorScheme.onSurface.copy(if (status == BatteryStatus.DISCONNECTED) 0.3f else 1f)
+                val color = MaterialTheme.colorScheme.onSurface.copy(if (battery.status == BatteryStatus.DISCONNECTED) 0.3f else 1f)
                 val colorHex = String.format(
                     "%08X",
                     color.toArgb()
                 )
 
+                val imageVectorName = if (showIcon) when (battery.component) {
+                    BatteryComponent.LEFT -> "LeftCircleFill"
+                    BatteryComponent.RIGHT -> "RightCircleFill"
+                    BatteryComponent.CASE -> "AirPodsPro3CaseFill"
+                    BatteryComponent.HEADSET -> "AirPodsMax"
+                } else null
+
                 val richText = if (imageVectorName != null) {
-                    richText("\\icon{$imageVectorName,#${colorHex}} $batteryPercentage%")
+                    richText("\\icon{$imageVectorName,#${colorHex}} ${battery.level}%")
                 } else {
-                    richText("$batteryPercentage%")
+                    richText("${battery.level}%")
                 }
 
                 Text(
@@ -233,10 +251,13 @@ fun BatteryIndicatorPreview() {
         )
     ) {
         BatteryIndicator(
-            batteryPercentage = 20,
-            status = BatteryStatus.DISCONNECTED,
-            previousCharging = false,
-            imageVectorName = "LeftCircleFill"
+            battery = Battery(
+                component = BatteryComponent.LEFT,
+                level = 85,
+                status = BatteryStatus.CHARGING,
+                source = BatterySource.AACP,
+                timestamp = System.currentTimeMillis()
+            ),
         )
     }
 }
