@@ -37,18 +37,12 @@ impl ksni::Tray for MyTray {
         let text = {
             let mut levels: Vec<u8> = Vec::new();
             if let Some(h) = self.battery_headphone {
-                if self.battery_headphone_status != Some(BatteryStatus::Disconnected) {
-                    levels.push(h);
-                }
+                levels.push(h);
             } else {
-                if let Some(l) = self.battery_l
-                    && self.battery_l_status != Some(BatteryStatus::Disconnected)
-                {
+                if let Some(l) = self.battery_l {
                     levels.push(l);
                 }
-                if let Some(r) = self.battery_r
-                    && self.battery_r_status != Some(BatteryStatus::Disconnected)
-                {
+                if let Some(r) = self.battery_r {
                     levels.push(r);
                 }
                 // if let Some(c) = self.battery_c {
@@ -81,17 +75,19 @@ impl ksni::Tray for MyTray {
     fn tool_tip(&self) -> ToolTip {
         let format_component =
             |label: &str, level: Option<u8>, status: Option<BatteryStatus>| -> String {
-                match status {
-                    Some(BatteryStatus::Disconnected) => format!("{}: -", label),
-                    _ => {
-                        let pct = level.map(|b| format!("{}%", b)).unwrap_or("?".to_string());
+                match level {
+                    Some(level) => {
                         let suffix = if status == Some(BatteryStatus::Charging) {
                             "⚡"
                         } else {
                             ""
                         };
-                        format!("{}: {}{}", label, pct, suffix)
+                        format!("{}: {}%{}", label, level, suffix)
                     }
+                    None if status == Some(BatteryStatus::Disconnected) => {
+                        format!("{}: -", label)
+                    }
+                    None => format!("{}: ?", label),
                 }
             };
 
