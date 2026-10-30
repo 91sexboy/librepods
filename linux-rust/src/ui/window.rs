@@ -65,12 +65,16 @@ fn save_setting_update(path: &Path, update: AppSettingUpdate) -> std::io::Result
     save_app_settings(path, &update.into_patch())
 }
 
-fn open_main_window() -> (window::Id, Task<Message>) {
+fn main_window_settings() -> window::Settings {
     let mut settings = window::Settings::default();
     settings.min_size = Some(Size::new(400.0, 300.0));
     settings.visible = true;
     settings.icon = window_icon();
-    let (id, open) = window::open(settings);
+    settings
+}
+
+fn open_main_window() -> (window::Id, Task<Message>) {
+    let (id, open) = window::open(main_window_settings());
     (id, open.map(Message::WindowOpened))
 }
 
@@ -1448,6 +1452,17 @@ mod tests {
     #[test]
     fn embedded_window_icon_decodes() {
         assert!(window_icon().is_some());
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn main_window_uses_librepods_application_id() {
+        assert_eq!(
+            super::main_window_settings()
+                .platform_specific
+                .application_id,
+            "librepods"
+        );
     }
 
     #[test]
