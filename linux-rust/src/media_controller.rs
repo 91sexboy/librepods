@@ -50,6 +50,7 @@ pub enum ProfileOperationError {
     NoPreferredA2dpProfile,
     ProfileWorkerStopped,
     ListenerReplaced,
+    ActivationSupersededByDeactivation,
     ProfileSwitchFailed(String),
 }
 
@@ -607,7 +608,8 @@ impl A2dpRecoveryOperations for MediaControllerA2dpOperations<'_> {
 
     fn restart_wire_plumber(&mut self) -> A2dpRecoveryFuture<'_, bool> {
         let controller = self.controller;
-        Box::pin(async move { controller.restart_wire_plumber().await })
+        let listener_generation = self.listener_generation.clone();
+        Box::pin(async move { controller.restart_wire_plumber(listener_generation).await })
     }
 
     fn sleep(&mut self, duration: Duration) -> A2dpRecoveryFuture<'_, ()> {
@@ -1417,10 +1419,10 @@ impl MediaController {
         }
     }
 
-    pub async fn pause_all_media(&self) {
+    pub async fn pause_all_media(&self) -> bool {
         debug!("Pausing all media (without tracking for resume)");
 
-        let paused_count = tokio::task::spawn_blocking(|| {
+        self.pause_all_media_with(|| {
             let conn = match Connection::new_session() {
                 Ok(c) => c,
                 Err(_) => return 0,
@@ -1452,7 +1454,19 @@ impl MediaController {
             paused_count
         })
         .await
-        .unwrap();
+    }
+
+    async fn pause_all_media_with<Pause>(&self, pause: Pause) -> bool
+    where
+        Pause: FnOnce() -> usize + Send + 'static,
+    {
+        let paused_count = match tokio::task::spawn_blocking(pause).await {
+            Ok(paused_count) => paused_count,
+            Err(error) => {
+                error!("Ownership pause worker stopped: {}", error);
+                return false;
+            }
+        };
 
         if paused_count > 0 {
             info!(
@@ -1463,6 +1477,7 @@ impl MediaController {
         } else {
             debug!("No playing media players found to pause");
         }
+        true
     }
 
     async fn resume(&self) {
@@ -1614,14 +1629,33 @@ impl MediaController {
         .unwrap_or(false)
     }
 
-    async fn restart_wire_plumber(&self) -> bool {
+    async fn restart_wire_plumber(
+        &self,
+        listener_generation: Option<PlaybackListenerGeneration>,
+    ) -> bool {
+        self.restart_wire_plumber_with(listener_generation, || {
+            Command::new("systemctl")
+                .args(["--user", "restart", "wireplumber"])
+                .output()
+                .is_ok_and(|output| output.status.success())
+        })
+        .await
+    }
+
+    async fn restart_wire_plumber_with<Restart>(
+        &self,
+        listener_generation: Option<PlaybackListenerGeneration>,
+        restart: Restart,
+    ) -> bool
+    where
+        Restart: FnOnce() -> bool + Send + 'static,
+    {
         info!("Restarting WirePlumber to rediscover A2DP profiles");
-        let result = Command::new("systemctl")
-            .args(["--user", "restart", "wireplumber"])
-            .output();
+        let _ = listener_generation;
+        let result = tokio::task::spawn_blocking(restart).await;
 
         match result {
-            Ok(output) if output.status.success() => {
+            Ok(true) => {
                 info!("WirePlumber restarted successfully");
                 true
             }
@@ -2597,6 +2631,207 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn activation_queued_before_deactivation_is_superseded() {
+        let controller = controller();
+        let actions = Arc::new(StdMutex::new(Vec::new()));
+        let first_actions = Arc::clone(&actions);
+        let (first_started_tx, first_started_rx) = oneshot::channel();
+        let (release_first_tx, release_first_rx) = oneshot::channel();
+        let first_controller = controller.clone();
+        let first = tokio::spawn(async move {
+            first_controller
+                .run_a2dp_activation(async move {
+                    first_actions.lock().unwrap().push("first activation");
+                    first_started_tx
+                        .send(())
+                        .expect("first activation start receiver dropped");
+                    release_first_rx
+                        .await
+                        .expect("first activation release sender dropped");
+                    Ok(())
+                })
+                .await
+        });
+        timeout(Duration::from_secs(1), first_started_rx)
+            .await
+            .expect("first activation did not start")
+            .expect("first activation start sender dropped");
+
+        let second_actions = Arc::clone(&actions);
+        let second_controller = controller.clone();
+        let (second_polled_tx, second_polled_rx) = oneshot::channel();
+        let second = tokio::spawn(async move {
+            let mut pipeline = Box::pin(second_controller.run_a2dp_activation(async move {
+                second_actions.lock().unwrap().push("second activation");
+                Ok(())
+            }));
+            let mut second_polled_tx = Some(second_polled_tx);
+            std::future::poll_fn(move |context| {
+                let result = std::future::Future::poll(pipeline.as_mut(), context);
+                if let Some(second_polled_tx) = second_polled_tx.take() {
+                    let _ = second_polled_tx.send(());
+                }
+                result
+            })
+            .await
+        });
+        timeout(Duration::from_secs(1), second_polled_rx)
+            .await
+            .expect("queued activation was not polled")
+            .expect("queued activation poll sender dropped");
+
+        let deactivation_actions = Arc::clone(&actions);
+        let deactivation_controller = controller.clone();
+        let (deactivation_polled_tx, deactivation_polled_rx) = oneshot::channel();
+        let deactivation = tokio::spawn(async move {
+            let mut pipeline =
+                Box::pin(deactivation_controller.run_a2dp_deactivation(async move {
+                    deactivation_actions.lock().unwrap().push("deactivation");
+                    Ok(())
+                }));
+            let mut deactivation_polled_tx = Some(deactivation_polled_tx);
+            std::future::poll_fn(move |context| {
+                let result = std::future::Future::poll(pipeline.as_mut(), context);
+                if let Some(deactivation_polled_tx) = deactivation_polled_tx.take() {
+                    let _ = deactivation_polled_tx.send(());
+                }
+                result
+            })
+            .await
+        });
+        timeout(Duration::from_secs(1), deactivation_polled_rx)
+            .await
+            .expect("queued deactivation was not polled")
+            .expect("queued deactivation poll sender dropped");
+
+        release_first_tx
+            .send(())
+            .expect("first activation release receiver dropped");
+        let (first_result, second_result, deactivation_result) =
+            timeout(Duration::from_secs(1), async {
+                tokio::join!(first, second, deactivation)
+            })
+            .await
+            .expect("queued profile operations did not finish");
+
+        assert_eq!(first_result.expect("first activation task failed"), Ok(()));
+        assert_eq!(
+            second_result.expect("queued activation task failed"),
+            Err(ProfileOperationError::ActivationSupersededByDeactivation)
+        );
+        assert_eq!(
+            deactivation_result.expect("deactivation task failed"),
+            Ok(())
+        );
+        assert_eq!(
+            actions.lock().unwrap().as_slice(),
+            ["first activation", "deactivation"]
+        );
+    }
+
+    #[tokio::test]
+    async fn activation_started_during_deactivation_is_superseded() {
+        let controller = controller();
+        let actions = Arc::new(StdMutex::new(Vec::new()));
+        let deactivation_actions = Arc::clone(&actions);
+        let (deactivation_started_tx, deactivation_started_rx) = oneshot::channel();
+        let (release_deactivation_tx, release_deactivation_rx) = oneshot::channel();
+        let deactivation_controller = controller.clone();
+        let deactivation = tokio::spawn(async move {
+            deactivation_controller
+                .run_a2dp_deactivation(async move {
+                    deactivation_actions.lock().unwrap().push("deactivation");
+                    deactivation_started_tx
+                        .send(())
+                        .expect("deactivation start receiver dropped");
+                    release_deactivation_rx
+                        .await
+                        .expect("deactivation release sender dropped");
+                    Ok(())
+                })
+                .await
+        });
+        timeout(Duration::from_secs(1), deactivation_started_rx)
+            .await
+            .expect("deactivation did not start")
+            .expect("deactivation start sender dropped");
+
+        let activation_actions = Arc::clone(&actions);
+        let activation_controller = controller.clone();
+        let (activation_polled_tx, activation_polled_rx) = oneshot::channel();
+        let activation = tokio::spawn(async move {
+            let mut pipeline = Box::pin(activation_controller.run_a2dp_activation(async move {
+                activation_actions.lock().unwrap().push("activation");
+                Ok(())
+            }));
+            let mut activation_polled_tx = Some(activation_polled_tx);
+            std::future::poll_fn(move |context| {
+                let result = std::future::Future::poll(pipeline.as_mut(), context);
+                if let Some(activation_polled_tx) = activation_polled_tx.take() {
+                    let _ = activation_polled_tx.send(());
+                }
+                result
+            })
+            .await
+        });
+        timeout(Duration::from_secs(1), activation_polled_rx)
+            .await
+            .expect("activation during deactivation was not polled")
+            .expect("activation poll sender dropped");
+
+        release_deactivation_tx
+            .send(())
+            .expect("deactivation release receiver dropped");
+        let (deactivation_result, activation_result) = timeout(Duration::from_secs(1), async {
+            tokio::join!(deactivation, activation)
+        })
+        .await
+        .expect("deactivation and queued activation did not finish");
+
+        assert_eq!(
+            deactivation_result.expect("deactivation task failed"),
+            Ok(())
+        );
+        assert_eq!(
+            activation_result.expect("activation task failed"),
+            Err(ProfileOperationError::ActivationSupersededByDeactivation)
+        );
+        assert_eq!(actions.lock().unwrap().as_slice(), ["deactivation"]);
+    }
+
+    #[tokio::test]
+    async fn activation_started_after_deactivation_completes_runs() {
+        let controller = controller();
+        let actions = Arc::new(StdMutex::new(Vec::new()));
+        let deactivation_actions = Arc::clone(&actions);
+
+        assert_eq!(
+            controller
+                .run_a2dp_deactivation(async move {
+                    deactivation_actions.lock().unwrap().push("deactivation");
+                    Ok(())
+                })
+                .await,
+            Ok(())
+        );
+
+        let activation_actions = Arc::clone(&actions);
+        assert_eq!(
+            controller
+                .run_a2dp_activation(async move {
+                    activation_actions.lock().unwrap().push("activation");
+                    Ok(())
+                })
+                .await,
+            Ok(())
+        );
+        assert_eq!(
+            actions.lock().unwrap().as_slice(),
+            ["deactivation", "activation"]
+        );
+    }
+
+    #[tokio::test]
     async fn stale_listener_generation_skips_blocking_profile_action() {
         let playback_listeners = PlaybackListenerRegistry::default();
         let first_listener = tokio::spawn(std::future::pending::<()>());
@@ -2620,6 +2855,71 @@ mod tests {
         replacement_listener.abort();
         assert_eq!(result, Err(ProfileOperationError::ListenerReplaced));
         assert!(!action_ran);
+    }
+
+    #[tokio::test]
+    async fn stale_listener_generation_skips_fenced_ownership_pause() {
+        let playback_listeners = PlaybackListenerRegistry::default();
+        let controller =
+            controller_with_listener_registry(CONNECTED_MAC, playback_listeners.clone());
+        let first_listener = tokio::spawn(std::future::pending::<()>());
+        let first_generation =
+            playback_listeners.replace(CONNECTED_MAC, first_listener.abort_handle());
+        *controller
+            .playback_listener_generation
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(PlaybackListenerGeneration {
+            device_mac: CONNECTED_MAC.into(),
+            generation: first_generation,
+        });
+        let replacement_listener = tokio::spawn(std::future::pending::<()>());
+        let replacement_generation =
+            playback_listeners.replace(CONNECTED_MAC, replacement_listener.abort_handle());
+        let pause_calls = Arc::new(AtomicUsize::new(0));
+        let recorded_pause_calls = Arc::clone(&pause_calls);
+
+        let cleanup_ran = controller
+            .pause_all_media_with(move || {
+                recorded_pause_calls.fetch_add(1, Ordering::SeqCst);
+                1
+            })
+            .await;
+
+        assert!(playback_listeners.remove_if_current(CONNECTED_MAC, replacement_generation));
+        replacement_listener.abort();
+        assert!(!cleanup_ran);
+        assert_eq!(pause_calls.load(Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test]
+    async fn stale_listener_generation_skips_wire_plumber_restart_command() {
+        let playback_listeners = PlaybackListenerRegistry::default();
+        let controller =
+            controller_with_listener_registry(CONNECTED_MAC, playback_listeners.clone());
+        let first_listener = tokio::spawn(std::future::pending::<()>());
+        let first_generation =
+            playback_listeners.replace(CONNECTED_MAC, first_listener.abort_handle());
+        let stale_generation = PlaybackListenerGeneration {
+            device_mac: CONNECTED_MAC.into(),
+            generation: first_generation,
+        };
+        let replacement_listener = tokio::spawn(std::future::pending::<()>());
+        let replacement_generation =
+            playback_listeners.replace(CONNECTED_MAC, replacement_listener.abort_handle());
+        let restart_calls = Arc::new(AtomicUsize::new(0));
+        let recorded_restart_calls = Arc::clone(&restart_calls);
+
+        let restarted = controller
+            .restart_wire_plumber_with(Some(stale_generation), move || {
+                recorded_restart_calls.fetch_add(1, Ordering::SeqCst);
+                true
+            })
+            .await;
+
+        assert!(playback_listeners.remove_if_current(CONNECTED_MAC, replacement_generation));
+        replacement_listener.abort();
+        assert!(!restarted);
+        assert_eq!(restart_calls.load(Ordering::SeqCst), 0);
     }
 
     #[tokio::test]

@@ -27,14 +27,14 @@ async fn guarded_ownership_cleanup<
 ) -> bool
 where
     CurrentBeforePause: std::future::Future<Output = bool>,
-    Pause: std::future::Future<Output = ()>,
+    Pause: std::future::Future<Output = bool>,
     CurrentBeforeDeactivation: std::future::Future<Output = bool>,
     Deactivation: std::future::Future<Output = ()>,
 {
     if !current_before_pause.await {
         return false;
     }
-    pause.await;
+    let _ = pause.await;
     if !current_before_deactivation.await {
         return false;
     }
@@ -61,7 +61,7 @@ async fn cleanup_then_bounded_acknowledgement<
 ) -> Result<Option<Result<(), Error>>, tokio::time::error::Elapsed>
 where
     CurrentBeforePause: std::future::Future<Output = bool>,
-    Pause: std::future::Future<Output = ()>,
+    Pause: std::future::Future<Output = bool>,
     CurrentBeforeDeactivation: std::future::Future<Output = bool>,
     Deactivation: std::future::Future<Output = ()>,
     CurrentBeforeAcknowledgement: std::future::Future<Output = bool>,
@@ -556,7 +556,7 @@ pub struct AirPodsInformation {
 
 #[cfg(test)]
 mod tests {
-    use super::cleanup_then_bounded_acknowledgement;
+    use super::{cleanup_then_bounded_acknowledgement, guarded_ownership_cleanup};
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::{Arc, Mutex as StdMutex};
     use tokio::time::Duration;
@@ -572,6 +572,7 @@ mod tests {
             async { true },
             async move {
                 pause_actions.lock().unwrap().push("pause");
+                true
             },
             async { true },
             async move {
@@ -603,7 +604,7 @@ mod tests {
 
         let outcome = cleanup_then_bounded_acknowledgement(
             async { true },
-            async {},
+            async { true },
             async { true },
             async move {
                 cleanup_flag.store(true, Ordering::SeqCst);
@@ -629,6 +630,7 @@ mod tests {
             async { false },
             async move {
                 pause_actions.lock().unwrap().push("pause");
+                true
             },
             async { true },
             async move {
@@ -666,6 +668,7 @@ mod tests {
             async move {
                 pause_actions.lock().unwrap().push("pause");
                 session_during_pause.store(false, Ordering::SeqCst);
+                true
             },
             async move { session_before_deactivation.load(Ordering::SeqCst) },
             async move {
@@ -701,6 +704,7 @@ mod tests {
             async { true },
             async move {
                 pause_actions.lock().unwrap().push("pause");
+                true
             },
             async { true },
             async move {
@@ -724,5 +728,53 @@ mod tests {
             actions.lock().unwrap().as_slice(),
             ["pause", "deactivation"]
         );
+    }
+
+    #[tokio::test]
+    async fn skipped_fenced_pause_stops_ownership_loss_cleanup() {
+        let actions = Arc::new(StdMutex::new(Vec::new()));
+        let deactivation_actions = Arc::clone(&actions);
+
+        let cleanup_completed = guarded_ownership_cleanup(
+            async { true },
+            async { false },
+            async { true },
+            async move {
+                deactivation_actions.lock().unwrap().push("deactivation");
+            },
+        )
+        .await;
+
+        assert!(!cleanup_completed);
+        assert!(actions.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn skipped_fenced_pause_stops_ownership_request_cleanup() {
+        let actions = Arc::new(StdMutex::new(Vec::new()));
+        let deactivation_actions = Arc::clone(&actions);
+        let acknowledgement_actions = Arc::clone(&actions);
+
+        let outcome = cleanup_then_bounded_acknowledgement(
+            async { true },
+            async { false },
+            async { true },
+            async move {
+                deactivation_actions.lock().unwrap().push("deactivation");
+            },
+            async { true },
+            async move {
+                acknowledgement_actions
+                    .lock()
+                    .unwrap()
+                    .push("acknowledgement");
+                Ok::<(), &'static str>(())
+            },
+            Duration::from_millis(50),
+        )
+        .await;
+
+        assert!(matches!(outcome, Ok(None)));
+        assert!(actions.lock().unwrap().is_empty());
     }
 }
