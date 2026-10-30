@@ -106,6 +106,11 @@ impl ksni::Tray for MyTray {
             description: format!("{} {} {}", l, r, c),
         }
     }
+    fn activate(&mut self, _x: i32, _y: i32) {
+        if let Some(tx) = &self.ui_tx {
+            let _ = tx.send(BluetoothUIMessage::OpenWindow);
+        }
+    }
     fn menu(&self) -> Vec<ksni::MenuItem<Self>> {
         use ksni::menu::*;
         let allow_off = self.allow_off_option == Some(0x01);
