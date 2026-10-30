@@ -77,12 +77,12 @@ Example packet from AirPods Pro 2
 | Byte      | Interpretation                     |
 |-----------|------------------------------------|
 | 7th byte  | Battery Count - 3                  |
-| 8th byte  | Battery type - Left                |
+| 8th byte  | Battery type - Right               |
 | 9th byte  | Spacer, value = 0x01               |
 | 10th byte | Battery level 100%                 |
 | 11th byte | Battery status - Discharging       |
 | 12th byte | Battery component end value = 0x01 |
-| 13th byte | Battery type - Right               |
+| 13th byte | Battery type - Left                |
 | 14th byte | Spacer, value = 0x01               |
 | 15th byte | Battery level 99%                  |
 | 16th byte | Battery status - Charging          |
