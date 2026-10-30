@@ -2,7 +2,7 @@ use crate::bluetooth::aacp::ControlCommandIdentifiers;
 use crate::bluetooth::aacp::{AACPEvent, AACPManager, AirPodsLEKeys, ProximityKeyType};
 use crate::media_controller::MediaController;
 use crate::ui::messages::BluetoothUIMessage;
-use crate::ui::tray::MyTray;
+use crate::ui::tray::{MyTray, run_tray_command_worker};
 use crate::utils::get_app_settings_path;
 use bluer::Address;
 use ksni::Handle;
@@ -13,9 +13,6 @@ use tokio::sync::Mutex;
 use tokio::time::{Duration, sleep};
 
 const OWNERSHIP_ACKNOWLEDGEMENT_TIMEOUT: Duration = Duration::from_secs(1);
-// A normal AACP mode report should arrive quickly; two seconds avoids leaving a stale KDE
-// selection visible without making ordinary Bluetooth latency look like a failure.
-const LISTENING_MODE_CONFIRMATION_TIMEOUT: Duration = Duration::from_secs(2);
 
 async fn guarded_ownership_cleanup<
     CurrentBeforePause,
@@ -224,36 +221,25 @@ impl AirPodsDevice {
 
         let aacp_manager_clone = aacp_manager.clone();
         let command_tray_handle = tray_handle.clone();
-        tokio::spawn(async move {
-            while let Some(command) = command_rx.recv().await {
-                let (id, value, listening_mode_request_id) = command.into_parts();
-                if let Some(request_id) = listening_mode_request_id {
-                    let timeout_tray_handle = command_tray_handle.clone();
-                    tokio::spawn(async move {
-                        sleep(LISTENING_MODE_CONFIRMATION_TIMEOUT).await;
-                        if let Some(handle) = timeout_tray_handle {
-                            handle
-                                .update(move |tray: &mut MyTray| {
-                                    tray.clear_pending_listening_mode_request(request_id);
-                                })
-                                .await;
-                        }
-                    });
-                }
-                if let Err(e) = aacp_manager_clone.send_control_command(id, &value).await {
-                    log::error!("Failed to send control command: {}", e);
-                    if let Some(request_id) = listening_mode_request_id
-                        && let Some(handle) = &command_tray_handle
-                    {
+        tokio::spawn(run_tray_command_worker(
+            command_rx,
+            move |identifier, value| {
+                let aacp_manager = aacp_manager_clone.clone();
+                async move { aacp_manager.send_control_command(identifier, &value).await }
+            },
+            move |request_key| {
+                let tray_handle = command_tray_handle.clone();
+                async move {
+                    if let Some(handle) = tray_handle {
                         handle
                             .update(move |tray: &mut MyTray| {
-                                tray.clear_pending_listening_mode_request(request_id);
+                                tray.clear_pending_request(request_key);
                             })
                             .await;
                     }
                 }
-            }
-        });
+            },
+        ));
 
         let mc_listener = media_controller.lock().await;
         let aacp_manager_clone_listener = aacp_manager.clone();
@@ -315,7 +301,7 @@ impl AirPodsDevice {
                 if let Some(handle) = &tray_handle_clone {
                     handle
                         .update(|tray: &mut MyTray| {
-                            tray.conversation_detect_enabled = Some(value[0] == 0x01);
+                            tray.apply_conversation_detection_report(value[0] == 0x01);
                         })
                         .await;
                 }

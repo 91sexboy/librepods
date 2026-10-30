@@ -2,11 +2,28 @@
 
 use ab_glyph::{Font, ScaleFont};
 use ksni::{Icon, ToolTip};
-use tokio::sync::mpsc::UnboundedSender;
+use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
+use tokio::time::{Duration, sleep};
 
 use crate::bluetooth::aacp::{BatteryStatus, ControlCommandIdentifiers};
 use crate::ui::messages::BluetoothUIMessage;
 use crate::utils::{MyTheme, get_app_settings_path};
+
+// A normal AACP setting report should arrive quickly; two seconds avoids leaving stale KDE
+// controls visible without making ordinary Bluetooth latency look like a failure.
+const TRAY_REQUEST_CONFIRMATION_TIMEOUT: Duration = Duration::from_secs(2);
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum TraySetting {
+    ListeningMode,
+    ConversationDetection,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct TrayRequestKey {
+    pub(crate) setting: TraySetting,
+    pub(crate) request_id: u64,
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct PendingListeningModeRequest {
@@ -18,7 +35,7 @@ pub(crate) struct PendingListeningModeRequest {
 pub(crate) struct TrayCommand {
     pub(crate) identifier: ControlCommandIdentifiers,
     pub(crate) value: Vec<u8>,
-    pub(crate) listening_mode_request_id: Option<u64>,
+    pub(crate) pending_request_key: Option<TrayRequestKey>,
 }
 
 impl TrayCommand {
@@ -26,7 +43,7 @@ impl TrayCommand {
         Self {
             identifier,
             value,
-            listening_mode_request_id: None,
+            pending_request_key: None,
         }
     }
 
@@ -34,12 +51,50 @@ impl TrayCommand {
         Self {
             identifier: ControlCommandIdentifiers::ListeningMode,
             value: vec![request.mode],
-            listening_mode_request_id: Some(request.request_id),
+            pending_request_key: Some(TrayRequestKey {
+                setting: TraySetting::ListeningMode,
+                request_id: request.request_id,
+            }),
         }
     }
 
-    pub(crate) fn into_parts(self) -> (ControlCommandIdentifiers, Vec<u8>, Option<u64>) {
-        (self.identifier, self.value, self.listening_mode_request_id)
+    fn into_parts(self) -> (ControlCommandIdentifiers, Vec<u8>, Option<TrayRequestKey>) {
+        (self.identifier, self.value, self.pending_request_key)
+    }
+}
+
+pub(crate) async fn run_tray_command_worker<
+    SendCommand,
+    SendFuture,
+    ClearPending,
+    ClearFuture,
+    Error,
+>(
+    mut command_rx: UnboundedReceiver<TrayCommand>,
+    send_command: SendCommand,
+    clear_pending: ClearPending,
+) where
+    SendCommand: Fn(ControlCommandIdentifiers, Vec<u8>) -> SendFuture,
+    SendFuture: std::future::Future<Output = Result<(), Error>>,
+    ClearPending: Fn(TrayRequestKey) -> ClearFuture + Clone + Send + 'static,
+    ClearFuture: std::future::Future<Output = ()> + Send + 'static,
+    Error: std::fmt::Display,
+{
+    while let Some(command) = command_rx.recv().await {
+        let (identifier, value, pending_request_key) = command.into_parts();
+        if let Some(request_key) = pending_request_key {
+            let clear_pending = clear_pending.clone();
+            tokio::spawn(async move {
+                sleep(TRAY_REQUEST_CONFIRMATION_TIMEOUT).await;
+                clear_pending(request_key).await;
+            });
+        }
+        if let Err(error) = send_command(identifier, value).await {
+            log::error!("Failed to send control command: {}", error);
+            if let Some(request_key) = pending_request_key {
+                clear_pending(request_key).await;
+            }
+        }
     }
 }
 
@@ -75,12 +130,25 @@ impl MyTray {
         self.pending_listening_mode = None;
     }
 
+    pub(crate) fn apply_conversation_detection_report(&mut self, enabled: bool) {
+        self.conversation_detect_enabled = Some(enabled);
+    }
+
     pub(crate) fn clear_pending_listening_mode_request(&mut self, request_id: u64) {
         if self
             .pending_listening_mode
             .is_some_and(|request| request.request_id == request_id)
         {
             self.pending_listening_mode = None;
+        }
+    }
+
+    pub(crate) fn clear_pending_request(&mut self, request_key: TrayRequestKey) {
+        match request_key.setting {
+            TraySetting::ListeningMode => {
+                self.clear_pending_listening_mode_request(request_key.request_id);
+            }
+            TraySetting::ConversationDetection => {}
         }
     }
 
@@ -387,6 +455,31 @@ fn generate_icon(text: &str, text_mode: bool, charging: bool, text_color: [u8; 4
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::future::Future;
+    use std::pin::Pin;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::{Arc, Mutex as StdMutex};
+    use std::task::{Context, Poll};
+
+    type TestSendFuture = Pin<Box<dyn Future<Output = Result<(), &'static str>> + Send + 'static>>;
+
+    struct PendingSend {
+        dropped: Arc<AtomicBool>,
+    }
+
+    impl Future for PendingSend {
+        type Output = Result<(), &'static str>;
+
+        fn poll(self: Pin<&mut Self>, _context: &mut Context<'_>) -> Poll<Self::Output> {
+            Poll::Pending
+        }
+    }
+
+    impl Drop for PendingSend {
+        fn drop(&mut self) {
+            self.dropped.store(true, Ordering::SeqCst);
+        }
+    }
 
     fn empty_tray() -> MyTray {
         MyTray {
@@ -417,6 +510,35 @@ mod tests {
                 _ => None,
             })
             .expect("tray should expose a listening-mode radio group")
+    }
+
+    fn conversation_detection_item(tray: &MyTray) -> ksni::menu::CheckmarkItem<MyTray> {
+        let mut items = <MyTray as ksni::Tray>::menu(tray)
+            .into_iter()
+            .filter_map(|item| match item {
+                ksni::MenuItem::Checkmark(item) => Some(item),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            items.len(),
+            1,
+            "tray should expose exactly one visible checkmark"
+        );
+        let item = items.pop().unwrap();
+        assert!(item.visible, "conversation checkmark should be visible");
+        item
+    }
+
+    fn clear_pending_in(
+        tray: Arc<tokio::sync::Mutex<MyTray>>,
+    ) -> impl Fn(TrayRequestKey) -> Pin<Box<dyn Future<Output = ()> + Send>> + Clone {
+        move |request_key| {
+            let tray = Arc::clone(&tray);
+            Box::pin(async move {
+                tray.lock().await.clear_pending_request(request_key);
+            })
+        }
     }
 
     #[test]
@@ -457,7 +579,10 @@ mod tests {
             TrayCommand {
                 identifier: ControlCommandIdentifiers::ListeningMode,
                 value: vec![0x03],
-                listening_mode_request_id: Some(u64::MAX),
+                pending_request_key: Some(TrayRequestKey {
+                    setting: TraySetting::ListeningMode,
+                    request_id: u64::MAX,
+                }),
             }
         );
         assert_eq!(listening_mode_group(&tray).selected, 1);
@@ -478,7 +603,10 @@ mod tests {
             TrayCommand {
                 identifier: ControlCommandIdentifiers::ListeningMode,
                 value: vec![0x04],
-                listening_mode_request_id: Some(0),
+                pending_request_key: Some(TrayRequestKey {
+                    setting: TraySetting::ListeningMode,
+                    request_id: 0,
+                }),
             }
         );
         assert_eq!(listening_mode_group(&tray).selected, 2);
@@ -513,8 +641,9 @@ mod tests {
         let request_id = command_rx
             .try_recv()
             .unwrap()
-            .listening_mode_request_id
-            .unwrap();
+            .pending_request_key
+            .unwrap()
+            .request_id;
         tray.clear_pending_listening_mode_request(request_id);
 
         assert_eq!(tray.listening_mode, Some(0x02));
@@ -534,15 +663,17 @@ mod tests {
         let stale_request_id = command_rx
             .try_recv()
             .unwrap()
-            .listening_mode_request_id
-            .unwrap();
+            .pending_request_key
+            .unwrap()
+            .request_id;
         let group = listening_mode_group(&tray);
         (group.select)(&mut tray, 2);
         let current_request_id = command_rx
             .try_recv()
             .unwrap()
-            .listening_mode_request_id
-            .unwrap();
+            .pending_request_key
+            .unwrap()
+            .request_id;
 
         tray.clear_pending_listening_mode_request(stale_request_id);
 
@@ -554,6 +685,212 @@ mod tests {
                 mode: 0x04,
             })
         );
+        assert_eq!(listening_mode_group(&tray).selected, 2);
+    }
+
+    #[test]
+    fn conversation_detection_displays_pending_without_mutating_confirmed_state() {
+        let (command_tx, _command_rx) = tokio::sync::mpsc::unbounded_channel();
+        let mut tray = empty_tray();
+        tray.conversation_detect_enabled = Some(false);
+        tray.command_tx = Some(command_tx);
+
+        let item = conversation_detection_item(&tray);
+        (item.activate)(&mut tray);
+
+        assert_eq!(tray.conversation_detect_enabled, Some(false));
+        assert!(conversation_detection_item(&tray).checked);
+    }
+
+    #[test]
+    fn conversation_detection_enqueue_failure_keeps_confirmed_check() {
+        let (command_tx, command_rx) = tokio::sync::mpsc::unbounded_channel();
+        drop(command_rx);
+        let mut tray = empty_tray();
+        tray.conversation_detect_enabled = Some(false);
+        tray.command_tx = Some(command_tx);
+
+        let item = conversation_detection_item(&tray);
+        (item.activate)(&mut tray);
+
+        assert_eq!(tray.conversation_detect_enabled, Some(false));
+        assert!(!conversation_detection_item(&tray).checked);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn queued_requests_expire_from_creation_and_cancel_backpressured_send() {
+        let (command_tx, command_rx) = tokio::sync::mpsc::unbounded_channel();
+        let tray = Arc::new(tokio::sync::Mutex::new(empty_tray()));
+        {
+            let mut tray = tray.lock().await;
+            tray.conversation_detect_enabled = Some(false);
+            tray.listening_mode = Some(0x02);
+            tray.command_tx = Some(command_tx);
+
+            let item = conversation_detection_item(&tray);
+            (item.activate)(&mut tray);
+            let group = listening_mode_group(&tray);
+            (group.select)(&mut tray, 1);
+        }
+
+        tokio::time::advance(Duration::from_millis(1_500)).await;
+
+        let send_dropped = Arc::new(AtomicBool::new(false));
+        let dropped_for_send = Arc::clone(&send_dropped);
+        let attempts = Arc::new(StdMutex::new(Vec::new()));
+        let attempts_for_send = Arc::clone(&attempts);
+        let (started_tx, mut started_rx) = tokio::sync::mpsc::unbounded_channel();
+        let worker = tokio::spawn(run_tray_command_worker(
+            command_rx,
+            move |identifier, value| {
+                attempts_for_send.lock().unwrap().push((identifier, value));
+                started_tx.send(()).unwrap();
+                PendingSend {
+                    dropped: Arc::clone(&dropped_for_send),
+                }
+            },
+            clear_pending_in(Arc::clone(&tray)),
+        ));
+
+        started_rx.recv().await.unwrap();
+        tokio::time::advance(Duration::from_millis(501)).await;
+        tokio::task::yield_now().await;
+        tokio::task::yield_now().await;
+
+        let tray = tray.lock().await;
+        assert_eq!(tray.conversation_detect_enabled, Some(false));
+        assert_eq!(tray.pending_listening_mode, None);
+        assert_eq!(attempts.lock().unwrap().len(), 1);
+        assert!(send_dropped.load(Ordering::SeqCst));
+        worker.abort();
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn superseding_request_cancels_stale_send_before_dispatching_latest() {
+        let (command_tx, command_rx) = tokio::sync::mpsc::unbounded_channel();
+        let tray = Arc::new(tokio::sync::Mutex::new(empty_tray()));
+        {
+            let mut tray = tray.lock().await;
+            tray.listening_mode = Some(0x02);
+            tray.command_tx = Some(command_tx);
+            let group = listening_mode_group(&tray);
+            (group.select)(&mut tray, 1);
+        }
+
+        let first_send_dropped = Arc::new(AtomicBool::new(false));
+        let dropped_for_send = Arc::clone(&first_send_dropped);
+        let attempts = Arc::new(StdMutex::new(Vec::new()));
+        let attempts_for_send = Arc::clone(&attempts);
+        let (started_tx, mut started_rx) = tokio::sync::mpsc::unbounded_channel();
+        let worker = tokio::spawn(run_tray_command_worker(
+            command_rx,
+            move |identifier, value| -> TestSendFuture {
+                attempts_for_send
+                    .lock()
+                    .unwrap()
+                    .push((identifier, value.clone()));
+                started_tx.send(value[0]).unwrap();
+                if value[0] == 0x03 {
+                    Box::pin(PendingSend {
+                        dropped: Arc::clone(&dropped_for_send),
+                    })
+                } else {
+                    Box::pin(async { Ok(()) })
+                }
+            },
+            clear_pending_in(Arc::clone(&tray)),
+        ));
+
+        assert_eq!(started_rx.recv().await, Some(0x03));
+        {
+            let mut tray = tray.lock().await;
+            let group = listening_mode_group(&tray);
+            (group.select)(&mut tray, 2);
+        }
+        let latest = tokio::time::timeout(Duration::from_millis(1), started_rx.recv())
+            .await
+            .expect("superseded send should be cancelled immediately");
+        assert_eq!(latest, Some(0x04));
+
+        let mut tray = tray.lock().await;
+        assert_eq!(tray.listening_mode, Some(0x02));
+        assert_eq!(listening_mode_group(&tray).selected, 2);
+        assert!(first_send_dropped.load(Ordering::SeqCst));
+        assert_eq!(
+            attempts
+                .lock()
+                .unwrap()
+                .iter()
+                .map(|(_, value)| value[0])
+                .collect::<Vec<_>>(),
+            [0x03, 0x04]
+        );
+        tray.apply_listening_mode_report(0x04);
+        worker.abort();
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn conversation_send_failure_rolls_back_only_pending_check() {
+        let (command_tx, command_rx) = tokio::sync::mpsc::unbounded_channel();
+        let tray = Arc::new(tokio::sync::Mutex::new(empty_tray()));
+        {
+            let mut tray = tray.lock().await;
+            tray.conversation_detect_enabled = Some(false);
+            tray.command_tx = Some(command_tx);
+            let item = conversation_detection_item(&tray);
+            (item.activate)(&mut tray);
+            tray.command_tx = None;
+        }
+
+        run_tray_command_worker(
+            command_rx,
+            |_, _| async { Err::<(), _>("transport failed") },
+            clear_pending_in(Arc::clone(&tray)),
+        )
+        .await;
+
+        let tray = tray.lock().await;
+        assert_eq!(tray.conversation_detect_enabled, Some(false));
+        assert!(!conversation_detection_item(&tray).checked);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn reports_after_original_deadline_remain_authoritative() {
+        let (command_tx, command_rx) = tokio::sync::mpsc::unbounded_channel();
+        let tray = Arc::new(tokio::sync::Mutex::new(empty_tray()));
+        {
+            let mut tray = tray.lock().await;
+            tray.conversation_detect_enabled = Some(false);
+            tray.listening_mode = Some(0x02);
+            tray.command_tx = Some(command_tx);
+            let item = conversation_detection_item(&tray);
+            (item.activate)(&mut tray);
+            let group = listening_mode_group(&tray);
+            (group.select)(&mut tray, 1);
+            tray.command_tx = None;
+        }
+
+        run_tray_command_worker(
+            command_rx,
+            |_, _| async { Ok::<(), &'static str>(()) },
+            clear_pending_in(Arc::clone(&tray)),
+        )
+        .await;
+        tokio::time::advance(TRAY_REQUEST_CONFIRMATION_TIMEOUT + Duration::from_millis(1)).await;
+        tokio::task::yield_now().await;
+
+        let mut tray = tray.lock().await;
+        assert_eq!(tray.conversation_detect_enabled, Some(false));
+        assert!(!conversation_detection_item(&tray).checked);
+        assert_eq!(tray.listening_mode, Some(0x02));
+        assert_eq!(tray.pending_listening_mode, None);
+
+        tray.apply_conversation_detection_report(true);
+        tray.apply_listening_mode_report(0x04);
+
+        assert_eq!(tray.conversation_detect_enabled, Some(true));
+        assert!(conversation_detection_item(&tray).checked);
+        assert_eq!(tray.listening_mode, Some(0x04));
         assert_eq!(listening_mode_group(&tray).selected, 2);
     }
 
