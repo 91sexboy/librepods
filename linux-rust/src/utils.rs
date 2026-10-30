@@ -7,9 +7,7 @@ use serde::{Deserialize, Serialize};
 mod paths;
 mod persistence;
 
-pub use paths::{
-    XdgPaths, get_app_settings_path, get_devices_path, get_preferences_path, resolve_xdg_paths,
-};
+pub use paths::{get_app_settings_path, get_devices_path, get_preferences_path};
 pub use persistence::{load_devices, save_app_settings, save_devices, upsert_device};
 
 fn e(key: &[u8; 16], data: &[u8; 16]) -> [u8; 16] {

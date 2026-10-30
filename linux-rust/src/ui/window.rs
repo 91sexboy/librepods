@@ -22,13 +22,12 @@ use iced::widget::{
     text_input, toggler,
 };
 use iced::{
-    Background, Border, Center, Element, Font, Length, Padding, Program, Settings, Size,
-    Subscription, Task, Theme, daemon, window,
+    Background, Border, Center, Element, Font, Length, Padding, Settings, Size, Subscription, Task,
+    Theme, daemon, window,
 };
 use log::{debug, error};
 use std::collections::HashMap;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
 use tokio::sync::mpsc::UnboundedReceiver;
 use tokio::sync::{Mutex, RwLock};
 

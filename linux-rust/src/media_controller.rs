@@ -875,7 +875,7 @@ impl MediaController {
         tokio::task::spawn_blocking(move || {
             for card in get_card_info_list_sync() {
                 if let Some(device_string) = card.proplist.get_str("device.string")
-                    && pulse_property_matches_mac(device_string, &mac_clone)
+                    && pulse_property_matches_mac(&device_string, &mac_clone)
                 {
                     info!(
                         "Found audio device index for MAC {}: {}",
@@ -1326,7 +1326,7 @@ async fn get_sink_name_by_mac(mac: &str) -> Option<String> {
             let matches_mac = ["device.string", "bluez.path"]
                 .into_iter()
                 .filter_map(|property| sink.proplist.get_str(property))
-                .any(|property| pulse_property_matches_mac(property, &mac_clone));
+                .any(|property| pulse_property_matches_mac(&property, &mac_clone));
             if matches_mac && let Some(name) = &sink.name {
                 info!("Found sink name for MAC {}: {}", mac_clone, name);
                 return Some(name.to_string());
