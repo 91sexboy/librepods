@@ -1055,6 +1055,62 @@ mod tests {
     }
 
     #[tokio::test(start_paused = true)]
+    async fn matching_but_uncorrelated_reports_do_not_cancel_aba_requests() {
+        let (command_tx, command_rx) = tokio::sync::mpsc::unbounded_channel();
+        let tray = Arc::new(tokio::sync::Mutex::new(empty_tray()));
+        {
+            let mut tray = tray.lock().await;
+            tray.listening_mode = Some(0x02);
+            tray.conversation_detect_enabled = Some(false);
+            tray.command_tx = Some(command_tx);
+
+            for selected in [1, 2, 1] {
+                let group = listening_mode_group(&tray);
+                (group.select)(&mut tray, selected);
+            }
+            for _ in 0..3 {
+                let item = conversation_detection_item(&tray);
+                (item.activate)(&mut tray);
+            }
+
+            tray.apply_listening_mode_report(0x03);
+            tray.apply_conversation_detection_report(true);
+            tray.command_tx = None;
+
+            assert_eq!(tray.listening_mode, Some(0x03));
+            assert_eq!(tray.conversation_detect_enabled, Some(true));
+            assert!(tray.pending_listening_mode.is_some());
+            assert!(tray.pending_conversation_detection.is_some());
+        }
+
+        let attempts = Arc::new(StdMutex::new(Vec::new()));
+        let attempts_for_send = Arc::clone(&attempts);
+        run_tray_command_worker(
+            command_rx,
+            move |identifier, value| {
+                attempts_for_send.lock().unwrap().push((identifier, value));
+                async { Ok::<(), &'static str>(()) }
+            },
+            clear_pending_in(Arc::clone(&tray)),
+        )
+        .await;
+
+        assert_eq!(
+            attempts.lock().unwrap().as_slice(),
+            [
+                (ControlCommandIdentifiers::ListeningMode, vec![0x03]),
+                (
+                    ControlCommandIdentifiers::ConversationDetectConfig,
+                    vec![0x01],
+                ),
+            ]
+        );
+        let tray = tray.lock().await;
+        assert!(tray.pending_listening_mode.is_some());
+        assert!(tray.pending_conversation_detection.is_some());
+    }
+
+    #[tokio::test(start_paused = true)]
     async fn conversation_send_failure_rolls_back_only_pending_check() {
         let (command_tx, command_rx) = tokio::sync::mpsc::unbounded_channel();
         let tray = Arc::new(tokio::sync::Mutex::new(empty_tray()));
