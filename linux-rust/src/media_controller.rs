@@ -88,7 +88,7 @@ trait A2dpActivationOperations: A2dpRecoveryOperations {
     fn current_device_index(
         &mut self,
     ) -> A2dpRecoveryFuture<'_, Result<u32, ProfileOperationError>>;
-    fn get_preferred_a2dp_profile(&mut self) -> A2dpRecoveryFuture<'_, String>;
+    fn get_preferred_a2dp_profile(&mut self, card_index: u32) -> A2dpRecoveryFuture<'_, String>;
     fn switch_profile(
         &mut self,
         card_index: u32,
@@ -184,34 +184,12 @@ where
         return Ok(());
     }
 
-    let needs_recovery = match initial_device_index {
-        Some(_) => !operations.is_a2dp_profile_available().await,
-        None => true,
-    };
-    if needs_recovery {
+    if initial_device_index.is_none() {
         recover_a2dp_profile(operations).await?;
     }
 
-    let active_profile_device_index = if needs_recovery {
-        let recovered_device_index = operations.current_device_index().await?;
-        if active_a2dp_profile_is_current(operations, recovered_device_index).await? {
-            return Ok(());
-        }
-        Some(recovered_device_index)
-    } else {
-        initial_device_index
-    };
-
-    let preferred_profile = operations.get_preferred_a2dp_profile().await;
-    if preferred_profile.is_empty() {
-        error!("No suitable A2DP profile found");
-        return Err(ProfileOperationError::NoPreferredA2dpProfile);
-    }
-
-    let current_device_index = operations.resolve_device_index().await?;
-    if active_profile_device_index != Some(current_device_index)
-        && active_a2dp_profile_is_current(operations, current_device_index).await?
-    {
+    let mut current_device_index = operations.resolve_device_index().await?;
+    if active_a2dp_profile_is_current(operations, current_device_index).await? {
         return Ok(());
     }
     if let Some(initial_device_index) = initial_device_index
@@ -221,6 +199,25 @@ where
             "Audio device index changed from {} to {} during activation",
             initial_device_index, current_device_index
         );
+    }
+
+    if !operations.is_a2dp_profile_available().await {
+        recover_a2dp_profile(operations).await?;
+        current_device_index = operations.resolve_device_index().await?;
+        if active_a2dp_profile_is_current(operations, current_device_index).await? {
+            return Ok(());
+        }
+        if !operations.is_a2dp_profile_available().await {
+            return Err(ProfileOperationError::A2dpProfileUnavailable);
+        }
+    }
+
+    let preferred_profile = operations
+        .get_preferred_a2dp_profile(current_device_index)
+        .await;
+    if preferred_profile.is_empty() {
+        error!("No suitable A2DP profile found");
+        return Err(ProfileOperationError::NoPreferredA2dpProfile);
     }
 
     operations
@@ -571,6 +568,7 @@ impl MediaControllerState {
 pub struct MediaController {
     state: Arc<Mutex<MediaControllerState>>,
     device_index_lookup_lock: Arc<Mutex<()>>,
+    a2dp_activation_lock: Arc<Mutex<()>>,
     playback_listeners: PlaybackListenerRegistry,
 }
 
@@ -658,9 +656,9 @@ impl A2dpActivationOperations for MediaControllerA2dpOperations<'_> {
         })
     }
 
-    fn get_preferred_a2dp_profile(&mut self) -> A2dpRecoveryFuture<'_, String> {
+    fn get_preferred_a2dp_profile(&mut self, card_index: u32) -> A2dpRecoveryFuture<'_, String> {
         let controller = self.controller;
-        Box::pin(async move { controller.get_preferred_a2dp_profile().await })
+        Box::pin(async move { controller.get_preferred_a2dp_profile(card_index).await })
     }
 
     fn switch_profile(
@@ -708,6 +706,7 @@ impl MediaController {
         MediaController {
             state: Arc::new(Mutex::new(state)),
             device_index_lookup_lock: Arc::new(Mutex::new(())),
+            a2dp_activation_lock: Arc::new(Mutex::new(())),
             playback_listeners,
         }
     }
@@ -1199,6 +1198,7 @@ impl MediaController {
     where
         Activation: std::future::Future<Output = ProfileOperationResult> + Send,
     {
+        let _activation_guard = self.a2dp_activation_lock.lock().await;
         activation.await
     }
 
@@ -1458,18 +1458,16 @@ impl MediaController {
         .unwrap_or(false)
     }
 
-    async fn get_preferred_a2dp_profile(&self) -> String {
+    async fn get_preferred_a2dp_profile(&self, device_index: u32) -> String {
         let state = self.state.lock().await;
-        let device_index = state.device_index;
         let cached_profile = state.cached_a2dp_profile.clone();
         drop(state);
 
-        let index = match device_index {
-            Some(i) => i,
-            None => return String::new(),
-        };
-
-        if !cached_profile.is_empty() && self.is_profile_available(index, &cached_profile).await {
+        if !cached_profile.is_empty()
+            && self
+                .is_profile_available(device_index, &cached_profile)
+                .await
+        {
             debug!("Using cached A2DP profile: {}", cached_profile);
             return cached_profile;
         }
@@ -1477,7 +1475,7 @@ impl MediaController {
         let profile = tokio::task::spawn_blocking(move || {
             get_card_info_list_sync()
                 .iter()
-                .find(|card| card.index == index)
+                .find(|card| card.index == device_index)
                 .and_then(|card| {
                     preferred_a2dp_profile(
                         card.profiles
@@ -2234,10 +2232,11 @@ mod tests {
             Box::pin(async move { result })
         }
 
-        fn get_preferred_a2dp_profile(&mut self) -> A2dpRecoveryFuture<'_, String> {
-            let card_index = self
-                .current_device_index
-                .expect("preferred profile requested without a current audio card");
+        fn get_preferred_a2dp_profile(
+            &mut self,
+            card_index: u32,
+        ) -> A2dpRecoveryFuture<'_, String> {
+            assert_eq!(self.current_device_index, Some(card_index));
             self.actions
                 .push(ActivationAction::PreferredProfile(card_index));
             let profile = self
@@ -2837,7 +2836,7 @@ mod tests {
     async fn initial_lookup_miss_recovers_when_card_appears_during_grace() {
         let mut operations = RecordingActivationOperations::new(
             [None, Some(42), Some(42)],
-            [true],
+            [true, true],
             Some("off"),
             false,
         );
@@ -2853,10 +2852,10 @@ mod tests {
                 ActivationAction::RequestA2dpConnection,
                 ActivationAction::Sleep(Duration::from_secs(2)),
                 ActivationAction::Probe,
-                ActivationAction::CurrentDeviceIndex,
-                ActivationAction::ActiveProfile(42),
-                ActivationAction::PreferredProfile(42),
                 ActivationAction::ResolveDeviceIndex,
+                ActivationAction::ActiveProfile(42),
+                ActivationAction::ProfileAvailable,
+                ActivationAction::PreferredProfile(42),
                 ActivationAction::SwitchProfile {
                     card_index: 42,
                     profile: "a2dp-sink".into(),
@@ -2886,7 +2885,7 @@ mod tests {
     async fn initial_lookup_miss_requests_a2dp_once_then_switches_recovered_card_once() {
         let mut operations = RecordingActivationOperations::new(
             [None, Some(42), Some(42)],
-            [true],
+            [true, true],
             Some("off"),
             false,
         );
@@ -2910,10 +2909,10 @@ mod tests {
                 ActivationAction::RequestA2dpConnection,
                 ActivationAction::Sleep(Duration::from_secs(2)),
                 ActivationAction::Probe,
-                ActivationAction::CurrentDeviceIndex,
-                ActivationAction::ActiveProfile(42),
-                ActivationAction::PreferredProfile(42),
                 ActivationAction::ResolveDeviceIndex,
+                ActivationAction::ActiveProfile(42),
+                ActivationAction::ProfileAvailable,
+                ActivationAction::PreferredProfile(42),
                 ActivationAction::SwitchProfile {
                     card_index: 42,
                     profile: "a2dp-sink".into(),
@@ -2950,7 +2949,7 @@ mod tests {
     async fn a2dp_request_error_still_runs_bounded_recovery() {
         let mut operations = RecordingActivationOperations::new(
             [None, Some(42), Some(42)],
-            [true],
+            [true, true],
             Some("off"),
             false,
         );
@@ -3091,7 +3090,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn activation_refreshes_card_index_after_profile_selection() {
+    async fn activation_selects_profile_after_refreshing_card_index() {
         let mut operations =
             RecordingActivationOperations::new([Some(21), Some(42)], [true], Some("off"), false);
 
@@ -3103,10 +3102,10 @@ mod tests {
             vec![
                 ActivationAction::ResolveDeviceIndex,
                 ActivationAction::ActiveProfile(21),
-                ActivationAction::ProfileAvailable,
-                ActivationAction::PreferredProfile(21),
                 ActivationAction::ResolveDeviceIndex,
                 ActivationAction::ActiveProfile(42),
+                ActivationAction::ProfileAvailable,
+                ActivationAction::PreferredProfile(42),
                 ActivationAction::SwitchProfile {
                     card_index: 42,
                     profile: "a2dp-sink".into(),
@@ -3119,7 +3118,7 @@ mod tests {
     async fn recreated_final_card_recovers_and_selects_its_own_profile() {
         let mut operations = RecordingActivationOperations::new(
             [Some(21), Some(42), Some(42), Some(42)],
-            [true, false, true],
+            [false, true, true],
             Some("off"),
             false,
         );
