@@ -55,45 +55,33 @@ fn format_battery_summary(battery: &[BatteryInfo]) -> String {
             .unwrap_or(false);
         format!("􀺹 {}%{}", level, if charging { "\u{1002E6}" } else { "" })
     } else {
-        let left = battery
-            .iter()
-            .find(|reading| reading.component == BatteryComponent::Left)
-            .map(|reading| reading.level)
-            .unwrap_or_default();
-        let right = battery
-            .iter()
-            .find(|reading| reading.component == BatteryComponent::Right)
-            .map(|reading| reading.level)
-            .unwrap_or_default();
-        let case = battery
-            .iter()
-            .find(|reading| reading.component == BatteryComponent::Case)
-            .map(|reading| reading.level)
-            .unwrap_or_default();
-        let left_charging = battery
-            .iter()
-            .find(|reading| reading.component == BatteryComponent::Left)
-            .map(|reading| reading.status == BatteryStatus::Charging)
-            .unwrap_or(false);
-        let right_charging = battery
-            .iter()
-            .find(|reading| reading.component == BatteryComponent::Right)
-            .map(|reading| reading.status == BatteryStatus::Charging)
-            .unwrap_or(false);
-        let case_charging = battery
-            .iter()
-            .find(|reading| reading.component == BatteryComponent::Case)
-            .map(|reading| reading.status == BatteryStatus::Charging)
-            .unwrap_or(false);
-        format!(
-            "\u{1018E5} {}%{} \u{1018E8} {}%{} \u{100E6C} {}%{}",
-            left,
-            if left_charging { "\u{1002E6}" } else { "" },
-            right,
-            if right_charging { "\u{1002E6}" } else { "" },
-            case,
-            if case_charging { "\u{1002E6}" } else { "" }
-        )
+        let mut components = Vec::new();
+        for (component, icon) in [
+            (BatteryComponent::Left, '\u{1018E5}'),
+            (BatteryComponent::Right, '\u{1018E8}'),
+            (BatteryComponent::Case, '\u{100E6C}'),
+        ] {
+            if let Some(reading) = battery
+                .iter()
+                .find(|reading| reading.component == component)
+            {
+                components.push(format!(
+                    "{} {}%{}",
+                    icon,
+                    reading.level,
+                    if reading.status == BatteryStatus::Charging {
+                        "\u{1002E6}"
+                    } else {
+                        ""
+                    }
+                ));
+            }
+        }
+        if components.is_empty() {
+            "Battery unknown".to_string()
+        } else {
+            components.join(" ")
+        }
     }
 }
 
