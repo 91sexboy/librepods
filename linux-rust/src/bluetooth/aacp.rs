@@ -1,14 +1,15 @@
 use crate::devices::airpods::AirPodsInformation;
 use crate::devices::enums::{DeviceData, DeviceInformation, DeviceType};
-use crate::utils::{get_devices_path, upsert_device};
+use crate::utils::{get_devices_path, load_devices, upsert_device};
 use bluer::{
     Address, AddressType, Error, Result,
     l2cap::{SeqPacket, Socket, SocketAddr},
 };
 use log::{debug, error, info};
 use serde::{Deserialize, Serialize};
-use serde_json;
 use std::collections::HashMap;
+use std::io;
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::{Mutex, mpsc};
@@ -388,6 +389,80 @@ fn parse_information_payload(payload: &[u8]) -> Option<AirPodsInformation> {
     })
 }
 
+enum AirPodsDeviceUpdate {
+    Information(Box<AirPodsInformation>),
+    ProximityKeys(Vec<(ProximityKeyType, String)>),
+}
+
+fn empty_airpods_information(name: String) -> AirPodsInformation {
+    AirPodsInformation {
+        name,
+        model_number: String::new(),
+        manufacturer: String::new(),
+        serial_number: String::new(),
+        version1: String::new(),
+        version2: String::new(),
+        hardware_revision: String::new(),
+        updater_identifier: String::new(),
+        left_serial_number: String::new(),
+        right_serial_number: String::new(),
+        version3: String::new(),
+        le_keys: AirPodsLEKeys {
+            irk: String::new(),
+            enc_key: String::new(),
+        },
+    }
+}
+
+fn merge_airpods_device(
+    current: Option<DeviceData>,
+    device_key: &str,
+    update: AirPodsDeviceUpdate,
+) -> DeviceData {
+    let mut device = current.unwrap_or_else(|| DeviceData {
+        name: device_key.to_string(),
+        type_: DeviceType::AirPods,
+        information: None,
+    });
+
+    match update {
+        AirPodsDeviceUpdate::Information(mut information) => {
+            if let Some(DeviceInformation::AirPods(existing)) = device.information.as_ref() {
+                information.le_keys = existing.le_keys.clone();
+            }
+            device.name = information.name.clone();
+            device.type_ = DeviceType::AirPods;
+            device.information = Some(DeviceInformation::AirPods(*information));
+        }
+        AirPodsDeviceUpdate::ProximityKeys(keys) => {
+            let mut information = match device.information.take() {
+                Some(DeviceInformation::AirPods(information)) => information,
+                _ => empty_airpods_information(device.name.clone()),
+            };
+            for (key_type, value) in keys {
+                match key_type {
+                    ProximityKeyType::Irk => information.le_keys.irk = value,
+                    ProximityKeyType::EncKey => information.le_keys.enc_key = value,
+                }
+            }
+            device.type_ = DeviceType::AirPods;
+            device.information = Some(DeviceInformation::AirPods(information));
+        }
+    }
+
+    device
+}
+
+async fn run_device_io<Output, Operation>(operation: Operation) -> io::Result<Output>
+where
+    Output: Send + 'static,
+    Operation: FnOnce() -> io::Result<Output> + Send + 'static,
+{
+    tokio::task::spawn_blocking(operation)
+        .await
+        .map_err(|error| io::Error::other(format!("device persistence worker failed: {error}")))?
+}
+
 pub struct AACPManagerState {
     pub sender: Option<mpsc::Sender<Vec<u8>>>,
     // Bumped whenever the active packet channel is installed or invalidated.
@@ -410,10 +485,6 @@ pub struct AACPManagerState {
 
 impl AACPManagerState {
     fn new() -> Self {
-        let devices: HashMap<String, DeviceData> = std::fs::read_to_string(get_devices_path())
-            .ok()
-            .and_then(|s| serde_json::from_str(&s).ok())
-            .unwrap_or_default();
         AACPManagerState {
             sender: None,
             connection_generation: 0,
@@ -428,7 +499,7 @@ impl AACPManagerState {
             old_ear_detection_status: Vec::new(),
             ear_detection_status: Vec::new(),
             event_tx: None,
-            devices,
+            devices: HashMap::new(),
             airpods_mac: None,
         }
     }
@@ -438,24 +509,36 @@ impl AACPManagerState {
 pub struct AACPManager {
     pub state: Arc<Mutex<AACPManagerState>>,
     tasks: Arc<Mutex<JoinSet<()>>>,
+    devices_path: PathBuf,
+    connection_transition_gate: Arc<Mutex<()>>,
 }
 
 impl AACPManager {
     pub fn new() -> Self {
+        Self::with_devices_path(get_devices_path())
+    }
+
+    fn with_devices_path(devices_path: PathBuf) -> Self {
         AACPManager {
             state: Arc::new(Mutex::new(AACPManagerState::new())),
             tasks: Arc::new(Mutex::new(JoinSet::new())),
+            devices_path,
+            connection_transition_gate: Arc::new(Mutex::new(())),
+        }
+    }
+
+    async fn refresh_devices(&self) {
+        let devices_path = self.devices_path.clone();
+        match run_device_io(move || load_devices(&devices_path)).await {
+            Ok(devices) => self.state.lock().await.devices = devices,
+            Err(error) => error!("Failed to load persisted AirPods devices: {error}"),
         }
     }
 
     pub async fn connect(&mut self, addr: Address) {
+        self.refresh_devices().await;
         info!("AACPManager connecting to {} on PSM {:#06X}...", addr, PSM);
         let target_sa = SocketAddr::new(addr, AddressType::BrEdr, PSM);
-
-        {
-            let mut state = self.state.lock().await;
-            state.airpods_mac = Some(addr);
-        }
 
         let socket = match Socket::new_seq_packet() {
             Ok(s) => s,
@@ -504,7 +587,7 @@ impl AACPManager {
 
         let (tx, rx) = mpsc::channel(128);
 
-        let connection_generation = self.install_connection(tx).await;
+        let connection_generation = self.install_connection(tx, Some(addr)).await;
 
         let mut tasks = self.tasks.lock().await;
         tasks.spawn(recv_thread(
@@ -581,15 +664,24 @@ impl AACPManager {
         Ok(())
     }
 
-    async fn install_connection(&self, sender: mpsc::Sender<Vec<u8>>) -> u64 {
+    async fn install_connection(
+        &self,
+        sender: mpsc::Sender<Vec<u8>>,
+        airpods_mac: Option<Address>,
+    ) -> u64 {
+        let _transition = self.connection_transition_gate.lock().await;
         let mut state = self.state.lock().await;
         state.connection_generation = state.connection_generation.wrapping_add(1);
         state.sender = Some(sender);
+        if let Some(airpods_mac) = airpods_mac {
+            state.airpods_mac = Some(airpods_mac);
+        }
         Self::clear_connection_data(&mut state);
         state.connection_generation
     }
 
     async fn clear_connection_if_current(&self, connection_generation: u64) -> bool {
+        let _transition = self.connection_transition_gate.lock().await;
         let mut state = self.state.lock().await;
         if state.connection_generation != connection_generation {
             return false;
@@ -609,6 +701,47 @@ impl AACPManager {
         state.control_command_status_list.clear();
         state.old_ear_detection_status.clear();
         state.ear_detection_status.clear();
+    }
+
+    async fn persist_airpods_update(
+        &self,
+        device_key: String,
+        update: AirPodsDeviceUpdate,
+        expected_generation: Option<u64>,
+    ) -> io::Result<Option<DeviceData>> {
+        let _transition = self.connection_transition_gate.lock().await;
+        {
+            let state = self.state.lock().await;
+            if !Self::packet_generation_is_current(&state, expected_generation)
+                || !state
+                    .airpods_mac
+                    .is_some_and(|address| address.to_string() == device_key)
+            {
+                return Ok(None);
+            }
+        }
+
+        let devices_path = self.devices_path.clone();
+        let persistence_key = device_key.clone();
+        let merge_key = device_key.clone();
+        let updated = run_device_io(move || {
+            upsert_device(&devices_path, &persistence_key, |current| {
+                merge_airpods_device(current, &merge_key, update)
+            })
+        })
+        .await?;
+
+        let mut state = self.state.lock().await;
+        if Self::packet_generation_is_current(&state, expected_generation)
+            && state
+                .airpods_mac
+                .is_some_and(|address| address.to_string() == device_key)
+        {
+            state.devices.insert(device_key, updated.clone());
+            Ok(Some(updated))
+        } else {
+            Ok(None)
+        }
     }
 
     async fn send_data_packet(&self, data: &[u8]) -> Result<()> {
@@ -863,27 +996,28 @@ impl AACPManager {
                     error!("Malformed Information packet: {}", hex::encode(payload));
                     return;
                 };
-                let mut state = self.state.lock().await;
-                if !Self::packet_generation_is_current(&state, expected_generation) {
-                    return;
-                }
-                let persisted_device = if let Some(mac) = state.airpods_mac {
-                    let key = mac.to_string();
-                    state.devices.get_mut(&key).map(|device_data| {
-                        device_data.name = info.name.clone();
-                        device_data.information = Some(DeviceInformation::AirPods(info.clone()));
-                        (key, device_data.clone())
-                    })
-                } else {
-                    None
+                info!("Received Information: {:?}", info);
+                let device_key = {
+                    let state = self.state.lock().await;
+                    if !Self::packet_generation_is_current(&state, expected_generation) {
+                        return;
+                    }
+                    state.airpods_mac.map(|address| address.to_string())
                 };
-                drop(state);
-                if let Some((key, device)) = persisted_device
-                    && let Err(error) = upsert_device(&get_devices_path(), &key, |_| device)
+                let Some(device_key) = device_key else {
+                    error!("Cannot save AirPods information without a connected device address");
+                    return;
+                };
+                if let Err(error) = self
+                    .persist_airpods_update(
+                        device_key,
+                        AirPodsDeviceUpdate::Information(Box::new(info)),
+                        expected_generation,
+                    )
+                    .await
                 {
                     error!("Failed to save AirPods information: {error}");
                 }
-                info!("Received Information: {:?}", info);
             }
 
             opcodes::PROXIMITY_KEYS_RSP => {
@@ -926,52 +1060,34 @@ impl AACPManager {
                         .map(|(kt, kd)| (kt, hex::encode(kd)))
                         .collect::<Vec<_>>()
                 );
-                let mut state = self.state.lock().await;
-                if !Self::packet_generation_is_current(&state, expected_generation) {
+                let key_updates: Vec<_> = keys
+                    .iter()
+                    .filter_map(|(key_type, key_data)| {
+                        ProximityKeyType::from_u8(*key_type)
+                            .map(|key_type| (key_type, hex::encode(key_data)))
+                    })
+                    .collect();
+                if key_updates.is_empty() {
                     return;
                 }
-                for (key_type, key_data) in &keys {
-                    if let Some(kt) = ProximityKeyType::from_u8(*key_type)
-                        && let Some(mac) = state.airpods_mac
-                    {
-                        let mac_str = mac.to_string();
-                        let device_data =
-                            state.devices.entry(mac_str.clone()).or_insert(DeviceData {
-                                name: mac_str.clone(),
-                                type_: DeviceType::AirPods,
-                                information: None,
-                            });
-                        match kt {
-                            ProximityKeyType::Irk => match device_data.information.as_mut() {
-                                Some(DeviceInformation::AirPods(info)) => {
-                                    info.le_keys.irk = hex::encode(key_data);
-                                }
-                                _ => {
-                                    error!("Device information is not AirPods for adding LE IRK.");
-                                }
-                            },
-                            ProximityKeyType::EncKey => match device_data.information.as_mut() {
-                                Some(DeviceInformation::AirPods(info)) => {
-                                    info.le_keys.enc_key = hex::encode(key_data);
-                                }
-                                _ => {
-                                    error!(
-                                        "Device information is not AirPods for adding LE encryption key."
-                                    );
-                                }
-                            },
-                        }
+                let device_key = {
+                    let state = self.state.lock().await;
+                    if !Self::packet_generation_is_current(&state, expected_generation) {
+                        return;
                     }
-                }
-                let persisted_device = if let Some(mac) = state.airpods_mac {
-                    let key = mac.to_string();
-                    state.devices.get(&key).cloned().map(|device| (key, device))
-                } else {
-                    None
+                    state.airpods_mac.map(|address| address.to_string())
                 };
-                drop(state);
-                if let Some((key, device)) = persisted_device
-                    && let Err(error) = upsert_device(&get_devices_path(), &key, |_| device)
+                let Some(device_key) = device_key else {
+                    error!("Cannot save AirPods proximity keys without a connected device address");
+                    return;
+                };
+                if let Err(error) = self
+                    .persist_airpods_update(
+                        device_key,
+                        AirPodsDeviceUpdate::ProximityKeys(key_updates),
+                        expected_generation,
+                    )
+                    .await
                 {
                     error!("Failed to save AirPods proximity keys: {error}");
                 }
@@ -1530,6 +1646,8 @@ async fn send_thread(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::utils::{load_devices, save_devices};
+    use tempfile::tempdir;
 
     fn protocol_packet(opcode: u8, body: &[u8]) -> Vec<u8> {
         let mut packet = Vec::with_capacity(HEADER_BYTES.len() + 2 + body.len());
@@ -1548,6 +1666,15 @@ mod tests {
         let declared_length = u16::try_from(body.len() - 3).unwrap();
         body[1..3].copy_from_slice(&declared_length.to_le_bytes());
         protocol_packet(opcodes::INFORMATION, &body)
+    }
+
+    fn proximity_keys_packet(keys: &[(u8, &[u8])]) -> Vec<u8> {
+        let mut body = vec![u8::try_from(keys.len()).unwrap()];
+        for (key_type, key_data) in keys {
+            body.extend_from_slice(&[*key_type, 0x00, u8::try_from(key_data.len()).unwrap(), 0x00]);
+            body.extend_from_slice(key_data);
+        }
+        protocol_packet(opcodes::PROXIMITY_KEYS_RSP, &body)
     }
 
     fn connected_devices_packet(prefix: [u8; 2], count: u8, records: &[u8]) -> Vec<u8> {
@@ -1653,9 +1780,9 @@ mod tests {
     async fn stale_receiver_cannot_mutate_or_emit_into_replacement_connection() {
         let manager = AACPManager::new();
         let (old_sender, _old_receiver) = mpsc::channel(1);
-        let old_generation = manager.install_connection(old_sender).await;
+        let old_generation = manager.install_connection(old_sender, None).await;
         let (replacement_sender, _replacement_receiver) = mpsc::channel(1);
-        let replacement_generation = manager.install_connection(replacement_sender).await;
+        let replacement_generation = manager.install_connection(replacement_sender, None).await;
         let (event_tx, mut events) = mpsc::unbounded_channel();
         manager.set_event_channel(event_tx).await;
         manager.state.lock().await.ear_detection_status = vec![EarDetectionStatus::OutOfEar];
@@ -1851,6 +1978,156 @@ mod tests {
             }
             _ => panic!("existing AirPods information was overwritten"),
         }
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn durable_device_io_runs_on_a_blocking_worker() {
+        let runtime_thread = std::thread::current().id();
+
+        let io_thread = run_device_io(|| Ok(std::thread::current().id()))
+            .await
+            .unwrap();
+
+        assert_ne!(io_thread, runtime_thread);
+    }
+
+    #[tokio::test]
+    async fn information_persistence_merges_the_latest_disk_device() {
+        let temp = tempdir().unwrap();
+        let devices_path = temp.path().join("librepods").join("devices.json");
+        let address: Address = "00:11:22:33:44:55".parse().unwrap();
+        let key = address.to_string();
+        let mut disk_information = sample_information("Disk snapshot");
+        disk_information.le_keys = AirPodsLEKeys {
+            irk: "disk-irk".into(),
+            enc_key: "disk-enc".into(),
+        };
+        let unrelated = DeviceData {
+            name: "Unrelated".into(),
+            type_: DeviceType::AirPods,
+            information: Some(DeviceInformation::AirPods(sample_information("Unrelated"))),
+        };
+        save_devices(
+            &devices_path,
+            &HashMap::from([
+                (
+                    key.clone(),
+                    DeviceData {
+                        name: "Disk snapshot".into(),
+                        type_: DeviceType::AirPods,
+                        information: Some(DeviceInformation::AirPods(disk_information)),
+                    },
+                ),
+                ("unrelated".into(), unrelated),
+            ]),
+        )
+        .unwrap();
+
+        let manager = AACPManager::with_devices_path(devices_path.clone());
+        {
+            let mut state = manager.state.lock().await;
+            state.airpods_mac = Some(address);
+            let mut stale_information = sample_information("Stale memory snapshot");
+            stale_information.le_keys = AirPodsLEKeys {
+                irk: "stale-irk".into(),
+                enc_key: "stale-enc".into(),
+            };
+            state.devices.insert(
+                key.clone(),
+                DeviceData {
+                    name: "Stale memory snapshot".into(),
+                    type_: DeviceType::AirPods,
+                    information: Some(DeviceInformation::AirPods(stale_information)),
+                },
+            );
+        }
+        let fields: [&[u8]; INFORMATION_FIELD_COUNT] = [
+            b"Fresh packet name",
+            b"A3048",
+            b"Apple Inc.",
+            b"SERIAL",
+            b"version-1",
+            b"version-2",
+            b"hardware",
+            b"updater",
+            b"left",
+            b"right",
+            b"version-3",
+        ];
+
+        manager.receive_packet(&information_packet(&fields)).await;
+
+        let saved = load_devices(&devices_path).unwrap();
+        let saved_device = saved.get(&key).unwrap();
+        assert_eq!(saved_device.name, "Fresh packet name");
+        let Some(DeviceInformation::AirPods(saved_information)) = &saved_device.information else {
+            panic!("expected persisted AirPods information");
+        };
+        assert_eq!(saved_information.model_number, "A3048");
+        assert_eq!(saved_information.le_keys.irk, "disk-irk");
+        assert_eq!(saved_information.le_keys.enc_key, "disk-enc");
+        assert_eq!(saved.get("unrelated").unwrap().name, "Unrelated");
+
+        let state = manager.state.lock().await;
+        let Some(DeviceInformation::AirPods(memory_information)) =
+            &state.devices.get(&key).unwrap().information
+        else {
+            panic!("expected in-memory AirPods information");
+        };
+        assert_eq!(memory_information.le_keys.irk, "disk-irk");
+        assert_eq!(memory_information.le_keys.enc_key, "disk-enc");
+    }
+
+    #[tokio::test]
+    async fn proximity_keys_arriving_before_information_survive_the_metadata_update() {
+        let temp = tempdir().unwrap();
+        let devices_path = temp.path().join("librepods").join("devices.json");
+        let address: Address = "00:11:22:33:44:55".parse().unwrap();
+        let key = address.to_string();
+        save_devices(
+            &devices_path,
+            &HashMap::from([(
+                key.clone(),
+                DeviceData {
+                    name: key.clone(),
+                    type_: DeviceType::AirPods,
+                    information: None,
+                },
+            )]),
+        )
+        .unwrap();
+        let manager = AACPManager::with_devices_path(devices_path.clone());
+        manager.state.lock().await.airpods_mac = Some(address);
+
+        manager
+            .receive_packet(&proximity_keys_packet(&[
+                (ProximityKeyType::Irk as u8, &[0xAA, 0xBB]),
+                (ProximityKeyType::EncKey as u8, &[0xCC, 0xDD]),
+            ]))
+            .await;
+        let fields: [&[u8]; INFORMATION_FIELD_COUNT] = [
+            b"AirPods",
+            b"A3048",
+            b"Apple Inc.",
+            b"SERIAL",
+            b"version-1",
+            b"version-2",
+            b"hardware",
+            b"updater",
+            b"left",
+            b"right",
+            b"version-3",
+        ];
+        manager.receive_packet(&information_packet(&fields)).await;
+
+        let saved = load_devices(&devices_path).unwrap();
+        let Some(DeviceInformation::AirPods(information)) = &saved.get(&key).unwrap().information
+        else {
+            panic!("expected persisted AirPods information");
+        };
+        assert_eq!(information.name, "AirPods");
+        assert_eq!(information.le_keys.irk, "aabb");
+        assert_eq!(information.le_keys.enc_key, "ccdd");
     }
 
     #[tokio::test]
@@ -2116,7 +2393,7 @@ mod tests {
         let manager = AACPManager::new();
         let (sender, mut receiver) = mpsc::channel(1);
         sender.send(vec![0xAA]).await.unwrap();
-        manager.install_connection(sender).await;
+        manager.install_connection(sender, None).await;
 
         let send = manager.send_handshake();
         tokio::pin!(send);
@@ -2137,7 +2414,7 @@ mod tests {
         let manager = AACPManager::new();
         let (sender, receiver) = mpsc::channel(1);
         sender.send(vec![0xAA]).await.unwrap();
-        let generation = manager.install_connection(sender).await;
+        let generation = manager.install_connection(sender, None).await;
         {
             let mut state = manager.state.lock().await;
             state.owns = true;
@@ -2175,7 +2452,7 @@ mod tests {
     async fn closed_send_channel_returns_error_and_invalidates_generation() {
         let manager = AACPManager::new();
         let (sender, receiver) = mpsc::channel(1);
-        let generation = manager.install_connection(sender).await;
+        let generation = manager.install_connection(sender, None).await;
         drop(receiver);
 
         assert!(manager.send_handshake().await.is_err());
@@ -2189,10 +2466,10 @@ mod tests {
     async fn stale_disconnect_does_not_clear_replacement_connection() {
         let manager = AACPManager::new();
         let (old_sender, _old_receiver) = mpsc::channel(1);
-        let old_generation = manager.install_connection(old_sender).await;
+        let old_generation = manager.install_connection(old_sender, None).await;
         let (new_sender, _new_receiver) = mpsc::channel(1);
         let expected_sender = new_sender.clone();
-        let new_generation = manager.install_connection(new_sender).await;
+        let new_generation = manager.install_connection(new_sender, None).await;
 
         assert!(!manager.clear_connection_if_current(old_generation).await);
 
