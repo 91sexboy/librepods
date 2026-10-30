@@ -1667,6 +1667,14 @@ mod tests {
         packet
     }
 
+    fn battery_packet(readings: &[(BatteryComponent, u8, BatteryStatus)]) -> Vec<u8> {
+        let mut body = vec![u8::try_from(readings.len()).unwrap()];
+        for (component, level, status) in readings {
+            body.extend_from_slice(&[*component as u8, 0x01, *level, *status as u8, 0x01]);
+        }
+        protocol_packet(opcodes::BATTERY_INFO, &body)
+    }
+
     fn information_packet(fields: &[&[u8]]) -> Vec<u8> {
         let mut body = vec![0x02, 0x00, 0x00, 0x04, 0x00];
         for field in fields {
@@ -1729,6 +1737,66 @@ mod tests {
             .expect("builder did not send a packet");
         let expected = hex::decode(expected_hex).expect("captured packet must be valid hex");
         assert_eq!(actual, expected);
+    }
+
+    #[tokio::test]
+    async fn battery_snapshot_merges_valid_partial_readings_and_resets_on_reconnect() {
+        let manager = AACPManager::new();
+        let (event_tx, mut event_rx) = mpsc::unbounded_channel();
+        manager.set_event_channel(event_tx).await;
+
+        manager
+            .receive_packet(&battery_packet(&[
+                (BatteryComponent::Left, 80, BatteryStatus::NotCharging),
+                (BatteryComponent::Right, 76, BatteryStatus::NotCharging),
+                (BatteryComponent::Case, 86, BatteryStatus::NotCharging),
+            ]))
+            .await;
+        let _ = event_rx.recv().await;
+
+        manager
+            .receive_packet(&battery_packet(&[
+                (BatteryComponent::Case, 255, BatteryStatus::Disconnected),
+                (BatteryComponent::Left, 0, BatteryStatus::Disconnected),
+                (BatteryComponent::Right, 75, BatteryStatus::NotCharging),
+            ]))
+            .await;
+
+        let snapshot = manager.state.lock().await.battery_info.clone();
+        let reading = |component| {
+            snapshot
+                .iter()
+                .find(|reading| reading.component == component)
+                .cloned()
+                .expect("component should retain a valid reading")
+        };
+        assert_eq!(reading(BatteryComponent::Left).level, 80);
+        assert_eq!(reading(BatteryComponent::Right).level, 75);
+        assert_eq!(reading(BatteryComponent::Case).level, 86);
+
+        let AACPEvent::BatteryInfo(event_snapshot) = event_rx.recv().await.unwrap() else {
+            panic!("expected a merged battery event");
+        };
+        assert_eq!(event_snapshot, snapshot);
+
+        manager
+            .receive_packet(&battery_packet(&[(
+                BatteryComponent::Left,
+                79,
+                BatteryStatus::Disconnected,
+            )]))
+            .await;
+        let snapshot = manager.state.lock().await.battery_info.clone();
+        let left = snapshot
+            .iter()
+            .find(|reading| reading.component == BatteryComponent::Left)
+            .unwrap();
+        assert_eq!(left.level, 79);
+        assert_eq!(left.status, BatteryStatus::Disconnected);
+
+        let (sender, _receiver) = mpsc::channel(1);
+        manager.install_connection(sender, None).await;
+        assert!(manager.state.lock().await.battery_info.is_empty());
     }
 
     #[tokio::test]
