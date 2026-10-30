@@ -33,31 +33,33 @@ internal data class BatteryMetadataPayload(
 )
 
 internal fun planBatteryMetadata(batteries: List<Battery>): List<BatteryMetadataPayload> {
-    val byComponent = batteries.associateBy(Battery::component)
-    return listOf(
-        BatteryMetadataPayload(
-            BatteryMetadataField.CASE_LEVEL,
-            byComponent[BatteryComponent.CASE]?.level.toString(),
-        ),
-        BatteryMetadataPayload(
-            BatteryMetadataField.CASE_CHARGING,
-            if (byComponent[BatteryComponent.CASE]?.status == BatteryStatus.CHARGING) "1" else "0",
-        ),
-        BatteryMetadataPayload(
-            BatteryMetadataField.LEFT_LEVEL,
-            byComponent[BatteryComponent.LEFT]?.level.toString(),
-        ),
-        BatteryMetadataPayload(
-            BatteryMetadataField.LEFT_CHARGING,
-            if (byComponent[BatteryComponent.LEFT]?.status == BatteryStatus.CHARGING) "1" else "0",
-        ),
-        BatteryMetadataPayload(
-            BatteryMetadataField.RIGHT_LEVEL,
-            byComponent[BatteryComponent.RIGHT]?.level.toString(),
-        ),
-        BatteryMetadataPayload(
-            BatteryMetadataField.RIGHT_CHARGING,
-            if (byComponent[BatteryComponent.RIGHT]?.status == BatteryStatus.CHARGING) "1" else "0",
-        ),
+    val presentation = planBatteryPresentation(batteries)
+    val payloads = mutableListOf<BatteryMetadataPayload>()
+
+    fun addReading(
+        reading: BatteryReadingPresentation?,
+        levelField: BatteryMetadataField,
+        chargingField: BatteryMetadataField,
+    ) {
+        reading ?: return
+        payloads += BatteryMetadataPayload(levelField, reading.level.toString())
+        payloads += BatteryMetadataPayload(chargingField, if (reading.charging) "1" else "0")
+    }
+
+    addReading(
+        presentation.case,
+        BatteryMetadataField.CASE_LEVEL,
+        BatteryMetadataField.CASE_CHARGING,
     )
+    addReading(
+        presentation.left,
+        BatteryMetadataField.LEFT_LEVEL,
+        BatteryMetadataField.LEFT_CHARGING,
+    )
+    addReading(
+        presentation.right,
+        BatteryMetadataField.RIGHT_LEVEL,
+        BatteryMetadataField.RIGHT_CHARGING,
+    )
+    return payloads
 }

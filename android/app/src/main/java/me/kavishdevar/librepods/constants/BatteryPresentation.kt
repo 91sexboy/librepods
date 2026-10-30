@@ -58,20 +58,16 @@ internal data class BatteryPresentationPlan(
 private fun BatteryReadingPresentation.notificationPart(label: String): String =
     "$label: ${if (charging) "⚡ " else ""}$level%"
 
-private fun Battery?.toPresentation(): BatteryReadingPresentation? = when {
-    this == null -> BatteryReadingPresentation(level = 0, charging = false)
-    status == BatteryStatus.DISCONNECTED -> null
-    else -> BatteryReadingPresentation(
-        level = level,
-        charging = status == BatteryStatus.CHARGING,
-    )
-}
+private fun Battery.toPresentation() = BatteryReadingPresentation(
+    level = level,
+    charging = status == BatteryStatus.CHARGING,
+)
 
 internal fun planBatteryPresentation(batteries: List<Battery>?): BatteryPresentationPlan {
     val byComponent = batteries.orEmpty().associateBy(Battery::component)
     return BatteryPresentationPlan(
-        left = byComponent[BatteryComponent.LEFT].toPresentation(),
-        right = byComponent[BatteryComponent.RIGHT].toPresentation(),
-        case = byComponent[BatteryComponent.CASE].toPresentation(),
+        left = byComponent[BatteryComponent.LEFT]?.toPresentation(),
+        right = byComponent[BatteryComponent.RIGHT]?.toPresentation(),
+        case = byComponent[BatteryComponent.CASE]?.toPresentation(),
     )
 }
