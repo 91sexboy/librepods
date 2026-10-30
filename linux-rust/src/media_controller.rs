@@ -170,6 +170,7 @@ impl MediaControllerState {
 #[derive(Clone)]
 pub struct MediaController {
     state: Arc<Mutex<MediaControllerState>>,
+    device_index_lookup_lock: Arc<Mutex<()>>,
 }
 
 impl MediaController {
@@ -179,6 +180,7 @@ impl MediaController {
         state.local_mac = local_mac;
         MediaController {
             state: Arc::new(Mutex::new(state)),
+            device_index_lookup_lock: Arc::new(Mutex::new(())),
         }
     }
 
@@ -485,9 +487,9 @@ impl MediaController {
 
     pub async fn activate_a2dp_profile(&self) -> ProfileOperationResult {
         debug!("Entering activate_a2dp_profile");
-        let (mac, cached_device_index) = {
+        let mac = {
             let state = self.state.lock().await;
-            (state.connected_device_mac.clone(), state.device_index)
+            state.connected_device_mac.clone()
         };
 
         if mac.is_empty() {
@@ -495,9 +497,19 @@ impl MediaController {
             return Err(ProfileOperationError::NoConnectedDevice);
         }
 
-        let device_index = self
-            .resolve_device_index(&mac, cached_device_index, self.get_audio_device_index(&mac))
-            .await?;
+        self.activate_a2dp_profile_with_lookup(&mac, self.get_audio_device_index(&mac))
+            .await
+    }
+
+    async fn activate_a2dp_profile_with_lookup<Lookup>(
+        &self,
+        mac: &str,
+        lookup: Lookup,
+    ) -> ProfileOperationResult
+    where
+        Lookup: std::future::Future<Output = Option<u32>>,
+    {
+        let device_index = self.resolve_device_index(mac, lookup).await?;
 
         if let Some(active_profile) = self.get_active_profile(device_index).await
             && !should_switch_to_a2dp_profile(Some(active_profile.as_str()))
@@ -527,8 +539,8 @@ impl MediaController {
             }
 
             self.refresh_device_index_and_recheck(
-                &mac,
-                self.get_audio_device_index(&mac),
+                mac,
+                self.get_audio_device_index(mac),
                 self.is_a2dp_profile_available(),
             )
             .await?;
@@ -578,26 +590,25 @@ impl MediaController {
     async fn resolve_device_index<Lookup>(
         &self,
         expected_mac: &str,
-        cached_device_index: Option<u32>,
         lookup: Lookup,
     ) -> Result<u32, ProfileOperationError>
     where
         Lookup: std::future::Future<Output = Option<u32>>,
     {
-        if let Some(device_index) = cached_device_index {
-            return Ok(device_index);
+        let _lookup_guard = self.device_index_lookup_lock.lock().await;
+        let device_index = lookup.await;
+        {
+            let mut state = self.state.lock().await;
+            if state.connected_device_mac != expected_mac {
+                return Err(ProfileOperationError::ConnectedDeviceChanged);
+            }
+            state.device_index = device_index;
         }
 
-        warn!("Device index not found, trying to get it.");
-        let device_index = lookup
-            .await
-            .ok_or(ProfileOperationError::AudioDeviceNotFound)?;
-        let mut state = self.state.lock().await;
-        if state.connected_device_mac != expected_mac {
-            return Err(ProfileOperationError::ConnectedDeviceChanged);
-        }
-        state.device_index = Some(device_index);
-        Ok(device_index)
+        device_index.ok_or_else(|| {
+            warn!("Could not find the current audio device index by MAC");
+            ProfileOperationError::AudioDeviceNotFound
+        })
     }
 
     async fn refresh_device_index_and_recheck<Lookup, Recheck>(
@@ -610,21 +621,12 @@ impl MediaController {
         Lookup: std::future::Future<Output = Option<u32>>,
         Recheck: std::future::Future<Output = bool>,
     {
-        let refreshed_device_index = lookup.await;
-        {
-            let mut state = self.state.lock().await;
-            if state.connected_device_mac != expected_mac {
-                return Err(ProfileOperationError::ConnectedDeviceChanged);
-            }
-            state.device_index = refreshed_device_index;
-        }
+        let refreshed_device_index = self.resolve_device_index(expected_mac, lookup).await?;
 
         debug!(
-            "Updated device_index after WirePlumber restart: {:?}",
+            "Updated device_index after WirePlumber restart: {}",
             refreshed_device_index
         );
-        let refreshed_device_index =
-            refreshed_device_index.ok_or(ProfileOperationError::AudioDeviceNotFound)?;
 
         if !recheck.await {
             error!("A2DP profile still not available after WirePlumber restart");
@@ -932,9 +934,9 @@ impl MediaController {
 
     pub async fn deactivate_a2dp_profile(&self) -> ProfileOperationResult {
         debug!("Entering deactivate_a2dp_profile");
-        let (mac, cached_device_index) = {
+        let mac = {
             let state = self.state.lock().await;
-            (state.connected_device_mac.clone(), state.device_index)
+            state.connected_device_mac.clone()
         };
 
         if mac.is_empty() {
@@ -942,8 +944,19 @@ impl MediaController {
             return Err(ProfileOperationError::NoConnectedDevice);
         }
 
-        self.resolve_device_index(&mac, cached_device_index, self.get_audio_device_index(&mac))
-            .await?;
+        self.deactivate_a2dp_profile_with_lookup(&mac, self.get_audio_device_index(&mac))
+            .await
+    }
+
+    async fn deactivate_a2dp_profile_with_lookup<Lookup>(
+        &self,
+        mac: &str,
+        lookup: Lookup,
+    ) -> ProfileOperationResult
+    where
+        Lookup: std::future::Future<Output = Option<u32>>,
+    {
+        self.resolve_device_index(mac, lookup).await?;
 
         let device_index = {
             let state = self.state.lock().await;
@@ -1383,7 +1396,7 @@ async fn get_sink_name_by_mac(mac: &str) -> Option<String> {
 mod tests {
     use super::*;
     use crate::bluetooth::aacp::{ConnectedDevice, opcodes};
-    use tokio::sync::mpsc;
+    use tokio::sync::{mpsc, oneshot};
     use tokio::time::timeout;
 
     const CONNECTED_MAC: &str = "AA:BB:CC:DD:EE:FF";
@@ -1413,14 +1426,16 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn device_index_lookup_completes_without_media_state_guard() {
+    async fn device_index_lookup_replaces_stale_cache() {
         let controller = controller();
+        controller.state.lock().await.device_index = Some(7);
         let lookup_controller = controller.clone();
 
         let device_index = timeout(
             Duration::from_millis(250),
-            controller.resolve_device_index(CONNECTED_MAC, None, async move {
+            controller.resolve_device_index(CONNECTED_MAC, async move {
                 let state = lookup_controller.state.lock().await;
+                assert_eq!(state.device_index, Some(7));
                 drop(state);
                 Some(21)
             }),
@@ -1431,6 +1446,121 @@ mod tests {
 
         assert_eq!(device_index, 21);
         assert_eq!(controller.state.lock().await.device_index, Some(21));
+    }
+
+    #[tokio::test]
+    async fn concurrent_device_index_lookups_cannot_overwrite_newer_result() {
+        let controller = controller();
+        let first_controller = controller.clone();
+        let (first_started_tx, first_started_rx) = oneshot::channel();
+        let (release_first_tx, release_first_rx) = oneshot::channel();
+        let first_lookup = tokio::spawn(async move {
+            first_controller
+                .resolve_device_index(CONNECTED_MAC, async move {
+                    first_started_tx
+                        .send(())
+                        .expect("first lookup start receiver dropped");
+                    release_first_rx
+                        .await
+                        .expect("first lookup release sender dropped");
+                    Some(21)
+                })
+                .await
+        });
+
+        timeout(Duration::from_millis(250), first_started_rx)
+            .await
+            .expect("first lookup did not start")
+            .expect("first lookup start sender dropped");
+
+        let mut second_lookup =
+            Box::pin(controller.resolve_device_index(CONNECTED_MAC, async move { Some(42) }));
+        tokio::select! {
+            biased;
+            result = &mut second_lookup => {
+                panic!("second lookup completed before the first lookup: {result:?}");
+            }
+            _ = tokio::task::yield_now() => {}
+        }
+
+        release_first_tx
+            .send(())
+            .expect("first lookup release receiver dropped");
+        assert_eq!(
+            timeout(Duration::from_millis(250), first_lookup)
+                .await
+                .expect("first lookup did not complete")
+                .expect("first lookup task failed")
+                .unwrap(),
+            21
+        );
+        assert_eq!(
+            timeout(Duration::from_millis(250), &mut second_lookup)
+                .await
+                .expect("second lookup did not complete")
+                .unwrap(),
+            42
+        );
+        assert_eq!(controller.state.lock().await.device_index, Some(42));
+    }
+
+    #[tokio::test]
+    async fn activation_does_not_fall_back_to_stale_device_index() {
+        let controller = controller();
+        controller.state.lock().await.device_index = Some(7);
+        let lookup_controller = controller.clone();
+
+        let result = timeout(
+            Duration::from_millis(250),
+            controller.activate_a2dp_profile_with_lookup(CONNECTED_MAC, async move {
+                let state = lookup_controller.state.lock().await;
+                assert_eq!(state.device_index, Some(7));
+                drop(state);
+                None
+            }),
+        )
+        .await
+        .expect("activation lookup waited on a MediaController state guard");
+
+        assert_eq!(result, Err(ProfileOperationError::AudioDeviceNotFound));
+        assert_eq!(controller.state.lock().await.device_index, None);
+    }
+
+    #[tokio::test]
+    async fn deactivation_does_not_fall_back_to_stale_device_index() {
+        let controller = controller();
+        controller.state.lock().await.device_index = Some(7);
+        let lookup_controller = controller.clone();
+
+        let result = timeout(
+            Duration::from_millis(250),
+            controller.deactivate_a2dp_profile_with_lookup(CONNECTED_MAC, async move {
+                let state = lookup_controller.state.lock().await;
+                assert_eq!(state.device_index, Some(7));
+                drop(state);
+                None
+            }),
+        )
+        .await
+        .expect("deactivation lookup waited on a MediaController state guard");
+
+        assert_eq!(result, Err(ProfileOperationError::AudioDeviceNotFound));
+        assert_eq!(controller.state.lock().await.device_index, None);
+    }
+
+    #[tokio::test]
+    async fn device_index_lookup_rejects_connected_device_change() {
+        let controller = controller();
+        let lookup_controller = controller.clone();
+
+        let result = controller
+            .resolve_device_index(CONNECTED_MAC, async move {
+                lookup_controller.state.lock().await.connected_device_mac = REMOTE_MAC.into();
+                Some(21)
+            })
+            .await;
+
+        assert_eq!(result, Err(ProfileOperationError::ConnectedDeviceChanged));
     }
 
     #[tokio::test]
