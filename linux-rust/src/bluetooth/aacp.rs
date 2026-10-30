@@ -818,9 +818,12 @@ impl AACPManager {
             return;
         }
 
-        if !Self::packet_generation_is_current(&self.state.lock().await, expected_generation) {
-            debug!("Ignoring packet from a stale AACP connection generation");
-            return;
+        {
+            let state = self.state.lock().await;
+            if !Self::packet_generation_is_current(&state, expected_generation) {
+                debug!("Ignoring packet from a stale AACP connection generation");
+                return;
+            }
         }
 
         let opcode = packet[4];

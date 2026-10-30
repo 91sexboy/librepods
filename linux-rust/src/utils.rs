@@ -8,7 +8,9 @@ mod paths;
 mod persistence;
 
 pub use paths::{get_app_settings_path, get_devices_path, get_preferences_path};
-pub use persistence::{load_devices, save_app_settings, save_devices, upsert_device};
+#[cfg(test)]
+pub use persistence::save_devices;
+pub use persistence::{load_devices, save_app_settings, upsert_device};
 
 fn e(key: &[u8; 16], data: &[u8; 16]) -> [u8; 16] {
     let mut swapped_key = *key;
