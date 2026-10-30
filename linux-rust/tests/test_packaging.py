@@ -2,6 +2,7 @@
 """Regression tests for Linux build and packaging metadata."""
 
 from contextlib import contextmanager
+import json
 import os
 from pathlib import Path
 import shlex
@@ -22,6 +23,7 @@ LICENSE = REPOSITORY_ROOT / "LICENSE"
 WORKFLOW = REPOSITORY_ROOT / ".github" / "workflows" / "ci-linux-rust.yml"
 FLATPAK_MANIFEST = LINUX_ROOT / "flatpak" / "me.kavishdevar.librepods.yaml"
 METAINFO = LINUX_ROOT / "flatpak" / "me.kavishdevar.librepods.metainfo.xml"
+FLAKE_LOCK = REPOSITORY_ROOT / "flake.lock"
 
 
 def load_yaml(path: Path):
@@ -92,6 +94,29 @@ def built_source_archive(version: str = "9.8.7"):
 
 
 class PackagingTests(unittest.TestCase):
+    def test_treefmt_uses_root_nixpkgs_input(self):
+        lock = json.loads(FLAKE_LOCK.read_text(encoding="utf-8"))
+        nodes = lock["nodes"]
+        root_inputs = nodes[lock["root"]]["inputs"]
+        treefmt = nodes[root_inputs["treefmt-nix"]]
+
+        self.assertEqual(
+            ["nixpkgs"],
+            treefmt["inputs"]["nixpkgs"],
+            "treefmt-nix must follow the root nixpkgs input",
+        )
+
+        nixpkgs_nodes = [
+            name
+            for name, node in nodes.items()
+            if node.get("original", {}).get("repo", "").lower() == "nixpkgs"
+        ]
+        self.assertEqual(
+            ["nixpkgs"],
+            nixpkgs_nodes,
+            "the lock graph must contain one nixpkgs checkout",
+        )
+
     def test_linux_workflow_runs_for_fix_linux_bugs(self):
         workflow = load_yaml(WORKFLOW)
         branches = workflow["on"]["push"]["branches"]
