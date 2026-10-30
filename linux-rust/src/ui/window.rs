@@ -27,6 +27,7 @@ use iced::{
 };
 use log::{debug, error};
 use std::collections::HashMap;
+use std::path::Path;
 use std::sync::Arc;
 use tokio::sync::mpsc::UnboundedReceiver;
 use tokio::sync::{Mutex, RwLock};
@@ -39,6 +40,29 @@ fn window_icon() -> Option<window::Icon> {
             None
         }
     }
+}
+
+#[derive(Debug, Clone, Copy)]
+enum AppSettingUpdate {
+    Theme(MyTheme),
+    TrayTextMode(bool),
+    StemControl(bool),
+}
+
+impl AppSettingUpdate {
+    fn into_patch(self) -> serde_json::Value {
+        match self {
+            Self::Theme(theme) => serde_json::json!({"theme": theme}),
+            Self::TrayTextMode(is_enabled) => {
+                serde_json::json!({"tray_text_mode": is_enabled})
+            }
+            Self::StemControl(is_enabled) => serde_json::json!({"stem_control": is_enabled}),
+        }
+    }
+}
+
+fn save_setting_update(path: &Path, update: AppSettingUpdate) -> std::io::Result<()> {
+    save_app_settings(path, &update.into_patch())
 }
 
 fn open_main_window() -> (window::Id, Task<Message>) {
@@ -281,24 +305,15 @@ impl App {
         )
     }
 
-    fn persist_settings(
-        &self,
-        selected_theme: MyTheme,
-        tray_text_mode: bool,
-        stem_control: bool,
-    ) -> std::io::Result<()> {
+    fn persist_setting(&self, update: AppSettingUpdate) -> std::io::Result<()> {
         let app_settings_path = get_app_settings_path();
-        let settings = serde_json::json!({
-            "theme": selected_theme,
-            "tray_text_mode": tray_text_mode,
-            "stem_control": stem_control,
-        });
+        let settings = update.into_patch();
         debug!(
             "Writing settings to {}: {}",
             app_settings_path.display(),
             settings
         );
-        save_app_settings(&app_settings_path, &settings)
+        save_setting_update(&app_settings_path, update)
     }
 
     fn title(&self, _id: window::Id) -> String {
@@ -346,7 +361,7 @@ impl App {
                 Task::none()
             }
             Message::ThemeSelected(theme) => {
-                match self.persist_settings(theme, self.tray_text_mode, self.stem_control) {
+                match self.persist_setting(AppSettingUpdate::Theme(theme)) {
                     Ok(()) => self.selected_theme = theme,
                     Err(error) => error!("Failed to persist theme selection: {error}"),
                 }
@@ -723,14 +738,14 @@ impl App {
                 Task::none()
             }
             Message::TrayTextModeChanged(is_enabled) => {
-                match self.persist_settings(self.selected_theme, is_enabled, self.stem_control) {
+                match self.persist_setting(AppSettingUpdate::TrayTextMode(is_enabled)) {
                     Ok(()) => self.tray_text_mode = is_enabled,
                     Err(error) => error!("Failed to persist tray text setting: {error}"),
                 }
                 Task::none()
             }
             Message::StemControlChanged(is_enabled) => {
-                match self.persist_settings(self.selected_theme, self.tray_text_mode, is_enabled) {
+                match self.persist_setting(AppSettingUpdate::StemControl(is_enabled)) {
                     Ok(()) => self.stem_control = is_enabled,
                     Err(error) => error!("Failed to persist stem control setting: {error}"),
                 }
@@ -1419,16 +1434,65 @@ async fn wait_for_message(ui_rx: Arc<Mutex<UnboundedReceiver<BluetoothUIMessage>
 #[cfg(test)]
 mod tests {
     use super::{
-        LifecycleAction, LifecycleEvent, Message, lifecycle_action, wait_for_message, window_icon,
+        AppSettingUpdate, LifecycleAction, LifecycleEvent, Message, lifecycle_action,
+        save_setting_update, wait_for_message, window_icon,
     };
     use crate::ui::messages::TrayStatus;
+    use crate::utils::MyTheme;
+    use serde_json::json;
     use std::sync::Arc;
+    use tempfile::tempdir;
     use tokio::sync::Mutex;
     use tokio::sync::mpsc::unbounded_channel;
 
     #[test]
     fn embedded_window_icon_decodes() {
         assert!(window_icon().is_some());
+    }
+
+    #[test]
+    fn each_ui_action_builds_a_single_key_settings_update() {
+        let updates = [
+            (AppSettingUpdate::Theme(MyTheme::Nord), "theme"),
+            (AppSettingUpdate::TrayTextMode(true), "tray_text_mode"),
+            (AppSettingUpdate::StemControl(true), "stem_control"),
+        ];
+
+        for (update, expected_key) in updates {
+            let patch = update.into_patch();
+            let object = patch.as_object().unwrap();
+            assert_eq!(object.len(), 1);
+            assert!(object.contains_key(expected_key));
+        }
+    }
+
+    #[test]
+    fn ui_setting_update_preserves_other_latest_known_values() {
+        let temp = tempdir().unwrap();
+        let settings_path = temp.path().join("librepods").join("app_settings.json");
+        std::fs::create_dir_all(settings_path.parent().unwrap()).unwrap();
+        std::fs::write(
+            &settings_path,
+            json!({
+                "theme": "Dracula",
+                "tray_text_mode": true,
+                "stem_control": true,
+            })
+            .to_string(),
+        )
+        .unwrap();
+
+        save_setting_update(
+            &settings_path,
+            AppSettingUpdate::Theme(MyTheme::SolarizedDark),
+        )
+        .unwrap();
+
+        let saved: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(settings_path).unwrap()).unwrap();
+        assert_eq!(saved["theme"], "SolarizedDark");
+        assert_eq!(saved["tray_text_mode"], true);
+        assert_eq!(saved["stem_control"], true);
     }
 
     #[test]
