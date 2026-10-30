@@ -632,6 +632,26 @@ impl ProfileOperationEpoch {
         state.value = state.value.wrapping_add(1);
     }
 
+    fn retain_deactivation_side_effect(&self) {
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        state.deactivations_in_progress += 1;
+    }
+
+    fn finish_deactivation_side_effect(&self) {
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        state.value = state.value.wrapping_add(1);
+        state.deactivations_in_progress = state
+            .deactivations_in_progress
+            .checked_sub(1)
+            .expect("profile deactivation side-effect guard underflow");
+    }
+
     fn finish_deactivation(&self) {
         let mut state = self
             .state
@@ -662,6 +682,23 @@ impl ProfileDeactivationEpochGuard {
 impl Drop for ProfileDeactivationEpochGuard {
     fn drop(&mut self) {
         self.epoch.finish_deactivation();
+    }
+}
+
+struct ProfileDeactivationSideEffectGuard {
+    epoch: Arc<ProfileOperationEpoch>,
+}
+
+impl ProfileDeactivationSideEffectGuard {
+    fn begin(epoch: Arc<ProfileOperationEpoch>) -> Self {
+        epoch.retain_deactivation_side_effect();
+        Self { epoch }
+    }
+}
+
+impl Drop for ProfileDeactivationSideEffectGuard {
+    fn drop(&mut self) {
+        self.epoch.finish_deactivation_side_effect();
     }
 }
 
@@ -1434,7 +1471,10 @@ impl MediaController {
         Action: FnOnce() -> bool + Send + 'static,
     {
         let playback_listeners = self.playback_listeners.clone();
+        let side_effect_guard =
+            ProfileDeactivationSideEffectGuard::begin(Arc::clone(&self.profile_operation_epoch));
         tokio::task::spawn_blocking(move || {
+            let _side_effect_guard = side_effect_guard;
             run_blocking_profile_action(&playback_listeners, listener_generation.as_ref(), action)
         })
         .await
