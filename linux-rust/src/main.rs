@@ -8,7 +8,7 @@ use crate::bluetooth::discovery::{find_connected_airpods, find_other_managed_dev
 use crate::bluetooth::le::start_le_monitor;
 use crate::bluetooth::managers::DeviceManagers;
 use crate::devices::enums::DeviceData;
-use crate::ui::messages::BluetoothUIMessage;
+use crate::ui::messages::{BluetoothUIMessage, TrayStatus};
 use crate::ui::tray::MyTray;
 use crate::utils::{get_app_settings_path, get_devices_path};
 use bluer::{Address, InternalErrorKind};
@@ -102,6 +102,13 @@ fn main() -> iced::Result {
     }
 }
 
+fn tray_spawn_outcome<T, E: std::fmt::Display>(result: Result<T, E>) -> (Option<T>, TrayStatus) {
+    match result {
+        Ok(handle) => (Some(handle), TrayStatus::Available),
+        Err(error) => (None, TrayStatus::Unavailable(error.to_string())),
+    }
+}
+
 async fn async_main(
     ui_tx: tokio::sync::mpsc::UnboundedSender<BluetoothUIMessage>,
     device_managers: Arc<RwLock<HashMap<String, DeviceManagers>>>,
@@ -145,8 +152,14 @@ async fn async_main(
             command_tx: None,
             ui_tx: Some(ui_tx.clone()),
         };
-        let handle = tray.spawn().await.unwrap();
-        Some(handle)
+        let (handle, status) = tray_spawn_outcome(tray.spawn().await);
+        if let TrayStatus::Unavailable(reason) = &status {
+            warn!("System tray unavailable ({reason}); continuing without it");
+        }
+        if let Err(error) = ui_tx.send(BluetoothUIMessage::TrayStatusChanged(status)) {
+            warn!("Failed to report system tray status to UI: {error:?}");
+        }
+        handle
     };
 
     let session = bluer::Session::new().await?;
@@ -332,5 +345,31 @@ async fn async_main(
     info!("Listening for Bluetooth connections via D-Bus...");
     loop {
         conn.process(std::time::Duration::from_millis(1000))?;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::tray_spawn_outcome;
+    use crate::ui::messages::TrayStatus;
+
+    #[test]
+    fn tray_spawn_success_is_reported_explicitly() {
+        let (tray_handle, status) = tray_spawn_outcome(Result::<u8, &str>::Ok(7));
+
+        assert_eq!(tray_handle, Some(7));
+        assert_eq!(status, TrayStatus::Available);
+    }
+
+    #[test]
+    fn tray_spawn_failure_is_reported_explicitly() {
+        let (tray_handle, status) =
+            tray_spawn_outcome(Result::<(), &str>::Err("no StatusNotifierHost exists"));
+
+        assert!(tray_handle.is_none());
+        assert_eq!(
+            status,
+            TrayStatus::Unavailable("no StatusNotifierHost exists".to_string())
+        );
     }
 }

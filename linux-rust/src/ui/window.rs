@@ -7,7 +7,7 @@ use crate::devices::enums::{
     NothingState,
 };
 use crate::ui::airpods::airpods_view;
-use crate::ui::messages::BluetoothUIMessage;
+use crate::ui::messages::{BluetoothUIMessage, TrayStatus};
 use crate::ui::nothing::nothing_view;
 use crate::utils::{
     MyTheme, get_app_settings_path, get_devices_path, save_app_settings, upsert_device,
@@ -28,6 +28,25 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use tokio::sync::mpsc::UnboundedReceiver;
 use tokio::sync::{Mutex, RwLock};
+
+fn window_icon() -> Option<window::Icon> {
+    match window::icon::from_file_data(include_bytes!("../../assets/icon.png"), None) {
+        Ok(icon) => Some(icon),
+        Err(error) => {
+            error!("Failed to decode embedded window icon: {error}");
+            None
+        }
+    }
+}
+
+fn open_main_window() -> (window::Id, Task<Message>) {
+    let mut settings = window::Settings::default();
+    settings.min_size = Some(Size::new(400.0, 300.0));
+    settings.visible = true;
+    settings.icon = window_icon();
+    let (id, open) = window::open(settings);
+    (id, open.map(Message::WindowOpened))
+}
 
 pub fn start_ui(
     ui_rx: UnboundedReceiver<BluetoothUIMessage>,
@@ -64,6 +83,7 @@ pub fn start_ui(
 
 pub struct App {
     window: Option<window::Id>,
+    tray_status: TrayStatus,
     panes: pane_grid::State<Pane>,
     selected_tab: Tab,
     theme_state: combo_box::State<MyTheme>,
@@ -101,6 +121,7 @@ pub enum Message {
     ThemeSelected(MyTheme),
     CopyToClipboard(String),
     BluetoothMessage(BluetoothUIMessage),
+    UiChannelClosed,
     // ShowNewDialogTab,
     GotPairedDevices(HashMap<String, Address>),
     StartAddDevice(String, Address),
@@ -110,6 +131,39 @@ pub enum Message {
     StateChanged(String, DeviceState),
     TrayTextModeChanged(bool), // yes, I know I should add all settings to a struct, but I'm lazy
     StemControlChanged(bool),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum LifecycleEvent {
+    TrayStatusChanged,
+    LastWindowClosed,
+    BackendClosed,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum LifecycleAction {
+    Continue,
+    OpenWindow,
+    Exit,
+}
+
+fn lifecycle_action(
+    event: LifecycleEvent,
+    tray_status: &TrayStatus,
+    window_is_open: bool,
+) -> LifecycleAction {
+    match event {
+        LifecycleEvent::BackendClosed => LifecycleAction::Exit,
+        LifecycleEvent::LastWindowClosed if !matches!(tray_status, TrayStatus::Available) => {
+            LifecycleAction::Exit
+        }
+        LifecycleEvent::TrayStatusChanged
+            if matches!(tray_status, TrayStatus::Unavailable(_)) && !window_is_open =>
+        {
+            LifecycleAction::OpenWindow
+        }
+        _ => LifecycleAction::Continue,
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
@@ -142,11 +196,8 @@ impl App {
         let (window, open_task) = if start_minimized {
             (None, Task::none())
         } else {
-            let mut settings = window::Settings::default();
-            settings.min_size = Some(Size::new(400.0, 300.0));
-            settings.icon = window::icon::from_file("../../assets/icon.png").ok();
-            let (id, open) = window::open(settings);
-            (Some(id), open.map(Message::WindowOpened))
+            let (id, open) = open_main_window();
+            (Some(id), open)
         };
 
         let app_settings_path = get_app_settings_path();
@@ -182,6 +233,7 @@ impl App {
         (
             Self {
                 window,
+                tray_status: TrayStatus::Starting,
                 panes,
                 selected_tab: Tab::Device("none".to_string()),
                 theme_state: combo_box::State::new(vec![
@@ -248,6 +300,24 @@ impl App {
         "LibrePods".to_string()
     }
 
+    fn show_main_window(&mut self) -> Task<Message> {
+        if let Some(window_id) = self.window {
+            window::gain_focus(window_id)
+        } else {
+            let (id, open) = open_main_window();
+            self.window = Some(id);
+            open
+        }
+    }
+
+    fn apply_lifecycle_event(&mut self, event: LifecycleEvent) -> Task<Message> {
+        match lifecycle_action(event, &self.tray_status, self.window.is_some()) {
+            LifecycleAction::Continue => Task::none(),
+            LifecycleAction::OpenWindow => self.show_main_window(),
+            LifecycleAction::Exit => iced::exit(),
+        }
+    }
+
     fn update(&mut self, message: Message) -> Task<Message> {
         match message {
             Message::WindowOpened(id) => {
@@ -257,8 +327,10 @@ impl App {
             Message::WindowClosed(id) => {
                 if self.window == Some(id) {
                     self.window = None;
+                    self.apply_lifecycle_event(LifecycleEvent::LastWindowClosed)
+                } else {
+                    Task::none()
                 }
-                Task::none()
             }
             Message::Resized(event) => {
                 self.panes.resize(event.split, event.ratio);
@@ -278,25 +350,27 @@ impl App {
             Message::CopyToClipboard(data) => iced::clipboard::write(data),
             Message::BluetoothMessage(ui_message) => {
                 match ui_message {
-                    BluetoothUIMessage::NoOp => {
+                    BluetoothUIMessage::TrayStatusChanged(status) => {
+                        match &status {
+                            TrayStatus::Starting => {}
+                            TrayStatus::Available => debug!("System tray is available"),
+                            TrayStatus::Unavailable(reason) => {
+                                error!("System tray is unavailable: {reason}")
+                            }
+                        }
+                        self.tray_status = status;
+                        let lifecycle_task =
+                            self.apply_lifecycle_event(LifecycleEvent::TrayStatusChanged);
                         let ui_rx = Arc::clone(&self.ui_rx);
-
-                        Task::perform(wait_for_message(ui_rx), |msg| msg)
+                        let wait_task = Task::perform(wait_for_message(ui_rx), |msg| msg);
+                        Task::batch(vec![lifecycle_task, wait_task])
                     }
                     BluetoothUIMessage::OpenWindow => {
                         let ui_rx = Arc::clone(&self.ui_rx);
                         let wait_task = Task::perform(wait_for_message(ui_rx), |msg| msg);
                         debug!("Opening main window...");
-                        if let Some(window_id) = self.window {
-                            Task::batch(vec![window::gain_focus(window_id), wait_task])
-                        } else {
-                            let mut settings = window::Settings::default();
-                            settings.min_size = Some(Size::new(400.0, 300.0));
-                            settings.icon = window::icon::from_file("../../assets/icon.png").ok();
-                            let (new_window_task, open_task) = window::open(settings);
-                            self.window = Some(new_window_task);
-                            Task::batch(vec![open_task.map(Message::WindowOpened), wait_task])
-                        }
+                        let window_task = self.show_main_window();
+                        Task::batch(vec![window_task, wait_task])
                     }
                     BluetoothUIMessage::DeviceConnected(mac) => {
                         let ui_rx = Arc::clone(&self.ui_rx);
@@ -547,6 +621,10 @@ impl App {
                         Task::batch(vec![wait_task])
                     }
                 }
+            }
+            Message::UiChannelClosed => {
+                error!("Backend UI channel closed; exiting");
+                self.apply_lifecycle_event(LifecycleEvent::BackendClosed)
             }
             // Message::ShowNewDialogTab => {
             //     debug!("switching to Add Device tab");
@@ -1305,10 +1383,7 @@ async fn wait_for_message(ui_rx: Arc<Mutex<UnboundedReceiver<BluetoothUIMessage>
     let mut rx = ui_rx.lock().await;
     match rx.recv().await {
         Some(msg) => Message::BluetoothMessage(msg),
-        None => {
-            error!("UI message channel closed");
-            Message::BluetoothMessage(BluetoothUIMessage::NoOp)
-        }
+        None => Message::UiChannelClosed,
     }
 }
 
@@ -1334,3 +1409,109 @@ async fn wait_for_message(ui_rx: Arc<Mutex<UnboundedReceiver<BluetoothUIMessage>
 //
 //     devices
 // }
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        LifecycleAction, LifecycleEvent, Message, lifecycle_action, wait_for_message, window_icon,
+    };
+    use crate::ui::messages::TrayStatus;
+    use std::sync::Arc;
+    use tokio::sync::Mutex;
+    use tokio::sync::mpsc::unbounded_channel;
+
+    #[test]
+    fn embedded_window_icon_decodes() {
+        assert!(window_icon().is_some());
+    }
+
+    #[test]
+    fn tray_success_keeps_minimized_startup_hidden() {
+        assert_eq!(
+            lifecycle_action(
+                LifecycleEvent::TrayStatusChanged,
+                &TrayStatus::Available,
+                false,
+            ),
+            LifecycleAction::Continue
+        );
+    }
+
+    #[test]
+    fn tray_failure_opens_a_window_when_startup_was_minimized() {
+        assert_eq!(
+            lifecycle_action(
+                LifecycleEvent::TrayStatusChanged,
+                &TrayStatus::Unavailable("tray failed".to_string()),
+                false,
+            ),
+            LifecycleAction::OpenWindow
+        );
+    }
+
+    #[test]
+    fn tray_failure_does_not_open_a_second_window() {
+        assert_eq!(
+            lifecycle_action(
+                LifecycleEvent::TrayStatusChanged,
+                &TrayStatus::Unavailable("tray failed".to_string()),
+                true,
+            ),
+            LifecycleAction::Continue
+        );
+    }
+
+    #[test]
+    fn last_window_close_exits_when_no_tray_exists() {
+        assert_eq!(
+            lifecycle_action(
+                LifecycleEvent::LastWindowClosed,
+                &TrayStatus::Unavailable("tray failed".to_string()),
+                false,
+            ),
+            LifecycleAction::Exit
+        );
+    }
+
+    #[test]
+    fn last_window_close_exits_while_tray_is_still_starting() {
+        assert_eq!(
+            lifecycle_action(
+                LifecycleEvent::LastWindowClosed,
+                &TrayStatus::Starting,
+                false,
+            ),
+            LifecycleAction::Exit
+        );
+    }
+
+    #[test]
+    fn last_window_close_keeps_running_when_tray_exists() {
+        assert_eq!(
+            lifecycle_action(
+                LifecycleEvent::LastWindowClosed,
+                &TrayStatus::Available,
+                false,
+            ),
+            LifecycleAction::Continue
+        );
+    }
+
+    #[test]
+    fn backend_channel_close_is_terminal() {
+        assert_eq!(
+            lifecycle_action(LifecycleEvent::BackendClosed, &TrayStatus::Available, false),
+            LifecycleAction::Exit
+        );
+    }
+
+    #[tokio::test]
+    async fn closed_ui_channel_produces_terminal_message() {
+        let (sender, receiver) = unbounded_channel();
+        drop(sender);
+
+        let message = wait_for_message(Arc::new(Mutex::new(receiver))).await;
+
+        assert!(matches!(message, Message::UiChannelClosed));
+    }
+}
