@@ -221,7 +221,8 @@ impl AirPodsDevice {
 
         let aacp_manager_clone = aacp_manager.clone();
         tokio::spawn(async move {
-            while let Some((id, value)) = command_rx.recv().await {
+            while let Some(command) = command_rx.recv().await {
+                let (id, value, _) = command.into_parts();
                 if let Err(e) = aacp_manager_clone.send_control_command(id, &value).await {
                     log::error!("Failed to send control command: {}", e);
                 }

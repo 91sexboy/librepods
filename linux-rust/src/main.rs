@@ -148,6 +148,8 @@ async fn async_main(
             battery_c_status: None,
             connected: false,
             listening_mode: None,
+            pending_listening_mode: None,
+            next_listening_mode_request_id: 0,
             allow_off_option: None,
             command_tx: None,
             ui_tx: Some(ui_tx.clone()),

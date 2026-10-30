@@ -8,6 +8,33 @@ use crate::bluetooth::aacp::{BatteryStatus, ControlCommandIdentifiers};
 use crate::ui::messages::BluetoothUIMessage;
 use crate::utils::get_app_settings_path;
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct PendingListeningModeRequest {
+    pub(crate) request_id: u64,
+    pub(crate) mode: u8,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) struct TrayCommand {
+    pub(crate) identifier: ControlCommandIdentifiers,
+    pub(crate) value: Vec<u8>,
+    pub(crate) listening_mode_request_id: Option<u64>,
+}
+
+impl TrayCommand {
+    pub(crate) fn control(identifier: ControlCommandIdentifiers, value: Vec<u8>) -> Self {
+        Self {
+            identifier,
+            value,
+            listening_mode_request_id: None,
+        }
+    }
+
+    pub(crate) fn into_parts(self) -> (ControlCommandIdentifiers, Vec<u8>, Option<u64>) {
+        (self.identifier, self.value, self.listening_mode_request_id)
+    }
+}
+
 #[derive(Debug)]
 pub struct MyTray {
     pub conversation_detect_enabled: Option<bool>,
@@ -21,9 +48,33 @@ pub struct MyTray {
     pub battery_c_status: Option<BatteryStatus>,
     pub connected: bool,
     pub listening_mode: Option<u8>,
+    pub(crate) pending_listening_mode: Option<PendingListeningModeRequest>,
+    pub(crate) next_listening_mode_request_id: u64,
     pub allow_off_option: Option<u8>,
-    pub command_tx: Option<UnboundedSender<(ControlCommandIdentifiers, Vec<u8>)>>,
+    pub(crate) command_tx: Option<UnboundedSender<TrayCommand>>,
     pub ui_tx: Option<UnboundedSender<BluetoothUIMessage>>,
+}
+
+impl MyTray {
+    fn displayed_listening_mode(&self) -> Option<u8> {
+        self.pending_listening_mode
+            .map(|request| request.mode)
+            .or(self.listening_mode)
+    }
+
+    pub(crate) fn apply_listening_mode_report(&mut self, mode: u8) {
+        self.listening_mode = Some(mode);
+        self.pending_listening_mode = None;
+    }
+
+    pub(crate) fn clear_pending_listening_mode_request(&mut self, request_id: u64) {
+        if self
+            .pending_listening_mode
+            .is_some_and(|request| request.request_id == request_id)
+        {
+            self.pending_listening_mode = None;
+        }
+    }
 }
 
 impl ksni::Tray for MyTray {
@@ -125,7 +176,7 @@ impl ksni::Tray for MyTray {
             ]
         };
         let selected = self
-            .listening_mode
+            .displayed_listening_mode()
             .and_then(|mode| options.iter().position(|&(_, val)| val == mode))
             .unwrap_or(0);
         let options_clone = options.clone();
@@ -150,7 +201,10 @@ impl ksni::Tray for MyTray {
                             .map(|&(_, val)| val)
                             .unwrap_or(0x02);
                         if tx
-                            .send((ControlCommandIdentifiers::ListeningMode, vec![value]))
+                            .send(TrayCommand::control(
+                                ControlCommandIdentifiers::ListeningMode,
+                                vec![value],
+                            ))
                             .is_ok()
                         {
                             this.listening_mode = Some(value);
@@ -178,7 +232,7 @@ impl ksni::Tray for MyTray {
                     {
                         let new_state = !is_enabled;
                         let value = if !new_state { 0x02 } else { 0x01 };
-                        let _ = tx.send((
+                        let _ = tx.send(TrayCommand::control(
                             ControlCommandIdentifiers::ConversationDetectConfig,
                             vec![value],
                         ));
@@ -323,6 +377,8 @@ mod tests {
             battery_c_status: None,
             connected: false,
             listening_mode: None,
+            pending_listening_mode: None,
+            next_listening_mode_request_id: 0,
             allow_off_option: None,
             command_tx: None,
             ui_tx: None,
@@ -354,7 +410,58 @@ mod tests {
     }
 
     #[test]
-    fn listening_mode_selection_updates_radio_state_atomically() {
+    fn listening_mode_selection_displays_only_latest_pending_request() {
+        let (command_tx, mut command_rx) = tokio::sync::mpsc::unbounded_channel();
+        let mut tray = empty_tray();
+        tray.listening_mode = Some(0x02);
+        tray.next_listening_mode_request_id = u64::MAX;
+        tray.command_tx = Some(command_tx);
+
+        let group = listening_mode_group(&tray);
+        (group.select)(&mut tray, 1);
+
+        assert_eq!(tray.listening_mode, Some(0x02));
+        assert_eq!(
+            tray.pending_listening_mode,
+            Some(PendingListeningModeRequest {
+                request_id: u64::MAX,
+                mode: 0x03,
+            })
+        );
+        assert_eq!(
+            command_rx.try_recv().unwrap(),
+            TrayCommand {
+                identifier: ControlCommandIdentifiers::ListeningMode,
+                value: vec![0x03],
+                listening_mode_request_id: Some(u64::MAX),
+            }
+        );
+        assert_eq!(listening_mode_group(&tray).selected, 1);
+
+        let group = listening_mode_group(&tray);
+        (group.select)(&mut tray, 2);
+
+        assert_eq!(tray.listening_mode, Some(0x02));
+        assert_eq!(
+            tray.pending_listening_mode,
+            Some(PendingListeningModeRequest {
+                request_id: 0,
+                mode: 0x04,
+            })
+        );
+        assert_eq!(
+            command_rx.try_recv().unwrap(),
+            TrayCommand {
+                identifier: ControlCommandIdentifiers::ListeningMode,
+                value: vec![0x04],
+                listening_mode_request_id: Some(0),
+            }
+        );
+        assert_eq!(listening_mode_group(&tray).selected, 2);
+    }
+
+    #[test]
+    fn listening_mode_report_confirms_device_state_and_clears_pending_request() {
         let (command_tx, mut command_rx) = tokio::sync::mpsc::unbounded_channel();
         let mut tray = empty_tray();
         tray.listening_mode = Some(0x02);
@@ -362,13 +469,68 @@ mod tests {
 
         let group = listening_mode_group(&tray);
         (group.select)(&mut tray, 1);
+        command_rx.try_recv().unwrap();
+        tray.apply_listening_mode_report(0x04);
 
-        assert_eq!(tray.listening_mode, Some(0x03));
-        assert!(matches!(
-            command_rx.try_recv(),
-            Ok((ControlCommandIdentifiers::ListeningMode, value)) if value == vec![0x03]
-        ));
-        assert_eq!(listening_mode_group(&tray).selected, 1);
+        assert_eq!(tray.listening_mode, Some(0x04));
+        assert_eq!(tray.pending_listening_mode, None);
+        assert_eq!(listening_mode_group(&tray).selected, 2);
+    }
+
+    #[test]
+    fn matching_failure_rolls_back_pending_listening_mode_request() {
+        let (command_tx, mut command_rx) = tokio::sync::mpsc::unbounded_channel();
+        let mut tray = empty_tray();
+        tray.listening_mode = Some(0x02);
+        tray.command_tx = Some(command_tx);
+
+        let group = listening_mode_group(&tray);
+        (group.select)(&mut tray, 1);
+        let request_id = command_rx
+            .try_recv()
+            .unwrap()
+            .listening_mode_request_id
+            .unwrap();
+        tray.clear_pending_listening_mode_request(request_id);
+
+        assert_eq!(tray.listening_mode, Some(0x02));
+        assert_eq!(tray.pending_listening_mode, None);
+        assert_eq!(listening_mode_group(&tray).selected, 0);
+    }
+
+    #[test]
+    fn stale_failure_does_not_roll_back_newer_pending_listening_mode_request() {
+        let (command_tx, mut command_rx) = tokio::sync::mpsc::unbounded_channel();
+        let mut tray = empty_tray();
+        tray.listening_mode = Some(0x02);
+        tray.command_tx = Some(command_tx);
+
+        let group = listening_mode_group(&tray);
+        (group.select)(&mut tray, 1);
+        let stale_request_id = command_rx
+            .try_recv()
+            .unwrap()
+            .listening_mode_request_id
+            .unwrap();
+        let group = listening_mode_group(&tray);
+        (group.select)(&mut tray, 2);
+        let current_request_id = command_rx
+            .try_recv()
+            .unwrap()
+            .listening_mode_request_id
+            .unwrap();
+
+        tray.clear_pending_listening_mode_request(stale_request_id);
+
+        assert_eq!(tray.listening_mode, Some(0x02));
+        assert_eq!(
+            tray.pending_listening_mode,
+            Some(PendingListeningModeRequest {
+                request_id: current_request_id,
+                mode: 0x04,
+            })
+        );
+        assert_eq!(listening_mode_group(&tray).selected, 2);
     }
 
     #[test]
