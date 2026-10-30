@@ -1,7 +1,7 @@
 use crate::devices::enums::DeviceData;
 use serde_json::{Map, Value};
 use std::collections::HashMap;
-use std::fs;
+use std::fs::{self, File};
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
@@ -48,26 +48,59 @@ fn temporary_file(path: &Path) -> io::Result<NamedTempFile> {
     Ok(temp)
 }
 
-fn atomic_write(path: &Path, contents: &[u8]) -> io::Result<()> {
+fn sync_parent_directory(path: &Path) -> io::Result<()> {
+    File::open(parent_directory(path))?.sync_all()
+}
+
+fn atomic_write_with_sync<SyncParent>(
+    path: &Path,
+    contents: &[u8],
+    sync_parent: SyncParent,
+) -> io::Result<()>
+where
+    SyncParent: FnOnce(&Path) -> io::Result<()>,
+{
     let mut temp = temporary_file(path)?;
     temp.write_all(contents)?;
     temp.as_file_mut().sync_all()?;
     temp.persist(path).map_err(|error| error.error)?;
-    Ok(())
+    sync_parent(path)
 }
 
-fn atomic_write_noclobber(path: &Path, contents: &[u8]) -> io::Result<()> {
+fn atomic_write(path: &Path, contents: &[u8]) -> io::Result<()> {
+    atomic_write_with_sync(path, contents, sync_parent_directory)
+}
+
+fn atomic_write_noclobber_with_sync<SyncParent>(
+    path: &Path,
+    contents: &[u8],
+    sync_parent: SyncParent,
+) -> io::Result<()>
+where
+    SyncParent: FnOnce(&Path) -> io::Result<()>,
+{
     let mut temp = temporary_file(path)?;
     temp.write_all(contents)?;
     temp.as_file_mut().sync_all()?;
     temp.persist_noclobber(path).map_err(|error| error.error)?;
-    Ok(())
+    sync_parent(path)
 }
 
 pub(super) fn migrate_app_settings(legacy_path: &Path, settings_path: &Path) -> io::Result<()> {
     let _guard = SETTINGS_WRITE_LOCK
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
+    migrate_app_settings_with_sync(legacy_path, settings_path, sync_parent_directory)
+}
+
+fn migrate_app_settings_with_sync<SyncParent>(
+    legacy_path: &Path,
+    settings_path: &Path,
+    mut sync_parent: SyncParent,
+) -> io::Result<()>
+where
+    SyncParent: FnMut(&Path) -> io::Result<()>,
+{
     if settings_path.exists() || !legacy_path.exists() {
         return Ok(());
     }
@@ -77,8 +110,11 @@ pub(super) fn migrate_app_settings(legacy_path: &Path, settings_path: &Path) -> 
         Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(()),
         Err(error) => return Err(error),
     };
-    match atomic_write_noclobber(settings_path, &contents) {
-        Ok(()) => fs::remove_file(legacy_path),
+    match atomic_write_noclobber_with_sync(settings_path, &contents, &mut sync_parent) {
+        Ok(()) => {
+            fs::remove_file(legacy_path)?;
+            sync_parent(legacy_path)
+        }
         Err(error) if error.kind() == io::ErrorKind::AlreadyExists && settings_path.is_file() => {
             Ok(())
         }
@@ -180,6 +216,53 @@ mod tests {
                 firmware_version: firmware_version.to_string(),
             })),
         }
+    }
+
+    #[test]
+    fn atomic_write_syncs_the_parent_after_the_replacement_is_visible() {
+        let temp = tempdir().unwrap();
+        let settings_path = temp.path().join("librepods").join("app_settings.json");
+        std::fs::create_dir_all(settings_path.parent().unwrap()).unwrap();
+        std::fs::write(&settings_path, b"old").unwrap();
+        let mut sync_calls = Vec::new();
+
+        atomic_write_with_sync(&settings_path, b"new", |synced_path| {
+            assert_eq!(synced_path, settings_path);
+            assert_eq!(std::fs::read(synced_path).unwrap(), b"new");
+            sync_calls.push(synced_path.to_path_buf());
+            Ok(())
+        })
+        .unwrap();
+
+        assert_eq!(sync_calls, vec![settings_path]);
+    }
+
+    #[test]
+    fn migration_syncs_the_destination_then_the_legacy_deletion() {
+        let temp = tempdir().unwrap();
+        let legacy_path = temp.path().join("legacy").join("app_settings.json");
+        let settings_path = temp.path().join("config").join("app_settings.json");
+        std::fs::create_dir_all(legacy_path.parent().unwrap()).unwrap();
+        std::fs::write(&legacy_path, br#"{"theme":"Nord"}"#).unwrap();
+        let mut observations = Vec::new();
+
+        migrate_app_settings_with_sync(&legacy_path, &settings_path, |synced_path| {
+            observations.push((
+                synced_path.to_path_buf(),
+                settings_path.exists(),
+                legacy_path.exists(),
+            ));
+            Ok(())
+        })
+        .unwrap();
+
+        assert_eq!(
+            observations,
+            vec![
+                (settings_path.clone(), true, true),
+                (legacy_path.clone(), true, false),
+            ]
+        );
     }
 
     #[test]
