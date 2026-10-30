@@ -705,7 +705,7 @@ impl AACPManager {
 
     async fn persist_airpods_update(
         &self,
-        device_key: String,
+        device_address: Address,
         update: AirPodsDeviceUpdate,
         expected_generation: Option<u64>,
     ) -> io::Result<Option<DeviceData>> {
@@ -713,14 +713,13 @@ impl AACPManager {
         {
             let state = self.state.lock().await;
             if !Self::packet_generation_is_current(&state, expected_generation)
-                || !state
-                    .airpods_mac
-                    .is_some_and(|address| address.to_string() == device_key)
+                || state.airpods_mac != Some(device_address)
             {
                 return Ok(None);
             }
         }
 
+        let device_key = device_address.to_string();
         let devices_path = self.devices_path.clone();
         let persistence_key = device_key.clone();
         let merge_key = device_key.clone();
@@ -733,9 +732,7 @@ impl AACPManager {
 
         let mut state = self.state.lock().await;
         if Self::packet_generation_is_current(&state, expected_generation)
-            && state
-                .airpods_mac
-                .is_some_and(|address| address.to_string() == device_key)
+            && state.airpods_mac == Some(device_address)
         {
             state.devices.insert(device_key, updated.clone());
             Ok(Some(updated))
@@ -997,20 +994,20 @@ impl AACPManager {
                     return;
                 };
                 info!("Received Information: {:?}", info);
-                let device_key = {
+                let device_address = {
                     let state = self.state.lock().await;
                     if !Self::packet_generation_is_current(&state, expected_generation) {
                         return;
                     }
-                    state.airpods_mac.map(|address| address.to_string())
+                    state.airpods_mac
                 };
-                let Some(device_key) = device_key else {
+                let Some(device_address) = device_address else {
                     error!("Cannot save AirPods information without a connected device address");
                     return;
                 };
                 if let Err(error) = self
                     .persist_airpods_update(
-                        device_key,
+                        device_address,
                         AirPodsDeviceUpdate::Information(Box::new(info)),
                         expected_generation,
                     )
@@ -1070,20 +1067,20 @@ impl AACPManager {
                 if key_updates.is_empty() {
                     return;
                 }
-                let device_key = {
+                let device_address = {
                     let state = self.state.lock().await;
                     if !Self::packet_generation_is_current(&state, expected_generation) {
                         return;
                     }
-                    state.airpods_mac.map(|address| address.to_string())
+                    state.airpods_mac
                 };
-                let Some(device_key) = device_key else {
+                let Some(device_address) = device_address else {
                     error!("Cannot save AirPods proximity keys without a connected device address");
                     return;
                 };
                 if let Err(error) = self
                     .persist_airpods_update(
-                        device_key,
+                        device_address,
                         AirPodsDeviceUpdate::ProximityKeys(key_updates),
                         expected_generation,
                     )

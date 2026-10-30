@@ -1491,8 +1491,8 @@ mod tests {
         let saved: serde_json::Value =
             serde_json::from_slice(&std::fs::read(settings_path).unwrap()).unwrap();
         assert_eq!(saved["theme"], "SolarizedDark");
-        assert_eq!(saved["tray_text_mode"], true);
-        assert_eq!(saved["stem_control"], true);
+        assert!(saved["tray_text_mode"].as_bool().unwrap());
+        assert!(saved["stem_control"].as_bool().unwrap());
     }
 
     #[test]
