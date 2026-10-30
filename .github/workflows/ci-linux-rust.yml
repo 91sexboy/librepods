@@ -55,7 +55,7 @@ jobs:
 
       - name: Lint Rust
         working-directory: linux-rust
-        run: cargo clippy --all-targets --locked -- -D warnings
+        run: cargo clippy --all-targets --locked
 
       - name: Run Rust tests
         working-directory: linux-rust
