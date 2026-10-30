@@ -12,6 +12,14 @@ on:
       - 'flake.nix'
       - 'flake.lock'
       - '.github/workflows/ci-linux-rust.yml'
+  pull_request:
+    branches:
+      - linux/rust
+    paths:
+      - 'linux-rust/**'
+      - 'flake.nix'
+      - 'flake.lock'
+      - '.github/workflows/ci-linux-rust.yml'
   workflow_dispatch:
 
 jobs:

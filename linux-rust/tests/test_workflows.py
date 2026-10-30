@@ -147,6 +147,30 @@ class WorkflowTests(unittest.TestCase):
         )
         self.assertFalse(any("run" in step for step in pull_request_job["steps"]))
 
+    def test_nix_updater_binds_lockfile_to_validated_source_revision(self):
+        workflow = load_yaml(NIX_UPDATE_WORKFLOW)
+        update_job = workflow["jobs"]["update-lock"]
+        pull_request_job = workflow["jobs"]["create-pull-request"]
+        update_steps = named_steps(update_job)
+        pull_request_steps = named_steps(pull_request_job)
+
+        self.assertIn("Record source revision", update_steps)
+        self.assertIn("source-sha", update_job["outputs"])
+        source_revision = update_steps["Record source revision"]
+        self.assertEqual("source", source_revision["id"])
+        self.assertEqual(
+            'echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"',
+            source_revision["run"].strip(),
+        )
+        self.assertEqual(
+            "${{ steps.source.outputs.sha }}",
+            update_job["outputs"]["source-sha"],
+        )
+        self.assertEqual(
+            "${{ needs.update-lock.outputs.source-sha }}",
+            pull_request_steps["Checkout target branch"]["with"]["ref"],
+        )
+
     def test_nix_updater_targets_linux_rust(self):
         workflow = load_yaml(NIX_UPDATE_WORKFLOW)
         self.assertIn("create-pull-request", workflow["jobs"])
@@ -156,10 +180,6 @@ class WorkflowTests(unittest.TestCase):
         self.assertEqual(
             "linux/rust",
             update_steps["Checkout target branch"]["with"]["ref"],
-        )
-        self.assertEqual(
-            "linux/rust",
-            pull_request_steps["Checkout target branch"]["with"]["ref"],
         )
         self.assertEqual(
             "linux/rust",
@@ -193,6 +213,14 @@ class WorkflowTests(unittest.TestCase):
         self.assertEqual(upload["with"]["name"], download["with"]["name"])
         self.assertEqual(".", download["with"]["path"])
         self.assertEqual("flake.lock", create_pull_request["with"]["add-paths"])
+
+    def test_linux_ci_revalidates_pull_requests_targeting_linux_rust(self):
+        workflow = load_yaml(LINUX_WORKFLOW)
+        self.assertIn("pull_request", workflow["on"])
+        pull_request = workflow["on"]["pull_request"]
+
+        self.assertEqual(["linux/rust"], pull_request["branches"])
+        self.assertEqual(workflow["on"]["push"]["paths"], pull_request["paths"])
 
 
 if __name__ == "__main__":

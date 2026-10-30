@@ -19,6 +19,7 @@ jobs:
       contents: read
     outputs:
       changed: ${{ steps.lockfile.outputs.changed }}
+      source-sha: ${{ steps.source.outputs.sha }}
 
     steps:
       - name: Checkout target branch
@@ -26,6 +27,10 @@ jobs:
         with:
           ref: linux/rust
           persist-credentials: false
+
+      - name: Record source revision
+        id: source
+        run: echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
 
       - name: Install Nix
         uses: DeterminateSystems/nix-installer-action@3138316df39ed29be04236d7ffc686fa525866aa # v23
@@ -72,7 +77,7 @@ jobs:
       - name: Checkout target branch
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
-          ref: linux/rust
+          ref: ${{ needs.update-lock.outputs.source-sha }}
           persist-credentials: false
 
       - name: Download updated lockfile
