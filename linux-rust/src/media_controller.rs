@@ -79,6 +79,51 @@ enum PlaybackTakeoverOutcome {
     Failed(PlaybackTakeoverFailure),
 }
 
+fn normalized_profile_name(profile: &str) -> String {
+    profile.replace('_', "-")
+}
+
+fn is_a2dp_sink_profile(profile: &str) -> bool {
+    let profile = normalized_profile_name(profile);
+    profile == "a2dp-sink"
+        || profile
+            .strip_prefix("a2dp-sink-")
+            .is_some_and(|codec| !codec.is_empty())
+}
+
+fn preferred_a2dp_profile<'a>(profiles: impl IntoIterator<Item = &'a str>) -> Option<&'a str> {
+    let profiles: Vec<_> = profiles.into_iter().collect();
+
+    ["a2dp-sink-sbc-xq", "a2dp-sink-sbc", "a2dp-sink"]
+        .into_iter()
+        .find_map(|preferred| {
+            profiles
+                .iter()
+                .copied()
+                .find(|profile| normalized_profile_name(profile) == preferred)
+        })
+        .or_else(|| {
+            profiles
+                .iter()
+                .copied()
+                .find(|profile| is_a2dp_sink_profile(profile))
+        })
+}
+
+fn normalized_mac(value: &str) -> String {
+    value
+        .chars()
+        .filter(|character| !matches!(*character, ':' | '-' | '_'))
+        .map(|character| character.to_ascii_lowercase())
+        .collect()
+}
+
+fn pulse_property_matches_mac(property: &str, mac: &str) -> bool {
+    let normalized_target_mac = normalized_mac(mac);
+    !normalized_target_mac.is_empty()
+        && normalized_mac(property).contains(normalized_target_mac.as_str())
+}
+
 struct MediaControllerState {
     connected_device_mac: String,
     local_mac: String,
@@ -576,11 +621,8 @@ impl MediaController {
 
             for service in Self::list_mpris_services(&conn) {
                 debug!("Checking playback status for service: {}", service);
-                let proxy = conn.with_proxy(
-                    &service,
-                    "/org/mpris/MediaPlayer2",
-                    Duration::from_secs(5),
-                );
+                let proxy =
+                    conn.with_proxy(&service, "/org/mpris/MediaPlayer2", Duration::from_secs(5));
 
                 if let Ok(playback_status) =
                     proxy.get::<String>("org.mpris.MediaPlayer2.Player", "PlaybackStatus")
@@ -604,8 +646,8 @@ impl MediaController {
 
             paused_services
         })
-            .await
-            .unwrap();
+        .await
+        .unwrap();
 
         if !paused_services.is_empty() {
             info!("Paused {} media player(s) via DBus", paused_services.len());
@@ -651,11 +693,14 @@ impl MediaController {
             }
             paused_count
         })
-            .await
-            .unwrap();
+        .await
+        .unwrap();
 
         if paused_count > 0 {
-            info!("Paused {} media player(s) due to ownership loss", paused_count);
+            info!(
+                "Paused {} media player(s) due to ownership loss",
+                paused_count
+            );
             self.state.lock().await.is_playing = false;
         } else {
             debug!("No playing media players found to pause");
@@ -692,8 +737,8 @@ impl MediaController {
             }
             resumed_count
         })
-            .await
-            .unwrap();
+        .await
+        .unwrap();
 
         if resumed_count > 0 {
             info!("Resumed {} media player(s) via DBus", resumed_count);
@@ -731,16 +776,15 @@ impl MediaController {
                 .iter()
                 .find(|c| c.index == index)
                 .map(|card| {
-                    card.profiles
-                        .iter()
-                        .any(|p| p.name.as_ref().is_some_and(|n| n.starts_with("a2dp-sink")))
+                    preferred_a2dp_profile(card.profiles.iter().filter_map(|p| p.name.as_deref()))
+                        .is_some()
                 })
                 .unwrap_or(false);
             debug!("A2DP profile available: {}", available);
             available
         })
-            .await
-            .unwrap_or(false)
+        .await
+        .unwrap_or(false)
     }
 
     async fn get_preferred_a2dp_profile(&self) -> String {
@@ -759,12 +803,26 @@ impl MediaController {
             return cached_profile;
         }
 
-        for profile in ["a2dp-sink-sbc_xq", "a2dp-sink-sbc", "a2dp-sink"] {
-            if self.is_profile_available(index, profile).await {
-                info!("Selected best available A2DP profile: {}", profile);
-                self.state.lock().await.cached_a2dp_profile = profile.to_string();
-                return profile.to_string();
-            }
+        let profile = tokio::task::spawn_blocking(move || {
+            get_card_info_list_sync()
+                .iter()
+                .find(|card| card.index == index)
+                .and_then(|card| {
+                    preferred_a2dp_profile(
+                        card.profiles
+                            .iter()
+                            .filter_map(|profile| profile.name.as_deref()),
+                    )
+                })
+                .map(str::to_owned)
+        })
+        .await
+        .unwrap_or(None);
+
+        if let Some(profile) = profile {
+            info!("Selected best available A2DP profile: {}", profile);
+            self.state.lock().await.cached_a2dp_profile = profile.clone();
+            return profile;
         }
         debug!("No suitable profile found");
         String::new()
@@ -785,8 +843,8 @@ impl MediaController {
             debug!("Profile {} available: {}", profile_name, available);
             available
         })
-            .await
-            .unwrap_or(false)
+        .await
+        .unwrap_or(false)
     }
 
     async fn restart_wire_plumber(&self) -> bool {
@@ -817,17 +875,23 @@ impl MediaController {
         tokio::task::spawn_blocking(move || {
             for card in get_card_info_list_sync() {
                 if let Some(device_string) = card.proplist.get_str("device.string")
-                    && device_string.contains(&mac_clone)
+                    && pulse_property_matches_mac(device_string, &mac_clone)
                 {
-                    info!("Found audio device index for MAC {}: {}", mac_clone, card.index);
+                    info!(
+                        "Found audio device index for MAC {}: {}",
+                        mac_clone, card.index
+                    );
                     return Some(card.index);
                 }
             }
-            error!("No matching Bluetooth card found for MAC address: {}", mac_clone);
+            error!(
+                "No matching Bluetooth card found for MAC address: {}",
+                mac_clone
+            );
             None
         })
-            .await
-            .unwrap_or(None)
+        .await
+        .unwrap_or(None)
     }
 
     pub async fn deactivate_a2dp_profile(&self) -> ProfileOperationResult {
@@ -878,7 +942,10 @@ impl MediaController {
     }
 
     pub async fn handle_conversational_awareness(&self, status: u8) {
-        debug!("Entering handle_conversational_awareness with status: {}", status);
+        debug!(
+            "Entering handle_conversational_awareness with status: {}",
+            status
+        );
 
         let mac = self.state.lock().await.connected_device_mac.clone();
         if mac.is_empty() {
@@ -901,8 +968,8 @@ impl MediaController {
             let sink = sink.clone();
             move || get_sink_volume_percent_by_name_sync(&sink)
         })
-            .await
-            .unwrap_or(None);
+        .await
+        .unwrap_or(None);
 
         match status {
             1 => {
@@ -941,8 +1008,8 @@ impl MediaController {
                         tokio::task::spawn_blocking(move || {
                             transition_sink_volume(&sink_clone, 15)
                         })
-                            .await
-                            .unwrap_or(false);
+                        .await
+                        .unwrap_or(false);
                         info!(
                             "Conversation reduce: lowered volume to 15% (original {})",
                             orig
@@ -966,9 +1033,11 @@ impl MediaController {
                 if let Some(orig) = conv_original {
                     let target = orig.min(25);
                     let sink_clone = sink.clone();
-                    tokio::task::spawn_blocking(move || transition_sink_volume(&sink_clone, target))
-                        .await
-                        .unwrap_or(false);
+                    tokio::task::spawn_blocking(move || {
+                        transition_sink_volume(&sink_clone, target)
+                    })
+                    .await
+                    .unwrap_or(false);
                     info!(
                         "Conversation partial increase (3): set volume to {} (original {})",
                         target, orig
@@ -976,9 +1045,11 @@ impl MediaController {
                 } else if let Some(orig_from_current) = current_volume_opt {
                     let target = orig_from_current.min(25);
                     let sink_clone = sink.clone();
-                    tokio::task::spawn_blocking(move || transition_sink_volume(&sink_clone, target))
-                        .await
-                        .unwrap_or(false);
+                    tokio::task::spawn_blocking(move || {
+                        transition_sink_volume(&sink_clone, target)
+                    })
+                    .await
+                    .unwrap_or(false);
                     info!(
                         "Conversation partial increase (3) with fallback current: set volume to {} (measured {})",
                         target, orig_from_current
@@ -1027,11 +1098,7 @@ impl MediaController {
                 let proxy =
                     conn.with_proxy(service, "/org/mpris/MediaPlayer2", Duration::from_secs(5));
                 if proxy
-                    .method_call::<(), _, &str, &str>(
-                        "org.mpris.MediaPlayer2.Player",
-                        command,
-                        (),
-                    )
+                    .method_call::<(), _, &str, &str>("org.mpris.MediaPlayer2.Player", command, ())
                     .is_ok()
                 {
                     info!("Sent {} to: {}", command, service);
@@ -1040,8 +1107,8 @@ impl MediaController {
                 }
             }
         })
-            .await
-            .unwrap();
+        .await
+        .unwrap();
     }
 
     async fn restore_volume_if_needed(&self, sink: &str) {
@@ -1080,9 +1147,7 @@ impl MediaController {
 
         names
             .into_iter()
-            .filter(|s| {
-                s.starts_with("org.mpris.MediaPlayer2.") && !Self::is_kdeconnect_service(s)
-            })
+            .filter(|s| s.starts_with("org.mpris.MediaPlayer2.") && !Self::is_kdeconnect_service(s))
             .collect()
     }
 }
@@ -1092,7 +1157,9 @@ impl MediaController {
 fn pulse_connect() -> Option<(Mainloop, Context)> {
     let mut mainloop = Mainloop::new()?;
     let mut context = Context::new(&mainloop, "LibrePods")?;
-    context.connect(None, ContextFlagSet::NOAUTOSPAWN, None).ok()?;
+    context
+        .connect(None, ContextFlagSet::NOAUTOSPAWN, None)
+        .ok()?;
     loop {
         mainloop.iterate(false);
         match context.get_state() {
@@ -1256,33 +1323,20 @@ async fn get_sink_name_by_mac(mac: &str) -> Option<String> {
         mainloop.quit(Retval(0));
 
         for sink in sink_list.borrow().iter() {
-            if let Some(device_string) = sink.proplist.get_str("device.string")
-                && device_string.to_uppercase().contains(&mac_clone.to_uppercase())
-                && let Some(name) = &sink.name
-            {
+            let matches_mac = ["device.string", "bluez.path"]
+                .into_iter()
+                .filter_map(|property| sink.proplist.get_str(property))
+                .any(|property| pulse_property_matches_mac(property, &mac_clone));
+            if matches_mac && let Some(name) = &sink.name {
                 info!("Found sink name for MAC {}: {}", mac_clone, name);
                 return Some(name.to_string());
-            }
-            if let Some(bluez_path) = sink.proplist.get_str("bluez.path") {
-                let mac_from_path = bluez_path
-                    .split('/')
-                    .next_back()
-                    .unwrap_or("")
-                    .replace("dev_", "")
-                    .replace('_', ":");
-                if mac_from_path.eq_ignore_ascii_case(&mac_clone)
-                    && let Some(name) = &sink.name
-                {
-                    info!("Found sink name for MAC {}: {}", mac_clone, name);
-                    return Some(name.to_string());
-                }
             }
         }
         error!("No matching sink found for MAC address: {}", mac_clone);
         None
     })
-        .await
-        .unwrap_or(None)
+    .await
+    .unwrap_or(None)
 }
 
 #[cfg(test)]
@@ -1523,5 +1577,90 @@ mod tests {
             ]
         );
         assert!(packet_rx.try_recv().is_err());
+    }
+
+    #[test]
+    fn preferred_a2dp_profile_returns_hyphenated_name_exactly() {
+        let profiles = ["off", "headset-head-unit", "a2dp-sink"];
+
+        assert_eq!(preferred_a2dp_profile(profiles), Some("a2dp-sink"));
+    }
+
+    #[test]
+    fn preferred_a2dp_profile_returns_underscored_name_exactly() {
+        let profiles = ["off", "headset_head_unit", "a2dp_sink"];
+
+        assert_eq!(preferred_a2dp_profile(profiles), Some("a2dp_sink"));
+    }
+
+    #[test]
+    fn preferred_a2dp_profile_returns_mixed_separator_codec_name_exactly() {
+        let profiles = ["off", "a2dp-sink-sbc_xq"];
+
+        assert_eq!(preferred_a2dp_profile(profiles), Some("a2dp-sink-sbc_xq"));
+    }
+
+    #[test]
+    fn preferred_a2dp_profile_preserves_codec_preference_order() {
+        let profiles = [
+            "a2dp_sink_aac",
+            "a2dp_sink",
+            "a2dp-sink-sbc",
+            "a2dp-sink-sbc_xq",
+        ];
+
+        assert_eq!(preferred_a2dp_profile(profiles), Some("a2dp-sink-sbc_xq"));
+    }
+
+    #[test]
+    fn preferred_a2dp_profile_falls_back_to_another_sink_codec() {
+        let profiles = ["off", "a2dp_sink_ldac"];
+
+        assert_eq!(preferred_a2dp_profile(profiles), Some("a2dp_sink_ldac"));
+    }
+
+    #[test]
+    fn preferred_a2dp_profile_rejects_non_sink_profiles() {
+        let profiles = [
+            "off",
+            "headset_head_unit",
+            "a2dp-source-aac",
+            "not-a2dp-sink-aac",
+            "a2dp_sink_",
+        ];
+
+        assert_eq!(preferred_a2dp_profile(profiles), None);
+    }
+
+    #[test]
+    fn pulse_property_matches_mac_in_device_string() {
+        assert!(pulse_property_matches_mac(
+            "bluez_card.28-2D_7f-AA_bb-CC",
+            "28:2d:7F:aa:BB:cc"
+        ));
+    }
+
+    #[test]
+    fn pulse_property_matches_mac_in_bluez_path() {
+        assert!(pulse_property_matches_mac(
+            "/org/bluez/hci0/dev_28_2D_7F_AA_BB_CC",
+            "28-2d-7f-aa-bb-cc"
+        ));
+    }
+
+    #[test]
+    fn pulse_property_matches_mac_rejects_another_device() {
+        assert!(!pulse_property_matches_mac(
+            "bluez_card.28_2D_7F_AA_BB_CD",
+            "28:2d:7f:aa:bb:cc"
+        ));
+    }
+
+    #[test]
+    fn pulse_property_matches_mac_rejects_empty_mac() {
+        assert!(!pulse_property_matches_mac(
+            "bluez_card.28_2D_7F_AA_BB_CC",
+            ""
+        ));
     }
 }
