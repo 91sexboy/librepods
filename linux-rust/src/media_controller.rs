@@ -2995,17 +2995,19 @@ mod tests {
         let (worker_finished_tx, worker_finished_rx) = oneshot::channel();
         let deactivation = tokio::spawn(async move {
             deactivation_controller
-                .run_a2dp_deactivation(action_controller.run_blocking_deactivation_action(
-                    None,
-                    move || {
-                        worker_started_tx
-                            .send(())
-                            .expect("deactivation worker start receiver dropped");
-                        let released = release_worker_rx.recv().is_ok();
-                        let _ = worker_finished_tx.send(());
-                        released
-                    },
-                ))
+                .run_a2dp_deactivation(async move {
+                    action_controller
+                        .run_blocking_deactivation_action(None, move || {
+                            worker_started_tx
+                                .send(())
+                                .expect("deactivation worker start receiver dropped");
+                            let released = release_worker_rx.recv().is_ok();
+                            let _ = worker_finished_tx.send(());
+                            released
+                        })
+                        .await
+                        .map(|_| ())
+                })
                 .await
         });
         timeout(Duration::from_secs(1), worker_started_rx)
