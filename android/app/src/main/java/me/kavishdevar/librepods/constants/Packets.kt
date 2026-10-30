@@ -178,35 +178,29 @@ class AirPodsNotifications {
             case = Battery(BatteryComponent.CASE, caseLevel, if (caseCharging) BatteryStatus.CHARGING else BatteryStatus.NOT_CHARGING)
         }
 
+        private fun batteryOrPrevious(
+            data: ByteArray,
+            componentIndex: Int,
+            levelIndex: Int,
+            statusIndex: Int,
+            previous: Battery,
+        ): Battery {
+            val component = data[componentIndex].toInt() and 0xFF
+            val level = data[levelIndex].toInt() and 0xFF
+            val status = data[statusIndex].toInt() and 0xFF
+            if (level > 100 || (level == 0 && status == BatteryStatus.DISCONNECTED)) {
+                return previous
+            }
+            return Battery(component, level, status)
+        }
+
         fun setBattery(data: ByteArray) {
             if (data.size != 22) {
                 return
             }
-//            first = if (data[10].toInt() == BatteryStatus.DISCONNECTED) {
-//                Battery(first.component, first.level, data[10].toInt())
-//            } else {
-//                Battery(data[7].toInt(), data[9].toInt(), data[10].toInt())
-//            }
-//            second = if (data[15].toInt() == BatteryStatus.DISCONNECTED) {
-//                Battery(second.component, second.level, data[15].toInt())
-//            } else {
-//                Battery(data[12].toInt(), data[14].toInt(), data[15].toInt())
-//            }
-//            case = if (data[20].toInt() == BatteryStatus.DISCONNECTED && case.status != BatteryStatus.DISCONNECTED) {
-//                Battery(case.component, case.level, data[20].toInt())
-//            } else {
-//                Battery(data[17].toInt(), data[19].toInt(), data[20].toInt())
-//            }
-//            sometimes it shows battery as -1%, just skip all that and set it normally
-            first = Battery(
-                data[7].toInt(), data[9].toInt(), data[10].toInt()
-            )
-            second = Battery(
-                data[12].toInt(), data[14].toInt(), data[15].toInt()
-            )
-            case = Battery(
-                data[17].toInt(), data[19].toInt(), data[20].toInt()
-            )
+            first = batteryOrPrevious(data, 7, 9, 10, first)
+            second = batteryOrPrevious(data, 12, 14, 15, second)
+            case = batteryOrPrevious(data, 17, 19, 20, case)
         }
 
         fun getBattery(): List<Battery> {
