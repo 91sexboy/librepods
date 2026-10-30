@@ -137,6 +137,25 @@ enum PlaybackTakeoverOutcome {
     Failed(PlaybackTakeoverFailure),
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum EarProfileAction {
+    ActivateA2dp,
+}
+
+fn ear_profile_action_for_transition(
+    old_in_ear_data: &[bool],
+    new_in_ear_data: &[bool],
+) -> Option<EarProfileAction> {
+    let old_all_out = old_in_ear_data.iter().all(|&in_ear| !in_ear);
+    let new_has_at_least_one_in = new_in_ear_data.iter().any(|&in_ear| in_ear);
+
+    if old_all_out && new_has_at_least_one_in {
+        Some(EarProfileAction::ActivateA2dp)
+    } else {
+        None
+    }
+}
+
 fn should_attempt_playback_takeover(
     was_playing: bool,
     is_playing: bool,
@@ -325,7 +344,6 @@ struct MediaControllerState {
     user_played_the_media: bool,
     i_paused_the_media: bool,
     ear_detection_enabled: bool,
-    disconnect_when_not_wearing: bool,
     conv_original_volume: Option<u32>,
     conv_conversation_started: bool,
 }
@@ -344,7 +362,6 @@ impl MediaControllerState {
             user_played_the_media: false,
             i_paused_the_media: false,
             ear_detection_enabled: true,
-            disconnect_when_not_wearing: true,
             conv_original_volume: None,
             conv_conversation_started: false,
         }
@@ -785,7 +802,9 @@ impl MediaController {
             }
         }
 
-        if new_has_at_least_one_in && old_all_out {
+        if let Some(EarProfileAction::ActivateA2dp) =
+            ear_profile_action_for_transition(&old_in_ear_data, &new_in_ear_data)
+        {
             debug!("Condition met: buds inserted, activating A2DP and checking play state");
             if let Err(error) = self.activate_a2dp_profile().await {
                 error!("Failed to activate A2DP after ear insertion: {:?}", error);
@@ -800,13 +819,6 @@ impl MediaController {
         } else if new_all_out {
             debug!("Condition met: buds removed, pausing media");
             self.pause().await;
-            let disconnect_when_not_wearing = self.state.lock().await.disconnect_when_not_wearing;
-            if disconnect_when_not_wearing {
-                debug!("Disconnect when not wearing enabled, deactivating A2DP");
-                if let Err(error) = self.deactivate_a2dp_profile().await {
-                    error!("Failed to deactivate A2DP after ear removal: {:?}", error);
-                }
-            }
         }
 
         let reset_user_played = (old_in_ear_data.iter().any(|&b| !b)
@@ -1842,6 +1854,22 @@ mod tests {
         })
         .await
         .expect("aborted playback listener did not stop");
+    }
+
+    #[test]
+    fn both_buds_removal_keeps_current_audio_profile() {
+        assert_eq!(
+            ear_profile_action_for_transition(&[true, true], &[false, false]),
+            None
+        );
+    }
+
+    #[test]
+    fn first_bud_insertion_activates_a2dp_profile() {
+        assert_eq!(
+            ear_profile_action_for_transition(&[false, false], &[true, false]),
+            Some(EarProfileAction::ActivateA2dp)
+        );
     }
 
     #[tokio::test]
