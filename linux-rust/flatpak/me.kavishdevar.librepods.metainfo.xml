@@ -7,6 +7,11 @@
 
     <metadata_license>CC-BY-SA-4.0</metadata_license>
     <project_license>AGPL-3.0-only</project_license>
+    <developer id="me.kavishdevar">
+        <name>Kavish Devar and LibrePods contributors</name>
+    </developer>
+    <url type="homepage">https://github.com/librepods-org/librepods</url>
+    <content_rating type="oars-1.1" />
 
     <description>
         <p>
