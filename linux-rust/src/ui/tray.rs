@@ -6,7 +6,7 @@ use tokio::sync::mpsc::UnboundedSender;
 
 use crate::bluetooth::aacp::{BatteryStatus, ControlCommandIdentifiers};
 use crate::ui::messages::BluetoothUIMessage;
-use crate::utils::get_app_settings_path;
+use crate::utils::{MyTheme, get_app_settings_path};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct PendingListeningModeRequest {
@@ -146,7 +146,8 @@ impl ksni::Tray for MyTray {
             .and_then(|v| v.get("tray_text_mode").cloned())
             .and_then(|ttm| serde_json::from_value(ttm).ok())
             .unwrap_or(false);
-        let icon = generate_icon(&text, text_mode, any_bud_charging);
+        let text_color = tray_text_color(None, any_bud_charging);
+        let icon = generate_icon(&text, text_mode, any_bud_charging, text_color);
         vec![icon]
     }
     fn tool_tip(&self) -> ToolTip {
@@ -269,7 +270,15 @@ impl ksni::Tray for MyTray {
     }
 }
 
-fn generate_icon(text: &str, text_mode: bool, charging: bool) -> Icon {
+fn tray_text_color(_theme: Option<MyTheme>, charging: bool) -> [u8; 4] {
+    if charging {
+        [0, 255, 0, 255]
+    } else {
+        [255, 255, 255, 255]
+    }
+}
+
+fn generate_icon(text: &str, text_mode: bool, charging: bool, text_color: [u8; 4]) -> Icon {
     use ab_glyph::{FontRef, PxScale};
     use image::{ImageBuffer, Rgba};
     use imageproc::drawing::draw_text_mut;
@@ -343,11 +352,7 @@ fn generate_icon(text: &str, text_mode: bool, charging: bool) -> Icon {
     } else {
         // battery text
         let scale = PxScale::from(48.0);
-        let color = if charging {
-            Rgba([0u8, 255u8, 0u8, 255u8])
-        } else {
-            Rgba([255u8, 255u8, 255u8, 255u8])
-        };
+        let color = Rgba(text_color);
 
         let scaled_font = font.as_scaled(scale);
         let mut text_width = 0.0;
@@ -558,5 +563,29 @@ mod tests {
         let tooltip = <MyTray as ksni::Tray>::tool_tip(&tray);
 
         assert!(tooltip.description.contains("L: 79%"));
+    }
+
+    #[test]
+    fn tray_text_color_contrasts_with_theme_and_charging_state() {
+        let cases = [
+            (
+                "noncharging Light",
+                Some(MyTheme::Light),
+                false,
+                [0, 0, 0, 255],
+            ),
+            (
+                "noncharging Dark",
+                Some(MyTheme::Dark),
+                false,
+                [255, 255, 255, 255],
+            ),
+            ("noncharging Auto", None, false, [255, 255, 255, 255]),
+            ("charging", Some(MyTheme::Light), true, [0, 255, 0, 255]),
+        ];
+
+        for (case, theme, charging, expected) in cases {
+            assert_eq!(tray_text_color(theme, charging), expected, "{case}");
+        }
     }
 }
