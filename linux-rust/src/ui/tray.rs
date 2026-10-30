@@ -299,3 +299,36 @@ fn generate_icon(text: &str, text_mode: bool, charging: bool) -> Icon {
         data,
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn tray_activation_opens_window() {
+        let (ui_tx, mut ui_rx) = tokio::sync::mpsc::unbounded_channel();
+        let mut tray = MyTray {
+            conversation_detect_enabled: None,
+            battery_headphone: None,
+            battery_headphone_status: None,
+            battery_l: None,
+            battery_l_status: None,
+            battery_r: None,
+            battery_r_status: None,
+            battery_c: None,
+            battery_c_status: None,
+            connected: false,
+            listening_mode: None,
+            allow_off_option: None,
+            command_tx: None,
+            ui_tx: Some(ui_tx),
+        };
+
+        <MyTray as ksni::Tray>::activate(&mut tray, 0, 0);
+
+        assert!(matches!(
+            ui_rx.try_recv(),
+            Ok(BluetoothUIMessage::OpenWindow)
+        ));
+    }
+}
