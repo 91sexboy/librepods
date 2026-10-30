@@ -69,7 +69,10 @@ impl ksni::Tray for MyTray {
             .and_then(|v| v.get("tray_text_mode").cloned())
             .and_then(|ttm| serde_json::from_value(ttm).ok())
             .unwrap_or(false);
-        let text_color = tray_text_color(None, any_bud_charging);
+        let theme = settings
+            .and_then(|v| v.get("theme").cloned())
+            .and_then(|theme| serde_json::from_value::<MyTheme>(theme).ok());
+        let text_color = tray_text_color(theme, any_bud_charging);
         let icon = generate_icon(&text, text_mode, any_bud_charging, text_color);
         vec![icon]
     }
@@ -200,11 +203,11 @@ impl ksni::Tray for MyTray {
     }
 }
 
-fn tray_text_color(_theme: Option<MyTheme>, charging: bool) -> [u8; 4] {
-    if charging {
-        [0, 255, 0, 255]
-    } else {
-        [255, 255, 255, 255]
+fn tray_text_color(theme: Option<MyTheme>, charging: bool) -> [u8; 4] {
+    match (charging, theme) {
+        (true, _) => [0, 255, 0, 255],
+        (false, Some(MyTheme::Light)) => [0, 0, 0, 255],
+        (false, _) => [255, 255, 255, 255],
     }
 }
 
