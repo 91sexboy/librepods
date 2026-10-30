@@ -498,8 +498,19 @@ fn run_blocking_profile_action<Output>(
     listener_generation: Option<&PlaybackListenerGeneration>,
     action: impl FnOnce() -> Output,
 ) -> Result<Output, ProfileOperationError> {
-    let _ = (registry, listener_generation);
-    Ok(action())
+    let Some(listener_generation) = listener_generation else {
+        return Ok(action());
+    };
+    let mut output = None;
+    if !registry.run_if_current(
+        &listener_generation.device_mac,
+        listener_generation.generation,
+        || output = Some(action()),
+    ) {
+        return Err(ProfileOperationError::ListenerReplaced);
+    }
+
+    Ok(output.expect("current listener action did not run"))
 }
 
 // MediaController instances are recreated on reconnect, so listener ownership
@@ -570,11 +581,13 @@ pub struct MediaController {
     device_index_lookup_lock: Arc<Mutex<()>>,
     a2dp_activation_lock: Arc<Mutex<()>>,
     playback_listeners: PlaybackListenerRegistry,
+    playback_listener_generation: Arc<StdMutex<Option<PlaybackListenerGeneration>>>,
 }
 
 struct MediaControllerA2dpOperations<'a> {
     controller: &'a MediaController,
     expected_mac: &'a str,
+    listener_generation: Option<PlaybackListenerGeneration>,
 }
 
 impl A2dpRecoveryOperations for MediaControllerA2dpOperations<'_> {
@@ -621,11 +634,14 @@ impl A2dpActivationOperations for MediaControllerA2dpOperations<'_> {
     fn request_a2dp_connection(&mut self) -> A2dpRecoveryFuture<'_, Result<(), String>> {
         let controller = self.controller;
         let expected_mac = self.expected_mac;
+        let listener_generation = self.listener_generation.clone();
         Box::pin(async move {
             controller
-                .request_a2dp_connection_once_with(expected_mac, |mac| {
-                    request_a2dp_connection_sync(&mac)
-                })
+                .request_a2dp_connection_once_for_listener_with(
+                    expected_mac,
+                    listener_generation,
+                    |mac| request_a2dp_connection_sync(&mac),
+                )
                 .await
         })
     }
@@ -666,14 +682,20 @@ impl A2dpActivationOperations for MediaControllerA2dpOperations<'_> {
         card_index: u32,
         profile: String,
     ) -> A2dpRecoveryFuture<'_, ProfileOperationResult> {
+        let playback_listeners = self.controller.playback_listeners.clone();
+        let listener_generation = self.listener_generation.clone();
         Box::pin(async move {
             info!("Activating A2DP profile for AirPods: {}", profile);
             let profile_name = profile.clone();
             let success = tokio::task::spawn_blocking(move || {
-                set_card_profile_sync(card_index, &profile_name)
+                run_blocking_profile_action(
+                    &playback_listeners,
+                    listener_generation.as_ref(),
+                    || set_card_profile_sync(card_index, &profile_name),
+                )
             })
             .await
-            .map_err(|_| ProfileOperationError::ProfileWorkerStopped)?;
+            .map_err(|_| ProfileOperationError::ProfileWorkerStopped)??;
 
             if !success {
                 warn!("Failed to activate A2DP profile: {}", profile);
@@ -708,6 +730,7 @@ impl MediaController {
             device_index_lookup_lock: Arc::new(Mutex::new(())),
             a2dp_activation_lock: Arc::new(Mutex::new(())),
             playback_listeners,
+            playback_listener_generation: Arc::new(StdMutex::new(None)),
         }
     }
 
@@ -759,6 +782,13 @@ impl MediaController {
         let listener_generation = self
             .playback_listeners
             .replace(&connected_device_mac, listener.abort_handle());
+        *self
+            .playback_listener_generation
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(PlaybackListenerGeneration {
+            device_mac: connected_device_mac.clone(),
+            generation: listener_generation,
+        });
         if generation_tx.send(listener_generation).is_err() {
             self.playback_listeners
                 .remove_if_current(&connected_device_mac, listener_generation);
@@ -1183,9 +1213,15 @@ impl MediaController {
             return Err(ProfileOperationError::NoConnectedDevice);
         }
 
+        let listener_generation = self
+            .playback_listener_generation
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone();
         let mut operations = MediaControllerA2dpOperations {
             controller: self,
             expected_mac: &mac,
+            listener_generation,
         };
         self.run_a2dp_activation(activate_a2dp_profile_with_operations(&mut operations))
             .await
@@ -1202,9 +1238,23 @@ impl MediaController {
         activation.await
     }
 
+    #[cfg(test)]
     async fn request_a2dp_connection_once_with<Request>(
         &self,
         expected_mac: &str,
+        request: Request,
+    ) -> Result<(), String>
+    where
+        Request: FnOnce(String) -> Result<(), String> + Send + 'static,
+    {
+        self.request_a2dp_connection_once_for_listener_with(expected_mac, None, request)
+            .await
+    }
+
+    async fn request_a2dp_connection_once_for_listener_with<Request>(
+        &self,
+        expected_mac: &str,
+        listener_generation: Option<PlaybackListenerGeneration>,
         request: Request,
     ) -> Result<(), String>
     where
@@ -1227,9 +1277,21 @@ impl MediaController {
             expected_mac
         );
         let mac = expected_mac.to_owned();
-        tokio::task::spawn_blocking(move || request(mac))
-            .await
-            .map_err(|error| format!("A2DP request worker stopped: {error}"))?
+        let playback_listeners = self.playback_listeners.clone();
+        let result = tokio::task::spawn_blocking(move || {
+            run_blocking_profile_action(&playback_listeners, listener_generation.as_ref(), || {
+                request(mac)
+            })
+        })
+        .await
+        .map_err(|error| format!("A2DP request worker stopped: {error}"))?;
+        match result {
+            Ok(request_result) => request_result,
+            Err(ProfileOperationError::ListenerReplaced) => {
+                Err("playback listener replaced before the A2DP request".into())
+            }
+            Err(error) => Err(format!("A2DP request skipped: {error:?}")),
+        }
     }
 
     async fn resolve_device_index<Lookup>(
@@ -1585,14 +1647,37 @@ impl MediaController {
             return Err(ProfileOperationError::NoConnectedDevice);
         }
 
-        self.deactivate_a2dp_profile_with_lookup(&mac, self.get_audio_device_index(&mac))
-            .await
+        let listener_generation = self
+            .playback_listener_generation
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone();
+        self.deactivate_a2dp_profile_for_listener_with_lookup(
+            &mac,
+            self.get_audio_device_index(&mac),
+            listener_generation,
+        )
+        .await
     }
 
+    #[cfg(test)]
     async fn deactivate_a2dp_profile_with_lookup<Lookup>(
         &self,
         mac: &str,
         lookup: Lookup,
+    ) -> ProfileOperationResult
+    where
+        Lookup: std::future::Future<Output = Option<u32>>,
+    {
+        self.deactivate_a2dp_profile_for_listener_with_lookup(mac, lookup, None)
+            .await
+    }
+
+    async fn deactivate_a2dp_profile_for_listener_with_lookup<Lookup>(
+        &self,
+        mac: &str,
+        lookup: Lookup,
+        listener_generation: Option<PlaybackListenerGeneration>,
     ) -> ProfileOperationResult
     where
         Lookup: std::future::Future<Output = Option<u32>>,
@@ -1610,17 +1695,20 @@ impl MediaController {
         };
 
         info!("Deactivating A2DP profile for AirPods by setting to off");
+        let playback_listeners = self.playback_listeners.clone();
         let success = tokio::task::spawn_blocking(move || {
-            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                set_card_profile_sync(device_index, "off")
-            }))
-            .unwrap_or_else(|e| {
-                warn!("Panic in set_card_profile_sync: {:?}", e);
-                false
+            run_blocking_profile_action(&playback_listeners, listener_generation.as_ref(), || {
+                std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    set_card_profile_sync(device_index, "off")
+                }))
+                .unwrap_or_else(|e| {
+                    warn!("Panic in set_card_profile_sync: {:?}", e);
+                    false
+                })
             })
         })
         .await
-        .map_err(|_| ProfileOperationError::ProfileWorkerStopped)?;
+        .map_err(|_| ProfileOperationError::ProfileWorkerStopped)??;
 
         if !success {
             warn!("Failed to deactivate A2DP profile");
@@ -1939,17 +2027,25 @@ fn set_card_profile_sync(card_index: u32, profile_name: &str) -> bool {
         None => return false,
     };
     let mut introspector = context.introspect();
-    let op = introspector.set_card_profile_by_index(card_index, profile_name, None);
+    let callback_result = Rc::new(RefCell::new(None));
+    let callback_result_for_handler = callback_result.clone();
+    let op = introspector.set_card_profile_by_index(
+        card_index,
+        profile_name,
+        Some(Box::new(move |success| {
+            *callback_result_for_handler.borrow_mut() = Some(success);
+        })),
+    );
     while op.get_state() == OperationState::Running {
         mainloop.iterate(false);
     }
     mainloop.quit(Retval(0));
-    profile_switch_succeeded(None)
+    let callback_result = *callback_result.borrow();
+    profile_switch_succeeded(callback_result)
 }
 
 fn profile_switch_succeeded(callback_result: Option<bool>) -> bool {
-    let _ = callback_result;
-    true
+    callback_result.unwrap_or(false)
 }
 
 pub fn transition_sink_volume(sink_name: &str, target_volume: u32) -> bool {
