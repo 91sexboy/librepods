@@ -149,7 +149,12 @@ impl ksni::Tray for MyTray {
                             .get(current)
                             .map(|&(_, val)| val)
                             .unwrap_or(0x02);
-                        let _ = tx.send((ControlCommandIdentifiers::ListeningMode, vec![value]));
+                        if tx
+                            .send((ControlCommandIdentifiers::ListeningMode, vec![value]))
+                            .is_ok()
+                        {
+                            this.listening_mode = Some(value);
+                        }
                     }
                 }),
                 options: options
