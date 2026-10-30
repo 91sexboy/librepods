@@ -12,6 +12,21 @@ use std::sync::Arc;
 use tokio::sync::Mutex;
 use tokio::time::{Duration, sleep};
 
+const OWNERSHIP_ACKNOWLEDGEMENT_TIMEOUT: Duration = Duration::from_secs(1);
+
+async fn cleanup_then_bounded_acknowledgement<Cleanup, Acknowledgement, Error>(
+    cleanup: Cleanup,
+    acknowledgement: Acknowledgement,
+    timeout: Duration,
+) -> Result<Result<(), Error>, tokio::time::error::Elapsed>
+where
+    Cleanup: std::future::Future<Output = ()>,
+    Acknowledgement: std::future::Future<Output = Result<(), Error>>,
+{
+    cleanup.await;
+    tokio::time::timeout(timeout, acknowledgement).await
+}
+
 pub struct AirPodsDevice {
     pub mac_address: Address,
     pub aacp_manager: AACPManager,
@@ -344,26 +359,42 @@ impl AirPodsDevice {
                             });
                         }
                     }
-                    AACPEvent::OwnershipToFalseRequest => {
+                    AACPEvent::OwnershipToFalseRequest {
+                        connection_generation,
+                    } => {
                         info!(
-                            "Received ownership to false request. Setting ownership to false and pausing media."
+                            "Received ownership to false request. Pausing media before acknowledging ownership loss."
                         );
-                        if let Err(error) = aacp_manager_clone_events
-                            .send_control_command(
+                        let cleanup = async {
+                            let controller = mc_clone.lock().await;
+                            controller.pause_all_media().await;
+                            if let Err(error) = controller.deactivate_a2dp_profile().await {
+                                error!(
+                                    "Failed to deactivate A2DP after ownership request: {:?}",
+                                    error
+                                );
+                            }
+                        };
+                        let acknowledgement = aacp_manager_clone_events
+                            .send_control_command_for_generation(
                                 ControlCommandIdentifiers::OwnsConnection,
                                 &[0x00],
-                            )
-                            .await
-                        {
-                            error!("Failed to relinquish AACP ownership: {}", error);
-                        }
-                        let controller = mc_clone.lock().await;
-                        controller.pause_all_media().await;
-                        if let Err(error) = controller.deactivate_a2dp_profile().await {
-                            error!(
-                                "Failed to deactivate A2DP after ownership request: {:?}",
-                                error
+                                connection_generation,
                             );
+                        match cleanup_then_bounded_acknowledgement(
+                            cleanup,
+                            acknowledgement,
+                            OWNERSHIP_ACKNOWLEDGEMENT_TIMEOUT,
+                        )
+                        .await
+                        {
+                            Ok(Ok(())) => {}
+                            Ok(Err(error)) => {
+                                error!("Failed to relinquish AACP ownership: {}", error)
+                            }
+                            Err(_) => error!(
+                                "Timed out while acknowledging AACP ownership relinquishment"
+                            ),
                         }
                     }
                     AACPEvent::StemPress(press_type, bud_type) => {
@@ -424,4 +455,58 @@ pub struct AirPodsInformation {
     pub right_serial_number: String,
     pub version3: String,
     pub le_keys: AirPodsLEKeys,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::cleanup_then_bounded_acknowledgement;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::{Arc, Mutex as StdMutex};
+    use tokio::time::Duration;
+
+    #[tokio::test]
+    async fn ownership_cleanup_finishes_before_acknowledgement_is_polled() {
+        let actions = Arc::new(StdMutex::new(Vec::new()));
+        let cleanup_actions = Arc::clone(&actions);
+        let acknowledgement_actions = Arc::clone(&actions);
+
+        let outcome = cleanup_then_bounded_acknowledgement(
+            async move {
+                cleanup_actions.lock().unwrap().push("cleanup");
+            },
+            async move {
+                acknowledgement_actions
+                    .lock()
+                    .unwrap()
+                    .push("acknowledgement");
+                Ok::<(), &'static str>(())
+            },
+            Duration::from_millis(50),
+        )
+        .await;
+
+        assert!(matches!(outcome, Ok(Ok(()))));
+        assert_eq!(
+            actions.lock().unwrap().as_slice(),
+            ["cleanup", "acknowledgement"]
+        );
+    }
+
+    #[tokio::test]
+    async fn ownership_acknowledgement_timeout_does_not_skip_cleanup() {
+        let cleanup_finished = Arc::new(AtomicBool::new(false));
+        let cleanup_flag = Arc::clone(&cleanup_finished);
+
+        let outcome = cleanup_then_bounded_acknowledgement(
+            async move {
+                cleanup_flag.store(true, Ordering::SeqCst);
+            },
+            std::future::pending::<Result<(), &'static str>>(),
+            Duration::from_millis(10),
+        )
+        .await;
+
+        assert!(outcome.is_err());
+        assert!(cleanup_finished.load(Ordering::SeqCst));
+    }
 }

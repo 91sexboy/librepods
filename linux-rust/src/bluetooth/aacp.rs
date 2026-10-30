@@ -329,7 +329,7 @@ pub enum AACPEvent {
     ProximityKeys(Vec<(u8, Vec<u8>)>),
     AudioSource(AudioSource),
     ConnectedDevices(Vec<ConnectedDevice>, Vec<ConnectedDevice>),
-    OwnershipToFalseRequest,
+    OwnershipToFalseRequest { connection_generation: u64 },
     StemPress(StemPressType, StemPressBudType),
 }
 
@@ -1204,7 +1204,9 @@ impl AACPManager {
                         return;
                     }
                     if let Some(ref tx) = state.event_tx {
-                        let _ = tx.send(AACPEvent::OwnershipToFalseRequest);
+                        let _ = tx.send(AACPEvent::OwnershipToFalseRequest {
+                            connection_generation: state.connection_generation,
+                        });
                     }
                 }
             }
@@ -2209,23 +2211,31 @@ mod tests {
     #[tokio::test]
     async fn smart_routing_response_rejects_short_payload_and_emits_ownership_request() {
         let manager = AACPManager::new();
+        let (packet_tx, _packet_rx) = mpsc::channel(1);
+        let connection_generation = manager.install_connection(packet_tx, None).await;
         let (sender, mut events) = mpsc::unbounded_channel();
         manager.set_event_channel(sender).await;
 
         let mut truncated = HEADER_BYTES.to_vec();
         truncated.push(opcodes::SMART_ROUTING_RESP);
-        manager.receive_packet(&truncated).await;
+        manager
+            .receive_packet_for_generation(&truncated, connection_generation)
+            .await;
         assert!(events.try_recv().is_err());
 
         let request = protocol_packet(
             opcodes::SMART_ROUTING_RESP,
             b"audioRoutingSetOwnershipToFalse",
         );
-        manager.receive_packet(&request).await;
+        manager
+            .receive_packet_for_generation(&request, connection_generation)
+            .await;
 
         assert!(matches!(
             events.try_recv(),
-            Ok(AACPEvent::OwnershipToFalseRequest)
+            Ok(AACPEvent::OwnershipToFalseRequest {
+                connection_generation: event_generation
+            }) if event_generation == connection_generation
         ));
     }
 
