@@ -4,11 +4,12 @@ on:
   push:
     branches:
       - linux/rust
+      - fix-linux-bugs
     tags:
       - 'linux-v*'
     paths:
       - 'linux-rust/**'
-      - '.github/workflows/linux-build.yml'
+      - '.github/workflows/ci-linux-rust.yml'
   workflow_dispatch:
 
 jobs:
