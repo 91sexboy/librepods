@@ -1,5 +1,5 @@
 use crate::bluetooth::aacp::{
-    AACPEvent, BatteryComponent, BatteryStatus, ControlCommandIdentifiers,
+    AACPEvent, BatteryComponent, BatteryInfo, BatteryStatus, ControlCommandIdentifiers,
 };
 use crate::bluetooth::managers::DeviceManagers;
 use crate::devices::enums::{
@@ -39,6 +39,61 @@ fn window_icon() -> Option<window::Icon> {
             error!("Failed to decode embedded window icon: {error}");
             None
         }
+    }
+}
+
+fn format_battery_summary(battery: &[BatteryInfo]) -> String {
+    let headphone = battery
+        .iter()
+        .find(|reading| reading.component == BatteryComponent::Headphone)
+        .map(|reading| reading.level);
+    if let Some(level) = headphone {
+        let charging = battery
+            .iter()
+            .find(|reading| reading.component == BatteryComponent::Headphone)
+            .map(|reading| reading.status == BatteryStatus::Charging)
+            .unwrap_or(false);
+        format!("􀺹 {}%{}", level, if charging { "\u{1002E6}" } else { "" })
+    } else {
+        let left = battery
+            .iter()
+            .find(|reading| reading.component == BatteryComponent::Left)
+            .map(|reading| reading.level)
+            .unwrap_or_default();
+        let right = battery
+            .iter()
+            .find(|reading| reading.component == BatteryComponent::Right)
+            .map(|reading| reading.level)
+            .unwrap_or_default();
+        let case = battery
+            .iter()
+            .find(|reading| reading.component == BatteryComponent::Case)
+            .map(|reading| reading.level)
+            .unwrap_or_default();
+        let left_charging = battery
+            .iter()
+            .find(|reading| reading.component == BatteryComponent::Left)
+            .map(|reading| reading.status == BatteryStatus::Charging)
+            .unwrap_or(false);
+        let right_charging = battery
+            .iter()
+            .find(|reading| reading.component == BatteryComponent::Right)
+            .map(|reading| reading.status == BatteryStatus::Charging)
+            .unwrap_or(false);
+        let case_charging = battery
+            .iter()
+            .find(|reading| reading.component == BatteryComponent::Case)
+            .map(|reading| reading.status == BatteryStatus::Charging)
+            .unwrap_or(false);
+        format!(
+            "\u{1018E5} {}%{} \u{1018E8} {}%{} \u{100E6C} {}%{}",
+            left,
+            if left_charging { "\u{1002E6}" } else { "" },
+            right,
+            if right_charging { "\u{1002E6}" } else { "" },
+            case,
+            if case_charging { "\u{1002E6}" } else { "" }
+        )
     }
 }
 
@@ -806,35 +861,7 @@ impl App {
 
                                     match self.device_states.get(mac) {
                                         Some(DeviceState::AirPods(state)) => {
-                                            let b = &state.battery;
-                                            let headphone = b.iter().find(|x| x.component == BatteryComponent::Headphone)
-                                                .map(|x| x.level);
-                                            // if headphones is not None, use only that
-                                            if let Some(level) = headphone {
-                                                let charging = b.iter().find(|x| x.component == BatteryComponent::Headphone)
-                                                    .map(|x| x.status == BatteryStatus::Charging).unwrap_or(false);
-                                                format!(
-                                                    "􀺹 {}%{}",
-                                                    level, if charging {"\u{1002E6}"} else {""}
-                                                )
-                                            } else {
-                                                let left  = b.iter().find(|x| x.component == BatteryComponent::Left)
-                                                    .map(|x| x.level).unwrap_or_default();
-                                                let right = b.iter().find(|x| x.component == BatteryComponent::Right)
-                                                    .map(|x| x.level).unwrap_or_default();
-                                                let case  = b.iter().find(|x| x.component == BatteryComponent::Case)
-                                                    .map(|x| x.level).unwrap_or_default();
-                                                let left_charging = b.iter().find(|x| x.component == BatteryComponent::Left)
-                                                    .map(|x| x.status == BatteryStatus::Charging).unwrap_or(false);
-                                                let right_charging = b.iter().find(|x| x.component == BatteryComponent::Right)
-                                                    .map(|x| x.status == BatteryStatus::Charging).unwrap_or(false);
-                                                let case_charging = b.iter().find(|x| x.component == BatteryComponent::Case)
-                                                    .map(|x| x.status == BatteryStatus::Charging).unwrap_or(false);
-                                                format!(
-                                                    "\u{1018E5} {}%{} \u{1018E8} {}%{} \u{100E6C} {}%{}",
-                                                    left, if left_charging {"\u{1002E6}"} else {""}, right, if right_charging {"\u{1002E6}"} else {""}, case, if case_charging {"\u{1002E6}"} else {""}
-                                                )
-                                            }
+                                            format_battery_summary(&state.battery)
                                         }
                                         _ => "Connected".to_string(),
                                     }
@@ -1459,9 +1486,10 @@ async fn wait_for_message(ui_rx: Arc<Mutex<UnboundedReceiver<BluetoothUIMessage>
 #[cfg(test)]
 mod tests {
     use super::{
-        AppSettingUpdate, LifecycleAction, LifecycleEvent, Message, lifecycle_action,
-        save_setting_update, wait_for_message, window_icon,
+        AppSettingUpdate, LifecycleAction, LifecycleEvent, Message, format_battery_summary,
+        lifecycle_action, save_setting_update, wait_for_message, window_icon,
     };
+    use crate::bluetooth::aacp::{BatteryComponent, BatteryInfo, BatteryStatus};
     use crate::ui::messages::TrayStatus;
     use crate::utils::MyTheme;
     use serde_json::json;
@@ -1473,6 +1501,26 @@ mod tests {
     #[test]
     fn embedded_window_icon_decodes() {
         assert!(window_icon().is_some());
+    }
+
+    #[test]
+    fn battery_summary_omits_components_without_readings() {
+        let summary = format_battery_summary(&[
+            BatteryInfo {
+                component: BatteryComponent::Left,
+                level: 80,
+                status: BatteryStatus::NotCharging,
+            },
+            BatteryInfo {
+                component: BatteryComponent::Right,
+                level: 75,
+                status: BatteryStatus::NotCharging,
+            },
+        ]);
+
+        assert!(summary.contains("80%"));
+        assert!(summary.contains("75%"));
+        assert!(!summary.contains('\u{100E6C}'));
     }
 
     #[cfg(target_os = "linux")]
