@@ -12,11 +12,13 @@ use libpulse_binding::proplist::Proplist;
 use libpulse_binding::volume::{ChannelVolumes, Volume};
 use log::{debug, error, info, warn};
 use std::cell::RefCell;
+use std::collections::HashMap;
 use std::process::Command;
 use std::rc::Rc;
-use std::sync::Arc;
+use std::sync::{Arc, LazyLock, Mutex as StdMutex};
 use std::time::Duration;
-use tokio::sync::Mutex;
+use tokio::sync::{Mutex, oneshot};
+use tokio::task::AbortHandle;
 
 #[derive(Clone, Debug)]
 struct OwnedCardProfileInfo {
@@ -130,6 +132,7 @@ enum PlaybackTakeoverOutcome {
     SkippedNotInEar,
     AbortedDisconnected,
     AbortedConnectionChanged,
+    AbortedListenerReplaced,
     AbortedEarStateChanged,
     Failed(PlaybackTakeoverFailure),
 }
@@ -177,6 +180,107 @@ fn normalized_mac(value: &str) -> String {
         .collect()
 }
 
+#[derive(Clone)]
+struct PlaybackListenerEntry {
+    generation: u64,
+    abort_handle: AbortHandle,
+}
+
+#[derive(Default)]
+struct PlaybackListenerRegistryState {
+    next_generation: u64,
+    entries: HashMap<String, PlaybackListenerEntry>,
+}
+
+#[derive(Clone, Default)]
+struct PlaybackListenerRegistry {
+    state: Arc<StdMutex<PlaybackListenerRegistryState>>,
+}
+
+impl PlaybackListenerRegistry {
+    fn replace(&self, device_mac: &str, abort_handle: AbortHandle) -> u64 {
+        let device_mac = normalized_mac(device_mac);
+        let (generation, previous) = {
+            let mut state = self
+                .state
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            state.next_generation = state.next_generation.wrapping_add(1);
+            let generation = state.next_generation;
+            let previous = state.entries.insert(
+                device_mac,
+                PlaybackListenerEntry {
+                    generation,
+                    abort_handle,
+                },
+            );
+            (generation, previous)
+        };
+
+        if let Some(previous) = previous {
+            previous.abort_handle.abort();
+        }
+        generation
+    }
+
+    fn is_current(&self, device_mac: &str, generation: u64) -> bool {
+        let device_mac = normalized_mac(device_mac);
+        self.state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .entries
+            .get(&device_mac)
+            .is_some_and(|entry| entry.generation == generation)
+    }
+
+    fn remove_if_current(&self, device_mac: &str, generation: u64) -> bool {
+        let device_mac = normalized_mac(device_mac);
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if !state
+            .entries
+            .get(&device_mac)
+            .is_some_and(|entry| entry.generation == generation)
+        {
+            return false;
+        }
+
+        state.entries.remove(&device_mac);
+        true
+    }
+
+    #[cfg(test)]
+    fn current_entry(&self, device_mac: &str) -> Option<PlaybackListenerEntry> {
+        let device_mac = normalized_mac(device_mac);
+        self.state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .entries
+            .get(&device_mac)
+            .cloned()
+    }
+}
+
+// MediaController instances are recreated on reconnect, so listener ownership
+// must outlive any one controller while remaining scoped to the AirPods MAC.
+static PLAYBACK_LISTENERS: LazyLock<PlaybackListenerRegistry> =
+    LazyLock::new(PlaybackListenerRegistry::default);
+
+struct PlaybackListenerCleanup {
+    registry: PlaybackListenerRegistry,
+    device_mac: String,
+    generation: u64,
+}
+
+impl Drop for PlaybackListenerCleanup {
+    fn drop(&mut self) {
+        self.registry
+            .remove_if_current(&self.device_mac, self.generation);
+    }
+}
+
 fn pulse_property_matches_mac(property: &str, mac: &str) -> bool {
     let normalized_target_mac = normalized_mac(mac);
     !normalized_target_mac.is_empty()
@@ -197,7 +301,6 @@ struct MediaControllerState {
     disconnect_when_not_wearing: bool,
     conv_original_volume: Option<u32>,
     conv_conversation_started: bool,
-    playback_listener_running: bool,
 }
 
 impl MediaControllerState {
@@ -216,7 +319,6 @@ impl MediaControllerState {
             disconnect_when_not_wearing: true,
             conv_original_volume: None,
             conv_conversation_started: false,
-            playback_listener_running: false,
         }
     }
 }
@@ -225,6 +327,7 @@ impl MediaControllerState {
 pub struct MediaController {
     state: Arc<Mutex<MediaControllerState>>,
     device_index_lookup_lock: Arc<Mutex<()>>,
+    playback_listeners: PlaybackListenerRegistry,
 }
 
 struct MediaControllerA2dpRecovery<'a> {
@@ -259,38 +362,83 @@ impl A2dpRecoveryOperations for MediaControllerA2dpRecovery<'_> {
 
 impl MediaController {
     pub fn new(connected_mac: String, local_mac: String) -> Self {
+        Self::with_playback_listener_registry(
+            connected_mac,
+            local_mac,
+            (*PLAYBACK_LISTENERS).clone(),
+        )
+    }
+
+    fn with_playback_listener_registry(
+        connected_mac: String,
+        local_mac: String,
+        playback_listeners: PlaybackListenerRegistry,
+    ) -> Self {
         let mut state = MediaControllerState::new();
         state.connected_device_mac = connected_mac;
         state.local_mac = local_mac;
         MediaController {
             state: Arc::new(Mutex::new(state)),
             device_index_lookup_lock: Arc::new(Mutex::new(())),
+            playback_listeners,
         }
     }
 
     pub async fn start_playback_listener(&self, aacp_manager: AACPManager) {
-        let mut state = self.state.lock().await;
-        if state.playback_listener_running {
-            debug!("Playback listener already running");
-            return;
-        }
-        state.playback_listener_running = true;
-        drop(state);
+        let connected_device_mac = self.state.lock().await.connected_device_mac.clone();
+        let (generation_tx, generation_rx) = oneshot::channel();
 
         let controller_clone = self.clone();
-        tokio::spawn(async move {
-            controller_clone.playback_listener_loop(aacp_manager).await;
+        let listener_device_mac = connected_device_mac.clone();
+        let listener = tokio::spawn(async move {
+            let Ok(listener_generation) = generation_rx.await else {
+                return;
+            };
+            let _cleanup = PlaybackListenerCleanup {
+                registry: controller_clone.playback_listeners.clone(),
+                device_mac: listener_device_mac.clone(),
+                generation: listener_generation,
+            };
+            controller_clone
+                .playback_listener_loop(aacp_manager, &listener_device_mac, listener_generation)
+                .await;
         });
+        let listener_generation = self
+            .playback_listeners
+            .replace(&connected_device_mac, listener.abort_handle());
+        if generation_tx.send(listener_generation).is_err() {
+            self.playback_listeners
+                .remove_if_current(&connected_device_mac, listener_generation);
+        }
     }
 
-    async fn playback_listener_loop(&self, aacp_manager: AACPManager) {
+    async fn playback_listener_loop(
+        &self,
+        aacp_manager: AACPManager,
+        listener_device_mac: &str,
+        listener_generation: u64,
+    ) {
         info!("Starting playback listener loop");
         loop {
             tokio::time::sleep(Duration::from_millis(500)).await;
 
+            if !self
+                .playback_listeners
+                .is_current(listener_device_mac, listener_generation)
+            {
+                return;
+            }
+
             let is_playing = tokio::task::spawn_blocking(|| Self::check_if_playing())
                 .await
                 .unwrap_or(false);
+
+            if !self
+                .playback_listeners
+                .is_current(listener_device_mac, listener_generation)
+            {
+                return;
+            }
 
             let mut state = self.state.lock().await;
             let was_playing = state.is_playing;
@@ -303,6 +451,8 @@ impl MediaController {
                     .handle_playback_started(
                         &aacp_manager,
                         &local_mac,
+                        listener_device_mac,
+                        listener_generation,
                         self.activate_a2dp_profile(),
                     )
                     .await
@@ -316,6 +466,10 @@ impl MediaController {
                     }
                     PlaybackTakeoverOutcome::AbortedConnectionChanged => {
                         warn!("Playback takeover aborted because the AACP connection changed");
+                    }
+                    PlaybackTakeoverOutcome::AbortedListenerReplaced => {
+                        debug!("Playback takeover aborted because the listener was replaced");
+                        return;
                     }
                     PlaybackTakeoverOutcome::AbortedEarStateChanged => {
                         info!("Playback takeover aborted because the buds left the ear");
@@ -332,8 +486,19 @@ impl MediaController {
         &self,
         aacp_manager: &AACPManager,
         local_mac: &str,
+        listener_device_mac: &str,
+        listener_generation: u64,
         activate_a2dp: impl std::future::Future<Output = ProfileOperationResult>,
     ) -> PlaybackTakeoverOutcome {
+        // Task abortion cannot stop an already-running blocking profile switch, so
+        // also fence every takeover boundary with the listener generation.
+        if !self
+            .playback_listeners
+            .is_current(listener_device_mac, listener_generation)
+        {
+            return PlaybackTakeoverOutcome::AbortedListenerReplaced;
+        }
+
         let connection_generation = {
             let aacp_state = aacp_manager.state.lock().await;
             if aacp_state.sender.is_none() {
@@ -348,8 +513,22 @@ impl MediaController {
             aacp_state.connection_generation
         };
 
+        if !self
+            .playback_listeners
+            .is_current(listener_device_mac, listener_generation)
+        {
+            return PlaybackTakeoverOutcome::AbortedListenerReplaced;
+        }
+
         info!("Media playback started, activating A2DP before taking ownership");
-        if let Err(error) = activate_a2dp.await {
+        let activation_result = activate_a2dp.await;
+        if !self
+            .playback_listeners
+            .is_current(listener_device_mac, listener_generation)
+        {
+            return PlaybackTakeoverOutcome::AbortedListenerReplaced;
+        }
+        if let Err(error) = activation_result {
             return PlaybackTakeoverOutcome::Failed(PlaybackTakeoverFailure::ProfileActivation(
                 error,
             ));
@@ -371,6 +550,13 @@ impl MediaController {
             }
         }
 
+        if !self
+            .playback_listeners
+            .is_current(listener_device_mac, listener_generation)
+        {
+            return PlaybackTakeoverOutcome::AbortedListenerReplaced;
+        }
+
         if let Err(error) = aacp_manager
             .send_control_command_for_generation(
                 ControlCommandIdentifiers::OwnsConnection,
@@ -382,6 +568,13 @@ impl MediaController {
             return PlaybackTakeoverOutcome::Failed(PlaybackTakeoverFailure::OwnershipSend(
                 error.to_string(),
             ));
+        }
+
+        if !self
+            .playback_listeners
+            .is_current(listener_device_mac, listener_generation)
+        {
+            return PlaybackTakeoverOutcome::AbortedListenerReplaced;
         }
 
         let connected_devices = {
@@ -401,12 +594,25 @@ impl MediaController {
             aacp_state.connected_devices.clone()
         };
 
+        if !self
+            .playback_listeners
+            .is_current(listener_device_mac, listener_generation)
+        {
+            return PlaybackTakeoverOutcome::AbortedListenerReplaced;
+        }
+
         info!("Ownership queued, sending smart-routing takeover packets");
         for device in connected_devices {
             if device.mac == local_mac {
                 continue;
             }
 
+            if !self
+                .playback_listeners
+                .is_current(listener_device_mac, listener_generation)
+            {
+                return PlaybackTakeoverOutcome::AbortedListenerReplaced;
+            }
             if let Err(error) = aacp_manager
                 .send_media_information_for_generation(
                     local_mac,
@@ -422,6 +628,13 @@ impl MediaController {
                     error: error.to_string(),
                 });
             }
+
+            if !self
+                .playback_listeners
+                .is_current(listener_device_mac, listener_generation)
+            {
+                return PlaybackTakeoverOutcome::AbortedListenerReplaced;
+            }
             if let Err(error) = aacp_manager
                 .send_smart_routing_show_ui_for_generation(&device.mac, connection_generation)
                 .await
@@ -431,6 +644,13 @@ impl MediaController {
                     packet: RoutingPacketKind::ShowUi,
                     error: error.to_string(),
                 });
+            }
+
+            if !self
+                .playback_listeners
+                .is_current(listener_device_mac, listener_generation)
+            {
+                return PlaybackTakeoverOutcome::AbortedListenerReplaced;
             }
             if let Err(error) = aacp_manager
                 .send_hijack_request_for_generation(&device.mac, connection_generation)
@@ -442,6 +662,13 @@ impl MediaController {
                     error: error.to_string(),
                 });
             }
+        }
+
+        if !self
+            .playback_listeners
+            .is_current(listener_device_mac, listener_generation)
+        {
+            return PlaybackTakeoverOutcome::AbortedListenerReplaced;
         }
 
         debug!("Completed playback takeover process");
@@ -1531,6 +1758,128 @@ mod tests {
         MediaController::new(CONNECTED_MAC.into(), LOCAL_MAC.into())
     }
 
+    fn controller_with_listener_registry(
+        connected_mac: &str,
+        playback_listeners: PlaybackListenerRegistry,
+    ) -> MediaController {
+        MediaController::with_playback_listener_registry(
+            connected_mac.into(),
+            LOCAL_MAC.into(),
+            playback_listeners,
+        )
+    }
+
+    fn takeover_controller() -> (MediaController, u64) {
+        let playback_listeners = PlaybackListenerRegistry::default();
+        let controller =
+            controller_with_listener_registry(CONNECTED_MAC, playback_listeners.clone());
+        let placeholder = tokio::spawn(async {});
+        let listener_generation =
+            playback_listeners.replace(CONNECTED_MAC, placeholder.abort_handle());
+        (controller, listener_generation)
+    }
+
+    async fn wait_until_finished(abort_handle: &AbortHandle) {
+        timeout(Duration::from_millis(250), async {
+            while !abort_handle.is_finished() {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("aborted playback listener did not stop");
+    }
+
+    #[tokio::test]
+    async fn same_mac_listener_replacement_aborts_previous_listener() {
+        let playback_listeners = PlaybackListenerRegistry::default();
+        let first = controller_with_listener_registry(CONNECTED_MAC, playback_listeners.clone());
+        first.start_playback_listener(AACPManager::new()).await;
+        let first_listener = playback_listeners
+            .current_entry(CONNECTED_MAC)
+            .expect("first playback listener was not registered");
+
+        let replacement =
+            controller_with_listener_registry("aa-bb-cc-dd-ee-ff", playback_listeners.clone());
+        replacement
+            .start_playback_listener(AACPManager::new())
+            .await;
+        let replacement_listener = playback_listeners
+            .current_entry(CONNECTED_MAC)
+            .expect("replacement playback listener was not registered");
+
+        wait_until_finished(&first_listener.abort_handle).await;
+        assert_ne!(first_listener.generation, replacement_listener.generation);
+        assert!(
+            playback_listeners.is_current("aa-bb-cc-dd-ee-ff", replacement_listener.generation)
+        );
+
+        assert!(
+            playback_listeners.remove_if_current(CONNECTED_MAC, replacement_listener.generation)
+        );
+        replacement_listener.abort_handle.abort();
+    }
+
+    #[tokio::test]
+    async fn other_mac_listener_is_preserved_during_replacement() {
+        let playback_listeners = PlaybackListenerRegistry::default();
+        let first = controller_with_listener_registry(CONNECTED_MAC, playback_listeners.clone());
+        first.start_playback_listener(AACPManager::new()).await;
+        let first_listener = playback_listeners
+            .current_entry(CONNECTED_MAC)
+            .expect("first playback listener was not registered");
+
+        let other = controller_with_listener_registry(REMOTE_MAC, playback_listeners.clone());
+        other.start_playback_listener(AACPManager::new()).await;
+        let other_listener = playback_listeners
+            .current_entry(REMOTE_MAC)
+            .expect("other playback listener was not registered");
+
+        let replacement =
+            controller_with_listener_registry(CONNECTED_MAC, playback_listeners.clone());
+        replacement
+            .start_playback_listener(AACPManager::new())
+            .await;
+        let replacement_listener = playback_listeners
+            .current_entry(CONNECTED_MAC)
+            .expect("replacement playback listener was not registered");
+
+        wait_until_finished(&first_listener.abort_handle).await;
+        assert!(!other_listener.abort_handle.is_finished());
+        assert!(playback_listeners.is_current(REMOTE_MAC, other_listener.generation));
+
+        assert!(
+            playback_listeners.remove_if_current(CONNECTED_MAC, replacement_listener.generation)
+        );
+        replacement_listener.abort_handle.abort();
+        assert!(playback_listeners.remove_if_current(REMOTE_MAC, other_listener.generation));
+        other_listener.abort_handle.abort();
+    }
+
+    #[tokio::test]
+    async fn listener_cleanup_only_removes_its_own_generation() {
+        let playback_listeners = PlaybackListenerRegistry::default();
+        let first_placeholder = tokio::spawn(async {});
+        let first_generation =
+            playback_listeners.replace(CONNECTED_MAC, first_placeholder.abort_handle());
+        let replacement_placeholder = tokio::spawn(async {});
+        let replacement_generation =
+            playback_listeners.replace("aa-bb-cc-dd-ee-ff", replacement_placeholder.abort_handle());
+
+        drop(PlaybackListenerCleanup {
+            registry: playback_listeners.clone(),
+            device_mac: CONNECTED_MAC.into(),
+            generation: first_generation,
+        });
+        assert!(playback_listeners.is_current(CONNECTED_MAC, replacement_generation));
+
+        drop(PlaybackListenerCleanup {
+            registry: playback_listeners.clone(),
+            device_mac: "aa-bb-cc-dd-ee-ff".into(),
+            generation: replacement_generation,
+        });
+        assert!(playback_listeners.current_entry(CONNECTED_MAC).is_none());
+    }
+
     #[tokio::test]
     async fn profile_appearing_during_grace_skips_wire_plumber_restart() {
         let mut operations = RecordingRecoveryOperations::new([Ok(true)], false);
@@ -1849,15 +2198,21 @@ mod tests {
 
     #[tokio::test]
     async fn takeover_aborts_when_connection_generation_changes_during_activation() {
-        let controller = controller();
+        let (controller, listener_generation) = takeover_controller();
         let (manager, mut packet_rx) = takeover_manager(4).await;
         let activation_manager = manager.clone();
 
         let outcome = controller
-            .handle_playback_started(&manager, LOCAL_MAC, async move {
-                activation_manager.state.lock().await.connection_generation += 1;
-                Ok::<(), ProfileOperationError>(())
-            })
+            .handle_playback_started(
+                &manager,
+                LOCAL_MAC,
+                CONNECTED_MAC,
+                listener_generation,
+                async move {
+                    activation_manager.state.lock().await.connection_generation += 1;
+                    Ok::<(), ProfileOperationError>(())
+                },
+            )
             .await;
 
         assert_eq!(outcome, PlaybackTakeoverOutcome::AbortedConnectionChanged);
@@ -1866,16 +2221,22 @@ mod tests {
 
     #[tokio::test]
     async fn takeover_aborts_when_ear_state_changes_during_activation() {
-        let controller = controller();
+        let (controller, listener_generation) = takeover_controller();
         let (manager, mut packet_rx) = takeover_manager(4).await;
         let activation_manager = manager.clone();
 
         let outcome = controller
-            .handle_playback_started(&manager, LOCAL_MAC, async move {
-                activation_manager.state.lock().await.ear_detection_status =
-                    vec![EarDetectionStatus::OutOfEar];
-                Ok::<(), ProfileOperationError>(())
-            })
+            .handle_playback_started(
+                &manager,
+                LOCAL_MAC,
+                CONNECTED_MAC,
+                listener_generation,
+                async move {
+                    activation_manager.state.lock().await.ear_detection_status =
+                        vec![EarDetectionStatus::OutOfEar];
+                    Ok::<(), ProfileOperationError>(())
+                },
+            )
             .await;
 
         assert_eq!(outcome, PlaybackTakeoverOutcome::AbortedEarStateChanged);
@@ -1883,14 +2244,48 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn takeover_aborts_when_listener_generation_changes_during_activation() {
+        let playback_listeners = PlaybackListenerRegistry::default();
+        let controller =
+            controller_with_listener_registry(CONNECTED_MAC, playback_listeners.clone());
+        let placeholder = tokio::spawn(async {});
+        let listener_generation =
+            playback_listeners.replace(CONNECTED_MAC, placeholder.abort_handle());
+        let (manager, mut packet_rx) = takeover_manager(4).await;
+        let activation_listeners = playback_listeners.clone();
+        let replacement_placeholder = tokio::spawn(async {});
+        let replacement_abort_handle = replacement_placeholder.abort_handle();
+
+        let outcome = controller
+            .handle_playback_started(
+                &manager,
+                LOCAL_MAC,
+                CONNECTED_MAC,
+                listener_generation,
+                async move {
+                    activation_listeners.replace(CONNECTED_MAC, replacement_abort_handle);
+                    Ok::<(), ProfileOperationError>(())
+                },
+            )
+            .await;
+
+        assert_eq!(outcome, PlaybackTakeoverOutcome::AbortedListenerReplaced);
+        assert!(packet_rx.try_recv().is_err());
+    }
+
+    #[tokio::test]
     async fn takeover_reports_profile_activation_failure_without_sending() {
-        let controller = controller();
+        let (controller, listener_generation) = takeover_controller();
         let (manager, mut packet_rx) = takeover_manager(4).await;
 
         let outcome = controller
-            .handle_playback_started(&manager, LOCAL_MAC, async {
-                Err(ProfileOperationError::WirePlumberRestartFailed)
-            })
+            .handle_playback_started(
+                &manager,
+                LOCAL_MAC,
+                CONNECTED_MAC,
+                listener_generation,
+                async { Err(ProfileOperationError::WirePlumberRestartFailed) },
+            )
             .await;
 
         assert_eq!(
@@ -1904,14 +2299,18 @@ mod tests {
 
     #[tokio::test]
     async fn takeover_reports_closed_ownership_channel() {
-        let controller = controller();
+        let (controller, listener_generation) = takeover_controller();
         let (manager, packet_rx) = takeover_manager(4).await;
         drop(packet_rx);
 
         let outcome = controller
-            .handle_playback_started(&manager, LOCAL_MAC, async {
-                Ok::<(), ProfileOperationError>(())
-            })
+            .handle_playback_started(
+                &manager,
+                LOCAL_MAC,
+                CONNECTED_MAC,
+                listener_generation,
+                async { Ok::<(), ProfileOperationError>(()) },
+            )
             .await;
 
         assert!(matches!(
@@ -1922,13 +2321,17 @@ mod tests {
 
     #[tokio::test]
     async fn takeover_reports_routing_send_failure() {
-        let controller = controller();
+        let (controller, listener_generation) = takeover_controller();
         let (manager, mut packet_rx) = takeover_manager(1).await;
         let takeover = tokio::spawn(async move {
             controller
-                .handle_playback_started(&manager, LOCAL_MAC, async {
-                    Ok::<(), ProfileOperationError>(())
-                })
+                .handle_playback_started(
+                    &manager,
+                    LOCAL_MAC,
+                    CONNECTED_MAC,
+                    listener_generation,
+                    async { Ok::<(), ProfileOperationError>(()) },
+                )
                 .await
         });
 
@@ -1951,14 +2354,18 @@ mod tests {
 
     #[tokio::test]
     async fn takeover_queues_ownership_before_exact_routing_packet_order() {
-        let controller = controller();
+        let (controller, listener_generation) = takeover_controller();
         let (manager, mut packet_rx) = takeover_manager(4).await;
 
         let outcome = timeout(
             Duration::from_millis(250),
-            controller.handle_playback_started(&manager, LOCAL_MAC, async {
-                Ok::<(), ProfileOperationError>(())
-            }),
+            controller.handle_playback_started(
+                &manager,
+                LOCAL_MAC,
+                CONNECTED_MAC,
+                listener_generation,
+                async { Ok::<(), ProfileOperationError>(()) },
+            ),
         )
         .await
         .expect("playback takeover deadlocked while sending packets");
