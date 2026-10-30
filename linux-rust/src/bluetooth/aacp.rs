@@ -698,6 +698,7 @@ impl AACPManager {
         state.old_connected_devices.clear();
         state.connected_devices.clear();
         state.audio_source = None;
+        state.battery_info.clear();
         state.control_command_status_list.clear();
         state.old_ear_detection_status.clear();
         state.ear_detection_status.clear();
@@ -854,36 +855,57 @@ impl AACPManager {
                 let mut batteries = Vec::with_capacity(count);
                 for i in 0..count {
                     let base_index = 3 + i * 5;
+                    let component = match payload[base_index] {
+                        0x01 => BatteryComponent::Headphone,
+                        0x02 => BatteryComponent::Right,
+                        0x04 => BatteryComponent::Left,
+                        0x08 => BatteryComponent::Case,
+                        _ => {
+                            error!("Unknown battery component: {:#04x}", payload[base_index]);
+                            continue;
+                        }
+                    };
+                    let level = payload[base_index + 2];
+                    let status = match payload[base_index + 3] {
+                        0x01 => BatteryStatus::Charging,
+                        0x02 => BatteryStatus::NotCharging,
+                        0x04 => BatteryStatus::Disconnected,
+                        _ => {
+                            error!("Unknown battery status: {:#04x}", payload[base_index + 3]);
+                            continue;
+                        }
+                    };
+                    if level > 100 || (level == 0 && status == BatteryStatus::Disconnected) {
+                        debug!(
+                            "Ignoring unknown battery reading for {:?}: level={}, status={:?}",
+                            component, level, status
+                        );
+                        continue;
+                    }
                     batteries.push(BatteryInfo {
-                        component: match payload[base_index] {
-                            0x01 => BatteryComponent::Headphone,
-                            0x02 => BatteryComponent::Right,
-                            0x04 => BatteryComponent::Left,
-                            0x08 => BatteryComponent::Case,
-                            _ => {
-                                error!("Unknown battery component: {:#04x}", payload[base_index]);
-                                continue;
-                            }
-                        },
-                        level: payload[base_index + 2],
-                        status: match payload[base_index + 3] {
-                            0x01 => BatteryStatus::Charging,
-                            0x02 => BatteryStatus::NotCharging,
-                            0x04 => BatteryStatus::Disconnected,
-                            _ => {
-                                error!("Unknown battery status: {:#04x}", payload[base_index + 3]);
-                                continue;
-                            }
-                        },
+                        component,
+                        level,
+                        status,
                     });
                 }
                 let mut state = self.state.lock().await;
                 if !Self::packet_generation_is_current(&state, expected_generation) {
                     return;
                 }
-                state.battery_info = batteries.clone();
+                for battery in batteries {
+                    if let Some(existing) = state
+                        .battery_info
+                        .iter_mut()
+                        .find(|existing| existing.component == battery.component)
+                    {
+                        *existing = battery;
+                    } else {
+                        state.battery_info.push(battery);
+                    }
+                }
+                let snapshot = state.battery_info.clone();
                 if let Some(ref tx) = state.event_tx {
-                    let _ = tx.send(AACPEvent::BatteryInfo(batteries));
+                    let _ = tx.send(AACPEvent::BatteryInfo(snapshot));
                 }
                 info!("Received Battery Info: {:?}", state.battery_info);
             }
