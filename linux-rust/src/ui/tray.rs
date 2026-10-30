@@ -309,10 +309,8 @@ fn generate_icon(text: &str, text_mode: bool, charging: bool) -> Icon {
 mod tests {
     use super::*;
 
-    #[test]
-    fn tray_activation_opens_window() {
-        let (ui_tx, mut ui_rx) = tokio::sync::mpsc::unbounded_channel();
-        let mut tray = MyTray {
+    fn empty_tray() -> MyTray {
+        MyTray {
             conversation_detect_enabled: None,
             battery_headphone: None,
             battery_headphone_status: None,
@@ -326,8 +324,15 @@ mod tests {
             listening_mode: None,
             allow_off_option: None,
             command_tx: None,
-            ui_tx: Some(ui_tx),
-        };
+            ui_tx: None,
+        }
+    }
+
+    #[test]
+    fn tray_activation_opens_window() {
+        let (ui_tx, mut ui_rx) = tokio::sync::mpsc::unbounded_channel();
+        let mut tray = empty_tray();
+        tray.ui_tx = Some(ui_tx);
 
         <MyTray as ksni::Tray>::activate(&mut tray, 0, 0);
 
@@ -335,5 +340,16 @@ mod tests {
             ui_rx.try_recv(),
             Ok(BluetoothUIMessage::OpenWindow)
         ));
+    }
+
+    #[test]
+    fn tray_tooltip_shows_nonzero_disconnected_level() {
+        let mut tray = empty_tray();
+        tray.battery_l = Some(79);
+        tray.battery_l_status = Some(BatteryStatus::Disconnected);
+
+        let tooltip = <MyTray as ksni::Tray>::tool_tip(&tray);
+
+        assert!(tooltip.description.contains("L: 79%"));
     }
 }
