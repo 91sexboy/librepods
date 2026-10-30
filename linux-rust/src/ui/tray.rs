@@ -324,6 +324,16 @@ mod tests {
         }
     }
 
+    fn listening_mode_group(tray: &MyTray) -> ksni::menu::RadioGroup<MyTray> {
+        <MyTray as ksni::Tray>::menu(tray)
+            .into_iter()
+            .find_map(|item| match item {
+                ksni::MenuItem::RadioGroup(group) => Some(group),
+                _ => None,
+            })
+            .expect("tray should expose a listening-mode radio group")
+    }
+
     #[test]
     fn tray_activation_opens_window() {
         let (ui_tx, mut ui_rx) = tokio::sync::mpsc::unbounded_channel();
@@ -336,6 +346,24 @@ mod tests {
             ui_rx.try_recv(),
             Ok(BluetoothUIMessage::OpenWindow)
         ));
+    }
+
+    #[test]
+    fn listening_mode_selection_updates_radio_state_atomically() {
+        let (command_tx, mut command_rx) = tokio::sync::mpsc::unbounded_channel();
+        let mut tray = empty_tray();
+        tray.listening_mode = Some(0x02);
+        tray.command_tx = Some(command_tx);
+
+        let group = listening_mode_group(&tray);
+        (group.select)(&mut tray, 1);
+
+        assert_eq!(tray.listening_mode, Some(0x03));
+        assert!(matches!(
+            command_rx.try_recv(),
+            Ok((ControlCommandIdentifiers::ListeningMode, value)) if value == vec![0x03]
+        ));
+        assert_eq!(listening_mode_group(&tray).selected, 1);
     }
 
     #[test]
