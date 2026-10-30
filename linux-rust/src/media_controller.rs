@@ -1425,6 +1425,22 @@ impl MediaController {
         }
     }
 
+    async fn run_blocking_deactivation_action<Action>(
+        &self,
+        listener_generation: Option<PlaybackListenerGeneration>,
+        action: Action,
+    ) -> Result<bool, ProfileOperationError>
+    where
+        Action: FnOnce() -> bool + Send + 'static,
+    {
+        let playback_listeners = self.playback_listeners.clone();
+        tokio::task::spawn_blocking(move || {
+            run_blocking_profile_action(&playback_listeners, listener_generation.as_ref(), action)
+        })
+        .await
+        .map_err(|_| ProfileOperationError::ProfileWorkerStopped)?
+    }
+
     async fn resolve_device_index<Lookup>(
         &self,
         expected_mac: &str,
@@ -1895,9 +1911,8 @@ impl MediaController {
         };
 
         info!("Deactivating A2DP profile for AirPods by setting to off");
-        let playback_listeners = self.playback_listeners.clone();
-        let success = tokio::task::spawn_blocking(move || {
-            run_blocking_profile_action(&playback_listeners, listener_generation.as_ref(), || {
+        let success = self
+            .run_blocking_deactivation_action(listener_generation, move || {
                 std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                     set_card_profile_sync(device_index, "off")
                 }))
@@ -1906,9 +1921,7 @@ impl MediaController {
                     false
                 })
             })
-        })
-        .await
-        .map_err(|_| ProfileOperationError::ProfileWorkerStopped)??;
+            .await?;
 
         if !success {
             warn!("Failed to deactivate A2DP profile");
@@ -2970,6 +2983,64 @@ mod tests {
             actions.lock().unwrap().as_slice(),
             ["deactivation", "activation"]
         );
+    }
+
+    #[tokio::test]
+    async fn cancelled_deactivation_keeps_activation_superseded_until_worker_finishes() {
+        let controller = controller();
+        let deactivation_controller = controller.clone();
+        let action_controller = controller.clone();
+        let (worker_started_tx, worker_started_rx) = oneshot::channel();
+        let (release_worker_tx, release_worker_rx) = std::sync::mpsc::channel();
+        let (worker_finished_tx, worker_finished_rx) = oneshot::channel();
+        let deactivation = tokio::spawn(async move {
+            deactivation_controller
+                .run_a2dp_deactivation(action_controller.run_blocking_deactivation_action(
+                    None,
+                    move || {
+                        worker_started_tx
+                            .send(())
+                            .expect("deactivation worker start receiver dropped");
+                        let released = release_worker_rx.recv().is_ok();
+                        let _ = worker_finished_tx.send(());
+                        released
+                    },
+                ))
+                .await
+        });
+        timeout(Duration::from_secs(1), worker_started_rx)
+            .await
+            .expect("deactivation worker did not start")
+            .expect("deactivation worker start sender dropped");
+
+        deactivation.abort();
+        let cancellation = deactivation
+            .await
+            .expect_err("deactivation task was not cancelled");
+        assert!(cancellation.is_cancelled());
+
+        let activation_calls = Arc::new(AtomicUsize::new(0));
+        let recorded_activation_calls = Arc::clone(&activation_calls);
+        let activation_result = controller
+            .run_a2dp_activation(async move {
+                recorded_activation_calls.fetch_add(1, Ordering::SeqCst);
+                Ok(())
+            })
+            .await;
+
+        assert_eq!(
+            activation_result,
+            Err(ProfileOperationError::ActivationSupersededByDeactivation)
+        );
+        assert_eq!(activation_calls.load(Ordering::SeqCst), 0);
+
+        release_worker_tx
+            .send(())
+            .expect("deactivation worker release receiver dropped");
+        timeout(Duration::from_secs(1), worker_finished_rx)
+            .await
+            .expect("deactivation worker did not finish")
+            .expect("deactivation worker finish sender dropped");
     }
 
     #[tokio::test]
