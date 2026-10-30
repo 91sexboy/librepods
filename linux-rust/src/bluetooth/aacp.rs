@@ -19,6 +19,18 @@ const PSM: u16 = 0x1001;
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 const POLL_INTERVAL: Duration = Duration::from_millis(200);
 const HEADER_BYTES: [u8; 4] = [0x04, 0x00, 0x04, 0x00];
+const INFORMATION_PREFIX_LEN: usize = 7;
+const INFORMATION_FIELD_COUNT: usize = 11;
+
+fn parse_address(address: &str) -> Result<Address> {
+    address.parse::<Address>().map_err(Error::from)
+}
+
+fn reversed_address_bytes(address: Address) -> [u8; 6] {
+    let mut bytes: [u8; 6] = address.into();
+    bytes.reverse();
+    bytes
+}
 
 pub mod opcodes {
     pub const SET_FEATURE_FLAGS: u8 = 0x4D;
@@ -312,6 +324,44 @@ pub enum AACPEvent {
 pub struct AirPodsLEKeys {
     pub irk: String,
     pub enc_key: String,
+}
+
+fn parse_information_payload(payload: &[u8]) -> Option<AirPodsInformation> {
+    if !payload.starts_with(&[opcodes::INFORMATION, 0x00]) {
+        return None;
+    }
+
+    // Captures carry a two-byte opcode followed by a five-byte metadata preamble.
+    let mut remaining = payload.get(INFORMATION_PREFIX_LEN..)?;
+    let mut fields = Vec::with_capacity(INFORMATION_FIELD_COUNT);
+    for _ in 0..INFORMATION_FIELD_COUNT {
+        let terminator = remaining.iter().position(|byte| *byte == 0x00)?;
+        let field = std::str::from_utf8(&remaining[..terminator]).ok()?;
+        fields.push(field);
+        remaining = &remaining[terminator + 1..];
+    }
+
+    if fields.iter().all(|field| field.is_empty()) {
+        return None;
+    }
+
+    Some(AirPodsInformation {
+        name: fields[0].to_string(),
+        model_number: fields[1].to_string(),
+        manufacturer: fields[2].to_string(),
+        serial_number: fields[3].to_string(),
+        version1: fields[4].to_string(),
+        version2: fields[5].to_string(),
+        hardware_revision: fields[6].to_string(),
+        updater_identifier: fields[7].to_string(),
+        left_serial_number: fields[8].to_string(),
+        right_serial_number: fields[9].to_string(),
+        version3: fields[10].to_string(),
+        le_keys: AirPodsLEKeys {
+            irk: String::new(),
+            enc_key: String::new(),
+        },
+    })
 }
 
 pub struct AACPManagerState {
@@ -610,8 +660,12 @@ impl AACPManager {
                 }
             }
             opcodes::EAR_DETECTION => {
-                let primary_status = packet[6];
-                let secondary_status = packet[7];
+                if payload.len() < 4 {
+                    error!("Ear Detection packet too short: {}", hex::encode(payload));
+                    return;
+                }
+                let primary_status = payload[2];
+                let secondary_status = payload[3];
                 let mut statuses = Vec::new();
                 statuses.push(match primary_status {
                     0x00 => EarDetectionStatus::InEar,
@@ -669,49 +723,9 @@ impl AACPManager {
                 }
             }
             opcodes::INFORMATION => {
-                if payload.len() < 6 {
-                    error!("Information packet too short: {}", hex::encode(payload));
+                let Some(info) = parse_information_payload(payload) else {
+                    error!("Malformed Information packet: {}", hex::encode(payload));
                     return;
-                }
-                let data = &payload[4..];
-                let mut index = 0;
-                while index < data.len() && data[index] != 0x00 {
-                    index += 1;
-                }
-                let mut strings = Vec::new();
-                while index < data.len() {
-                    while index < data.len() && data[index] == 0x00 {
-                        index += 1;
-                    }
-                    if index >= data.len() {
-                        break;
-                    }
-                    let start = index;
-                    while index < data.len() && data[index] != 0x00 {
-                        index += 1;
-                    }
-                    let str_bytes = &data[start..index];
-                    if let Ok(s) = std::str::from_utf8(str_bytes) {
-                        strings.push(s.to_string());
-                    }
-                }
-                strings.remove(0);
-                let info = AirPodsInformation {
-                    name: strings.first().cloned().unwrap_or_default(),
-                    model_number: strings.get(1).cloned().unwrap_or_default(),
-                    manufacturer: strings.get(2).cloned().unwrap_or_default(),
-                    serial_number: strings.get(3).cloned().unwrap_or_default(),
-                    version1: strings.get(4).cloned().unwrap_or_default(),
-                    version2: strings.get(5).cloned().unwrap_or_default(),
-                    hardware_revision: strings.get(6).cloned().unwrap_or_default(),
-                    updater_identifier: strings.get(7).cloned().unwrap_or_default(),
-                    left_serial_number: strings.get(8).cloned().unwrap_or_default(),
-                    right_serial_number: strings.get(9).cloned().unwrap_or_default(),
-                    version3: strings.get(10).cloned().unwrap_or_default(),
-                    le_keys: AirPodsLEKeys {
-                        irk: "".to_string(),
-                        enc_key: "".to_string(),
-                    },
                 };
                 let mut state = self.state.lock().await;
                 let persisted_device = if let Some(mac) = state.airpods_mac {
@@ -863,15 +877,15 @@ impl AACPManager {
                 info!("Received Audio Source: {:?}", state.audio_source);
             }
             opcodes::CONNECTED_DEVICES => {
-                if payload.len() < 3 {
+                if payload.len() < 5 {
                     error!(
                         "Connected Devices packet too short: {}",
                         hex::encode(payload)
                     );
                     return;
                 }
-                let count = payload[2] as usize;
-                if payload.len() < 3 + count * 8 {
+                let count = payload[4] as usize;
+                if payload.len() < 5 + count * 8 {
                     error!(
                         "Connected Devices packet length mismatch: {}",
                         hex::encode(payload)
@@ -911,6 +925,13 @@ impl AACPManager {
                 info!("Received Connected Devices: {:?}", state.connected_devices);
             }
             opcodes::SMART_ROUTING_RESP => {
+                if payload.len() < 2 {
+                    error!(
+                        "Smart Routing Response packet too short: {}",
+                        hex::encode(payload)
+                    );
+                    return;
+                }
                 let packet_string = String::from_utf8_lossy(&payload[2..]);
                 info!("Received Smart Routing Response: {}", packet_string);
                 if packet_string.contains("SetOwnershipToFalse") {
@@ -994,13 +1015,11 @@ impl AACPManager {
         self_mac_address: &str,
         target_mac_address: &str,
     ) -> Result<()> {
+        let self_address = parse_address(self_mac_address)?.to_string();
+        let target_address = parse_address(target_mac_address)?;
         let opcode = [opcodes::SMART_ROUTING, 0x00];
         let mut buffer = Vec::with_capacity(112);
-        let target_mac_bytes: Vec<u8> = target_mac_address
-            .split(':')
-            .map(|s| u8::from_str_radix(s, 16).unwrap())
-            .collect();
-        buffer.extend_from_slice(&target_mac_bytes.iter().rev().cloned().collect::<Vec<u8>>());
+        buffer.extend_from_slice(&reversed_address_bytes(target_address));
 
         buffer.extend_from_slice(&[0x68, 0x00]);
         buffer.extend_from_slice(&[0x01, 0xE5, 0x4A]);
@@ -1014,7 +1033,7 @@ impl AACPManager {
         buffer.push(0x49);
         buffer.extend_from_slice(b"btAddress");
         buffer.push(0x51);
-        buffer.extend_from_slice(self_mac_address.as_bytes());
+        buffer.extend_from_slice(self_address.as_bytes());
         buffer.push(0x46);
         buffer.extend_from_slice(b"btName");
         buffer.push(0x43);
@@ -1029,13 +1048,10 @@ impl AACPManager {
     }
 
     pub async fn send_hijack_request(&self, target_mac_address: &str) -> Result<()> {
+        let target_address = parse_address(target_mac_address)?;
         let opcode = [opcodes::SMART_ROUTING, 0x00];
         let mut buffer = Vec::with_capacity(106);
-        let target_mac_bytes: Vec<u8> = target_mac_address
-            .split(':')
-            .map(|s| u8::from_str_radix(s, 16).unwrap())
-            .collect();
-        buffer.extend_from_slice(&target_mac_bytes.iter().rev().cloned().collect::<Vec<u8>>());
+        buffer.extend_from_slice(&reversed_address_bytes(target_address));
         buffer.extend_from_slice(&[0x62, 0x00]);
         buffer.extend_from_slice(&[0x01, 0xE5]);
         buffer.push(0x4A);
@@ -1068,13 +1084,11 @@ impl AACPManager {
         target_mac_address: &str,
         streaming_state: bool,
     ) -> Result<()> {
+        let self_address = parse_address(self_mac_address)?.to_string();
+        let target_address = parse_address(target_mac_address)?;
         let opcode = [opcodes::SMART_ROUTING, 0x00];
         let mut buffer = Vec::with_capacity(138);
-        let target_mac_bytes: Vec<u8> = target_mac_address
-            .split(':')
-            .map(|s| u8::from_str_radix(s, 16).unwrap())
-            .collect();
-        buffer.extend_from_slice(&target_mac_bytes.iter().rev().cloned().collect::<Vec<u8>>());
+        buffer.extend_from_slice(&reversed_address_bytes(target_address));
         buffer.extend_from_slice(&[0x82, 0x00]);
         buffer.extend_from_slice(&[0x01, 0xE5, 0x4A]);
         buffer.extend_from_slice(b"PlayingApp");
@@ -1087,7 +1101,7 @@ impl AACPManager {
         buffer.push(0x49);
         buffer.extend_from_slice(b"btAddress");
         buffer.push(0x51);
-        buffer.extend_from_slice(self_mac_address.as_bytes());
+        buffer.extend_from_slice(self_address.as_bytes());
         buffer.extend_from_slice(b"btName");
         buffer.push(0x43);
         buffer.extend_from_slice(b"Mac");
@@ -1104,13 +1118,10 @@ impl AACPManager {
     }
 
     pub async fn send_smart_routing_show_ui(&self, target_mac_address: &str) -> Result<()> {
+        let target_address = parse_address(target_mac_address)?;
         let opcode = [opcodes::SMART_ROUTING, 0x00];
         let mut buffer = Vec::with_capacity(134);
-        let target_mac_bytes: Vec<u8> = target_mac_address
-            .split(':')
-            .map(|s| u8::from_str_radix(s, 16).unwrap())
-            .collect();
-        buffer.extend_from_slice(&target_mac_bytes.iter().rev().cloned().collect::<Vec<u8>>());
+        buffer.extend_from_slice(&reversed_address_bytes(target_address));
         buffer.extend_from_slice(&[0x7E, 0x00]);
         buffer.extend_from_slice(&[0x01, 0xE6, 0x5B]);
         buffer.extend_from_slice(b"SmartRoutingKeyShowNearbyUI");
@@ -1140,13 +1151,10 @@ impl AACPManager {
     }
 
     pub async fn send_hijack_reversed(&self, target_mac_address: &str) -> Result<()> {
+        let target_address = parse_address(target_mac_address)?;
         let opcode = [opcodes::SMART_ROUTING, 0x00];
         let mut buffer = Vec::with_capacity(97);
-        let target_mac_bytes: Vec<u8> = target_mac_address
-            .split(':')
-            .map(|s| u8::from_str_radix(s, 16).unwrap())
-            .collect();
-        buffer.extend_from_slice(&target_mac_bytes.iter().rev().cloned().collect::<Vec<u8>>());
+        buffer.extend_from_slice(&reversed_address_bytes(target_address));
         buffer.extend_from_slice(&[0x59, 0x00]);
         buffer.extend_from_slice(&[0x01, 0xE3]);
         buffer.push(0x5F);
@@ -1173,13 +1181,11 @@ impl AACPManager {
         self_mac_address: &str,
         target_mac_address: &str,
     ) -> Result<()> {
+        let self_address = parse_address(self_mac_address)?.to_string();
+        let target_address = parse_address(target_mac_address)?;
         let opcode = [opcodes::SMART_ROUTING, 0x00];
         let mut buffer = Vec::with_capacity(86);
-        let target_mac_bytes: Vec<u8> = target_mac_address
-            .split(':')
-            .map(|s| u8::from_str_radix(s, 16).unwrap())
-            .collect();
-        buffer.extend_from_slice(&target_mac_bytes.iter().rev().cloned().collect::<Vec<u8>>());
+        buffer.extend_from_slice(&reversed_address_bytes(target_address));
         buffer.extend_from_slice(&[0x4E, 0x00]);
         buffer.extend_from_slice(&[0x01, 0xE5]);
         buffer.extend_from_slice(&[0x48, 0x69]);
@@ -1189,7 +1195,7 @@ impl AACPManager {
         buffer.extend_from_slice(&[0x01, 0x49]);
         buffer.extend_from_slice(b"btAddress");
         buffer.push(0x51);
-        buffer.extend_from_slice(self_mac_address.as_bytes());
+        buffer.extend_from_slice(self_address.as_bytes());
         buffer.push(0x46);
         buffer.extend_from_slice(b"btName");
         buffer.push(0x43);
@@ -1259,4 +1265,471 @@ async fn send_thread(mut rx: mpsc::Receiver<Vec<u8>>, sp: Arc<SeqPacket>) {
         }
     }
     info!("Send thread finished.");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn protocol_packet(opcode: u8, body: &[u8]) -> Vec<u8> {
+        let mut packet = Vec::with_capacity(HEADER_BYTES.len() + 2 + body.len());
+        packet.extend_from_slice(&HEADER_BYTES);
+        packet.extend_from_slice(&[opcode, 0x00]);
+        packet.extend_from_slice(body);
+        packet
+    }
+
+    fn information_packet(fields: &[&[u8]]) -> Vec<u8> {
+        let mut packet = protocol_packet(
+            opcodes::INFORMATION,
+            &[0x02, 0xD5, 0x00, 0x04, 0x00],
+        );
+        for field in fields {
+            packet.extend_from_slice(field);
+            packet.push(0x00);
+        }
+        packet
+    }
+
+    fn connected_devices_packet(prefix: [u8; 2], count: u8, records: &[u8]) -> Vec<u8> {
+        let mut body = Vec::with_capacity(3 + records.len());
+        body.extend_from_slice(&prefix);
+        body.push(count);
+        body.extend_from_slice(records);
+        protocol_packet(opcodes::CONNECTED_DEVICES, &body)
+    }
+
+    fn sample_information(name: &str) -> AirPodsInformation {
+        AirPodsInformation {
+            name: name.to_string(),
+            model_number: "A3048".to_string(),
+            manufacturer: "Apple Inc.".to_string(),
+            serial_number: "SERIAL".to_string(),
+            version1: "1".to_string(),
+            version2: "2".to_string(),
+            hardware_revision: "3".to_string(),
+            updater_identifier: "updater".to_string(),
+            left_serial_number: "LEFT".to_string(),
+            right_serial_number: "RIGHT".to_string(),
+            version3: "4".to_string(),
+            le_keys: AirPodsLEKeys {
+                irk: "irk".to_string(),
+                enc_key: "enc".to_string(),
+            },
+        }
+    }
+
+    async fn manager_with_packet_capture() -> (AACPManager, mpsc::Receiver<Vec<u8>>) {
+        let manager = AACPManager::new();
+        let (sender, receiver) = mpsc::channel(1);
+        manager.state.lock().await.sender = Some(sender);
+        (manager, receiver)
+    }
+
+    async fn assert_captured_packet(
+        receiver: &mut mpsc::Receiver<Vec<u8>>,
+        expected_hex: &str,
+    ) {
+        let actual = receiver.recv().await.expect("builder did not send a packet");
+        let expected = hex::decode(expected_hex).expect("captured packet must be valid hex");
+        assert_eq!(actual, expected);
+    }
+
+    #[tokio::test]
+    async fn ear_detection_requires_four_payload_bytes_and_accepts_exact_boundary() {
+        let manager = AACPManager::new();
+        manager.state.lock().await.ear_detection_status =
+            vec![EarDetectionStatus::OutOfEar];
+
+        let truncated = protocol_packet(opcodes::EAR_DETECTION, &[0x00]);
+        manager.receive_packet(&truncated).await;
+
+        assert_eq!(
+            manager.state.lock().await.ear_detection_status,
+            vec![EarDetectionStatus::OutOfEar]
+        );
+
+        let exact = protocol_packet(opcodes::EAR_DETECTION, &[0x00, 0x02]);
+        manager.receive_packet(&exact).await;
+
+        let state = manager.state.lock().await;
+        assert_eq!(
+            state.old_ear_detection_status,
+            vec![EarDetectionStatus::OutOfEar]
+        );
+        assert_eq!(
+            state.ear_detection_status,
+            vec![EarDetectionStatus::InEar, EarDetectionStatus::InCase]
+        );
+    }
+
+    #[test]
+    fn captured_information_packet_preserves_all_known_fields() {
+        let packet = hex::decode(concat!(
+            "040004001d0002d5000400416972506f64732050726f004133303438004170706c6520",
+            "496e632e0051584e524848595850360036312e313836383034303030323030303030302e",
+            "323731330036312e313836383034303030323030303030302e3237313300312e302e3000",
+            "636f6d2e6170706c652e6163636573736f72792e757064617465722e6170702e37310048",
+            "59394c5432454632364a59004833504c5748444a32364b3000363335373533360089312a",
+            "6567a5400f84a3ca234947efd40b90d78436ae5946748d70273e66066a25893000353339",
+            "35303630363400"
+        ))
+        .unwrap();
+
+        let info = parse_information_payload(&packet[HEADER_BYTES.len()..]).unwrap();
+
+        assert_eq!(info.name, "AirPods Pro");
+        assert_eq!(info.model_number, "A3048");
+        assert_eq!(info.manufacturer, "Apple Inc.");
+        assert_eq!(info.serial_number, "QXNRHHYXP6");
+        assert_eq!(info.version1, "61.1868040002000000.2713");
+        assert_eq!(info.version2, "61.1868040002000000.2713");
+        assert_eq!(info.hardware_revision, "1.0.0");
+        assert_eq!(
+            info.updater_identifier,
+            "com.apple.accessory.updater.app.71"
+        );
+        assert_eq!(info.left_serial_number, "HY9LT2EF26JY");
+        assert_eq!(info.right_serial_number, "H3PLWHDJ26K0");
+        assert_eq!(info.version3, "6357536");
+    }
+
+    #[test]
+    fn empty_information_fields_do_not_shift_later_fields() {
+        let fields: [&[u8]; INFORMATION_FIELD_COUNT] = [
+            b"AirPods",
+            b"",
+            b"Apple Inc.",
+            b"SERIAL",
+            b"version-1",
+            b"version-2",
+            b"hardware",
+            b"updater",
+            b"left",
+            b"right",
+            b"version-3",
+        ];
+        let packet = information_packet(&fields);
+
+        let info = parse_information_payload(&packet[HEADER_BYTES.len()..]).unwrap();
+
+        assert_eq!(info.name, "AirPods");
+        assert_eq!(info.model_number, "");
+        assert_eq!(info.manufacturer, "Apple Inc.");
+        assert_eq!(info.serial_number, "SERIAL");
+    }
+
+    #[tokio::test]
+    async fn malformed_or_dummy_only_information_does_not_overwrite_state() {
+        let manager = AACPManager::new();
+        let address: Address = "00:11:22:33:44:55".parse().unwrap();
+        {
+            let mut state = manager.state.lock().await;
+            state.airpods_mac = Some(address);
+            state.devices.clear();
+            state.devices.insert(
+                address.to_string(),
+                DeviceData {
+                    name: "Existing name".to_string(),
+                    type_: DeviceType::AirPods,
+                    information: Some(DeviceInformation::AirPods(sample_information(
+                        "Existing name",
+                    ))),
+                },
+            );
+        }
+
+        let malformed_fields: [&[u8]; INFORMATION_FIELD_COUNT] = [
+            b"Replacement",
+            b"A3048",
+            b"\xFF",
+            b"SERIAL",
+            b"version-1",
+            b"version-2",
+            b"hardware",
+            b"updater",
+            b"left",
+            b"right",
+            b"version-3",
+        ];
+        manager
+            .receive_packet(&information_packet(&malformed_fields))
+            .await;
+
+        let dummy_fields: [&[u8]; INFORMATION_FIELD_COUNT] =
+            [b""; INFORMATION_FIELD_COUNT];
+        manager
+            .receive_packet(&information_packet(&dummy_fields))
+            .await;
+
+        let state = manager.state.lock().await;
+        let device = state.devices.get(&address.to_string()).unwrap();
+        assert_eq!(device.name, "Existing name");
+        match device.information.as_ref() {
+            Some(DeviceInformation::AirPods(info)) => {
+                assert_eq!(info.name, "Existing name");
+                assert_eq!(info.le_keys.irk, "irk");
+                assert_eq!(info.le_keys.enc_key, "enc");
+            }
+            _ => panic!("existing AirPods information was overwritten"),
+        }
+    }
+
+    #[tokio::test]
+    async fn connected_devices_accepts_exact_five_byte_prefix_for_zero_devices() {
+        let manager = AACPManager::new();
+        let packet = connected_devices_packet([0x00, 0x00], 0, &[]);
+
+        manager.receive_packet(&packet).await;
+
+        assert!(manager.state.lock().await.connected_devices.is_empty());
+    }
+
+    #[tokio::test]
+    async fn connected_devices_reads_one_device_count_from_payload_byte_four() {
+        let manager = AACPManager::new();
+        let packet = connected_devices_packet(
+            [0x02, 0xD5],
+            1,
+            &[0x00, 0x11, 0x22, 0x33, 0x44, 0x55, 0xA1, 0xB1],
+        );
+
+        manager.receive_packet(&packet).await;
+
+        let state = manager.state.lock().await;
+        assert_eq!(
+            state.connected_devices,
+            vec![ConnectedDevice {
+                mac: "00:11:22:33:44:55".to_string(),
+                info1: 0xA1,
+                info2: 0xB1,
+                r#type: None,
+            }]
+        );
+    }
+
+    #[tokio::test]
+    async fn connected_devices_parses_two_complete_records() {
+        let manager = AACPManager::new();
+        let packet = connected_devices_packet(
+            [0x00, 0x00],
+            2,
+            &[
+                0x00, 0x11, 0x22, 0x33, 0x44, 0x55, 0xA1, 0xB1, 0x66, 0x77, 0x88, 0x99,
+                0xAA, 0xBB, 0xA2, 0xB2,
+            ],
+        );
+
+        manager.receive_packet(&packet).await;
+
+        let state = manager.state.lock().await;
+        assert_eq!(state.connected_devices.len(), 2);
+        assert_eq!(state.connected_devices[0].mac, "00:11:22:33:44:55");
+        assert_eq!(state.connected_devices[1].mac, "66:77:88:99:AA:BB");
+        assert_eq!(state.connected_devices[1].info1, 0xA2);
+        assert_eq!(state.connected_devices[1].info2, 0xB2);
+    }
+
+    #[tokio::test]
+    async fn truncated_connected_devices_packet_does_not_overwrite_state() {
+        let manager = AACPManager::new();
+        let existing = ConnectedDevice {
+            mac: "AA:BB:CC:DD:EE:FF".to_string(),
+            info1: 0x01,
+            info2: 0x02,
+            r#type: Some("Existing".to_string()),
+        };
+        manager.state.lock().await.connected_devices = vec![existing.clone()];
+        let packet = connected_devices_packet(
+            [0x00, 0x00],
+            2,
+            &[0x00, 0x11, 0x22, 0x33, 0x44, 0x55, 0xA1, 0xB1],
+        );
+
+        manager.receive_packet(&packet).await;
+
+        assert_eq!(
+            manager.state.lock().await.connected_devices,
+            vec![existing]
+        );
+    }
+
+    #[tokio::test]
+    async fn smart_routing_response_rejects_short_payload_and_emits_ownership_request() {
+        let manager = AACPManager::new();
+        let (sender, mut events) = mpsc::unbounded_channel();
+        manager.set_event_channel(sender).await;
+
+        let mut truncated = HEADER_BYTES.to_vec();
+        truncated.push(opcodes::SMART_ROUTING_RESP);
+        manager.receive_packet(&truncated).await;
+        assert!(events.try_recv().is_err());
+
+        let request = protocol_packet(
+            opcodes::SMART_ROUTING_RESP,
+            b"audioRoutingSetOwnershipToFalse",
+        );
+        manager.receive_packet(&request).await;
+
+        assert!(matches!(
+            events.try_recv(),
+            Ok(AACPEvent::OwnershipToFalseRequest)
+        ));
+    }
+
+    fn assert_invalid_address(error: Error) {
+        assert!(
+            matches!(&error.kind, bluer::ErrorKind::InvalidAddress(_)),
+            "expected invalid address error, got {error:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn all_smart_routing_builders_reject_malformed_target_addresses() {
+        let manager = AACPManager::new();
+        let valid_mac = "00:11:22:33:44:55";
+        let invalid_mac = "not-a-mac";
+        let short_mac = "00:11:22:33:44";
+
+        assert_invalid_address(
+            manager
+                .send_media_information_new_device(valid_mac, invalid_mac)
+                .await
+                .unwrap_err(),
+        );
+        assert_invalid_address(manager.send_hijack_request(short_mac).await.unwrap_err());
+        assert_invalid_address(
+            manager
+                .send_media_information(valid_mac, invalid_mac, true)
+                .await
+                .unwrap_err(),
+        );
+        assert_invalid_address(
+            manager
+                .send_smart_routing_show_ui(short_mac)
+                .await
+                .unwrap_err(),
+        );
+        assert_invalid_address(manager.send_hijack_reversed(invalid_mac).await.unwrap_err());
+        assert_invalid_address(
+            manager
+                .send_add_tipi_device(valid_mac, short_mac)
+                .await
+                .unwrap_err(),
+        );
+    }
+
+    #[tokio::test]
+    async fn builders_with_self_addresses_reject_malformed_self_addresses() {
+        let manager = AACPManager::new();
+        let valid_mac = "00:11:22:33:44:55";
+
+        assert_invalid_address(
+            manager
+                .send_media_information_new_device("not-a-mac", valid_mac)
+                .await
+                .unwrap_err(),
+        );
+        assert_invalid_address(
+            manager
+                .send_media_information("00:11:22:33:44", valid_mac, true)
+                .await
+                .unwrap_err(),
+        );
+        assert_invalid_address(
+            manager
+                .send_add_tipi_device("not-a-mac", valid_mac)
+                .await
+                .unwrap_err(),
+        );
+    }
+
+    #[tokio::test]
+    async fn smart_routing_builders_match_captured_packets() {
+        let self_mac = "66:77:88:99:aa:bb";
+        let target_mac = "00:11:22:33:44:55";
+
+        let (manager, mut receiver) = manager_with_packet_capture().await;
+        manager
+            .send_media_information_new_device(self_mac, target_mac)
+            .await
+            .unwrap();
+        assert_captured_packet(
+            &mut receiver,
+            concat!(
+                "040004001000554433221100680001e54a706c6179696e67417070424e4152686f737453",
+                "747265616d696e675374617465424e4f496274416464726573735136363a37373a38383a",
+                "39393a41413a42424662744e616d65434d6163586f74686572446576696365417564696f",
+                "43617465676f72793064"
+            ),
+        )
+        .await;
+
+        manager.send_hijack_request(target_mac).await.unwrap();
+        assert_captured_packet(
+            &mut receiver,
+            concat!(
+                "040004001000554433221100620001e54a6c6f63616c73636f7265306446726561736f6e",
+                "4848696a61636b763251617564696f526f7574696e6753636f7265312d015f617564696f",
+                "526f7574696e675365744f776e657273686970546f46616c7365014b72656d6f74657363",
+                "6f7265a5"
+            ),
+        )
+        .await;
+
+        manager
+            .send_media_information(self_mac, target_mac, true)
+            .await
+            .unwrap();
+        assert_captured_packet(
+            &mut receiver,
+            concat!(
+                "040004001000554433221100820001e54a506c6179696e6741707056636f6d2e676f6f67",
+                "6c652e696f732e796f757475626552486f737453747265616d696e675374617465425945",
+                "53496274416464726573735136363a37373a38383a39393a41413a424262744e616d6543",
+                "4d6163586f74686572446576696365417564696f43617465676f7279312d010000000000"
+            ),
+        )
+        .await;
+
+        manager
+            .send_smart_routing_show_ui(target_mac)
+            .await
+            .unwrap();
+        assert_captured_packet(
+            &mut receiver,
+            concat!(
+                "0400040010005544332211007e0001e65b536d617274526f7574696e674b657953686f77",
+                "4e65617262795549014a6c6f63616c73636f7265312d0146726561736f6e4868696a6163",
+                "6b763251617564696f526f7574696e6753636f7265a25f617564696f526f7574696e6753",
+                "65744f776e657273686970546f46616c7365014b72656d6f746573636f7265a2"
+            ),
+        )
+        .await;
+
+        manager.send_hijack_reversed(target_mac).await.unwrap();
+        assert_captured_packet(
+            &mut receiver,
+            concat!(
+                "040004001000554433221100590001e35f617564696f526f7574696e675365744f776e65",
+                "7273686970546f46616c73650159617564696f526f7574696e6753686f77526576657273",
+                "6555490146726561736f6e535265766572736542616e6e6572546170706564"
+            ),
+        )
+        .await;
+
+        manager
+            .send_add_tipi_device(self_mac, target_mac)
+            .await
+            .unwrap();
+        assert_captured_packet(
+            &mut receiver,
+            concat!(
+                "0400040010005544332211004e0001e5486969646c6554696d6508476e65775469706901",
+                "496274416464726573735136363a37373a38383a39393a41413a42424662744e616d6543",
+                "4d6163506e6561726279417564696f53636f72650e"
+            ),
+        )
+        .await;
+    }
 }
