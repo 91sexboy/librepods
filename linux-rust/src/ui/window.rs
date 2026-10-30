@@ -70,6 +70,10 @@ fn main_window_settings() -> window::Settings {
     settings.min_size = Some(Size::new(400.0, 300.0));
     settings.visible = true;
     settings.icon = window_icon();
+    #[cfg(target_os = "linux")]
+    {
+        settings.platform_specific.application_id = "librepods".to_owned();
+    }
     settings
 }
 
