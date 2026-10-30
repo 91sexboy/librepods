@@ -1,7 +1,7 @@
 use crate::bluetooth::aacp::{AACPManager, ControlCommandIdentifiers, EarDetectionStatus};
 use dbus::arg::RefArg;
 use dbus::blocking::Connection;
-use dbus::blocking::stdintf::org_freedesktop_dbus::Properties;
+use dbus::blocking::stdintf::org_freedesktop_dbus::{ObjectManager, Properties};
 use libpulse_binding::callbacks::ListResult;
 use libpulse_binding::context::introspect::SinkInfo;
 use libpulse_binding::context::{Context, FlagSet as ContextFlagSet};
@@ -63,6 +63,10 @@ const A2DP_POST_RESTART_BACKOFF: [Duration; 4] = [
     Duration::from_secs(3),
     Duration::from_secs(4),
 ];
+const BLUEZ_DBUS_TIMEOUT: Duration = Duration::from_secs(5);
+const BLUEZ_DESTINATION: &str = "org.bluez";
+const BLUEZ_DEVICE_INTERFACE: &str = "org.bluez.Device1";
+const A2DP_SINK_UUID: &str = "0000110b-0000-1000-8000-00805f9b34fb";
 
 type A2dpRecoveryFuture<'a, Output> =
     std::pin::Pin<Box<dyn std::future::Future<Output = Output> + Send + 'a>>;
@@ -77,7 +81,7 @@ trait A2dpActivationOperations: A2dpRecoveryOperations {
     fn resolve_device_index(
         &mut self,
     ) -> A2dpRecoveryFuture<'_, Result<u32, ProfileOperationError>>;
-    fn request_a2dp_connection(&mut self) -> A2dpRecoveryFuture<'_, ()>;
+    fn request_a2dp_connection(&mut self) -> A2dpRecoveryFuture<'_, Result<(), String>>;
     fn get_active_profile(&mut self, card_index: u32) -> A2dpRecoveryFuture<'_, Option<String>>;
     fn is_a2dp_profile_available(&mut self) -> A2dpRecoveryFuture<'_, bool>;
     fn current_device_index(
@@ -164,7 +168,12 @@ where
 {
     let initial_device_index = match operations.resolve_device_index().await {
         Ok(device_index) => Some(device_index),
-        Err(ProfileOperationError::AudioDeviceNotFound) => None,
+        Err(ProfileOperationError::AudioDeviceNotFound) => {
+            if let Err(error) = operations.request_a2dp_connection().await {
+                warn!("Failed to request an A2DP connection from BlueZ: {}", error);
+            }
+            None
+        }
         Err(error) => return Err(error),
     };
 
@@ -333,6 +342,52 @@ fn normalized_mac(value: &str) -> String {
         .collect()
 }
 
+fn bluez_device_path_for_mac<'a>(
+    target_mac: &str,
+    devices: impl IntoIterator<Item = (&'a str, &'a str)>,
+) -> Option<String> {
+    let target_mac = normalized_mac(target_mac);
+    if target_mac.is_empty() {
+        return None;
+    }
+
+    devices.into_iter().find_map(|(path, address)| {
+        (normalized_mac(address) == target_mac).then(|| path.to_owned())
+    })
+}
+
+fn request_a2dp_connection_sync(mac: &str) -> Result<(), String> {
+    let connection = Connection::new_system()
+        .map_err(|error| format!("could not connect to the system D-Bus: {error}"))?;
+    let object_manager = connection.with_proxy(BLUEZ_DESTINATION, "/", BLUEZ_DBUS_TIMEOUT);
+    let objects = object_manager
+        .get_managed_objects()
+        .map_err(|error| format!("BlueZ GetManagedObjects failed: {error}"))?;
+    let devices: Vec<(String, String)> = objects
+        .iter()
+        .filter_map(|(path, interfaces)| {
+            let address = interfaces
+                .get(BLUEZ_DEVICE_INTERFACE)?
+                .get("Address")?
+                .0
+                .as_str()?;
+            Some((path.to_string(), address.to_owned()))
+        })
+        .collect();
+    let device_path = bluez_device_path_for_mac(
+        mac,
+        devices
+            .iter()
+            .map(|(path, address)| (path.as_str(), address.as_str())),
+    )
+    .ok_or_else(|| format!("BlueZ has no Device1 object for {mac}"))?;
+
+    let device = connection.with_proxy(BLUEZ_DESTINATION, device_path, BLUEZ_DBUS_TIMEOUT);
+    device
+        .method_call::<(), _, _, _>(BLUEZ_DEVICE_INTERFACE, "ConnectProfile", (A2DP_SINK_UUID,))
+        .map_err(|error| format!("BlueZ ConnectProfile(A2DP) failed for {mac}: {error}"))
+}
+
 #[derive(Clone)]
 struct PlaybackListenerEntry {
     generation: u64,
@@ -466,6 +521,7 @@ struct MediaControllerState {
     paused_by_app_services: Vec<String>,
     device_index: Option<u32>,
     cached_a2dp_profile: String,
+    a2dp_connection_requested: bool,
     old_in_ear_data: Vec<bool>,
     user_played_the_media: bool,
     i_paused_the_media: bool,
@@ -484,6 +540,7 @@ impl MediaControllerState {
             paused_by_app_services: Vec::new(),
             device_index: None,
             cached_a2dp_profile: String::new(),
+            a2dp_connection_requested: false,
             old_in_ear_data: vec![false, false],
             user_played_the_media: false,
             i_paused_the_media: false,
@@ -547,8 +604,16 @@ impl A2dpActivationOperations for MediaControllerA2dpOperations<'_> {
         })
     }
 
-    fn request_a2dp_connection(&mut self) -> A2dpRecoveryFuture<'_, ()> {
-        Box::pin(async {})
+    fn request_a2dp_connection(&mut self) -> A2dpRecoveryFuture<'_, Result<(), String>> {
+        let controller = self.controller;
+        let expected_mac = self.expected_mac;
+        Box::pin(async move {
+            controller
+                .request_a2dp_connection_once_with(expected_mac, |mac| {
+                    request_a2dp_connection_sync(&mac)
+                })
+                .await
+        })
     }
 
     fn get_active_profile(&mut self, card_index: u32) -> A2dpRecoveryFuture<'_, Option<String>> {
@@ -1108,6 +1173,36 @@ impl MediaController {
             expected_mac: &mac,
         };
         activate_a2dp_profile_with_operations(&mut operations).await
+    }
+
+    async fn request_a2dp_connection_once_with<Request>(
+        &self,
+        expected_mac: &str,
+        request: Request,
+    ) -> Result<(), String>
+    where
+        Request: FnOnce(String) -> Result<(), String> + Send + 'static,
+    {
+        {
+            let mut state = self.state.lock().await;
+            if state.connected_device_mac != expected_mac {
+                return Err("connected device changed before the A2DP request".into());
+            }
+            if state.a2dp_connection_requested {
+                debug!("A2DP was already requested for this media controller connection");
+                return Ok(());
+            }
+            state.a2dp_connection_requested = true;
+        }
+
+        info!(
+            "Requesting an A2DP connection from BlueZ for {}",
+            expected_mac
+        );
+        let mac = expected_mac.to_owned();
+        tokio::task::spawn_blocking(move || request(mac))
+            .await
+            .map_err(|error| format!("A2DP request worker stopped: {error}"))?
     }
 
     async fn resolve_device_index<Lookup>(
@@ -1995,6 +2090,7 @@ mod tests {
         preferred_profile: String,
         current_device_index: Option<u32>,
         restart_result: bool,
+        request_result: Result<(), String>,
         actions: Vec<ActivationAction>,
     }
 
@@ -2012,6 +2108,7 @@ mod tests {
                 preferred_profile: "a2dp-sink".into(),
                 current_device_index: None,
                 restart_result,
+                request_result: Ok(()),
                 actions: Vec::new(),
             }
         }
@@ -2067,9 +2164,10 @@ mod tests {
             Box::pin(async move { result })
         }
 
-        fn request_a2dp_connection(&mut self) -> A2dpRecoveryFuture<'_, ()> {
+        fn request_a2dp_connection(&mut self) -> A2dpRecoveryFuture<'_, Result<(), String>> {
             self.actions.push(ActivationAction::RequestA2dpConnection);
-            Box::pin(async {})
+            let result = self.request_result.clone();
+            Box::pin(async move { result })
         }
 
         fn get_active_profile(
@@ -2600,6 +2698,7 @@ mod tests {
             operations.actions,
             vec![
                 ActivationAction::ResolveDeviceIndex,
+                ActivationAction::RequestA2dpConnection,
                 ActivationAction::Sleep(Duration::from_secs(2)),
                 ActivationAction::Probe,
                 ActivationAction::CurrentDeviceIndex,
@@ -2681,6 +2780,106 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn existing_audio_card_does_not_request_a2dp_connection() {
+        let mut operations =
+            RecordingActivationOperations::new([Some(42), Some(42)], [true], Some("off"), false);
+
+        let result = activate_a2dp_profile_with_operations(&mut operations).await;
+
+        assert_eq!(result, Ok(()));
+        assert!(
+            !operations
+                .actions
+                .contains(&ActivationAction::RequestA2dpConnection)
+        );
+    }
+
+    #[tokio::test]
+    async fn a2dp_request_error_still_runs_bounded_recovery() {
+        let mut operations = RecordingActivationOperations::new(
+            [None, Some(42), Some(42)],
+            [true],
+            Some("off"),
+            false,
+        );
+        operations.request_result = Err("injected BlueZ failure".into());
+
+        let result = activate_a2dp_profile_with_operations(&mut operations).await;
+
+        assert_eq!(result, Ok(()));
+        assert_eq!(
+            &operations.actions[..3],
+            &[
+                ActivationAction::ResolveDeviceIndex,
+                ActivationAction::RequestA2dpConnection,
+                ActivationAction::Sleep(Duration::from_secs(2)),
+            ]
+        );
+        assert!(operations.actions.contains(&ActivationAction::Probe));
+    }
+
+    #[tokio::test]
+    async fn media_controller_requests_a2dp_once_across_repeated_misses() {
+        let controller = controller();
+        let requests = Arc::new(AtomicUsize::new(0));
+        let first_requests = requests.clone();
+        let second_requests = requests.clone();
+
+        let (first, second) = tokio::join!(
+            controller.request_a2dp_connection_once_with(CONNECTED_MAC, move |_| {
+                first_requests.fetch_add(1, Ordering::SeqCst);
+                Ok(())
+            }),
+            controller.request_a2dp_connection_once_with(CONNECTED_MAC, move |_| {
+                second_requests.fetch_add(1, Ordering::SeqCst);
+                Ok(())
+            }),
+        );
+
+        assert_eq!(first, Ok(()));
+        assert_eq!(second, Ok(()));
+        assert_eq!(requests.load(Ordering::SeqCst), 1);
+
+        let later_requests = requests.clone();
+        assert_eq!(
+            controller
+                .request_a2dp_connection_once_with(CONNECTED_MAC, move |_| {
+                    later_requests.fetch_add(1, Ordering::SeqCst);
+                    Ok(())
+                })
+                .await,
+            Ok(())
+        );
+        assert_eq!(requests.load(Ordering::SeqCst), 1);
+
+        let replacement_controller = controller();
+        let replacement_requests = requests.clone();
+        assert_eq!(
+            replacement_controller
+                .request_a2dp_connection_once_with(CONNECTED_MAC, move |_| {
+                    replacement_requests.fetch_add(1, Ordering::SeqCst);
+                    Ok(())
+                })
+                .await,
+            Ok(())
+        );
+        assert_eq!(requests.load(Ordering::SeqCst), 2);
+    }
+
+    #[test]
+    fn bluez_device_path_selection_matches_address_across_adapters() {
+        let devices = [
+            ("/org/bluez/hci0/dev_11_22_33_44_55_66", "11:22:33:44:55:66"),
+            ("/org/bluez/hci1/dev_AA_BB_CC_DD_EE_FF", "AA:BB:CC:DD:EE:FF"),
+        ];
+
+        assert_eq!(
+            bluez_device_path_for_mac("aa-bb-cc-dd-ee-ff", devices),
+            Some("/org/bluez/hci1/dev_AA_BB_CC_DD_EE_FF".into())
+        );
+    }
+
+    #[tokio::test]
     async fn persistent_initial_lookup_miss_stays_bounded_and_returns_error() {
         let mut operations = RecordingActivationOperations::new(
             std::iter::repeat(None).take(7),
@@ -2696,6 +2895,7 @@ mod tests {
             operations.actions,
             vec![
                 ActivationAction::ResolveDeviceIndex,
+                ActivationAction::RequestA2dpConnection,
                 ActivationAction::Sleep(Duration::from_secs(2)),
                 ActivationAction::Probe,
                 ActivationAction::Restart,
