@@ -77,6 +77,7 @@ trait A2dpActivationOperations: A2dpRecoveryOperations {
     fn resolve_device_index(
         &mut self,
     ) -> A2dpRecoveryFuture<'_, Result<u32, ProfileOperationError>>;
+    fn request_a2dp_connection(&mut self) -> A2dpRecoveryFuture<'_, ()>;
     fn get_active_profile(&mut self, card_index: u32) -> A2dpRecoveryFuture<'_, Option<String>>;
     fn is_a2dp_profile_available(&mut self) -> A2dpRecoveryFuture<'_, bool>;
     fn current_device_index(
@@ -544,6 +545,10 @@ impl A2dpActivationOperations for MediaControllerA2dpOperations<'_> {
                 )
                 .await
         })
+    }
+
+    fn request_a2dp_connection(&mut self) -> A2dpRecoveryFuture<'_, ()> {
+        Box::pin(async {})
     }
 
     fn get_active_profile(&mut self, card_index: u32) -> A2dpRecoveryFuture<'_, Option<String>> {
@@ -1972,6 +1977,7 @@ mod tests {
     #[derive(Clone, Debug, PartialEq, Eq)]
     enum ActivationAction {
         ResolveDeviceIndex,
+        RequestA2dpConnection,
         ActiveProfile(u32),
         ProfileAvailable,
         CurrentDeviceIndex,
@@ -2059,6 +2065,11 @@ mod tests {
                 Err(error) => Err(error),
             };
             Box::pin(async move { result })
+        }
+
+        fn request_a2dp_connection(&mut self) -> A2dpRecoveryFuture<'_, ()> {
+            self.actions.push(ActivationAction::RequestA2dpConnection);
+            Box::pin(async {})
         }
 
         fn get_active_profile(
@@ -2610,6 +2621,55 @@ mod tests {
                 .count(),
             0
         );
+        assert_eq!(
+            operations
+                .actions
+                .iter()
+                .filter(|action| matches!(action, ActivationAction::SwitchProfile { .. }))
+                .count(),
+            1
+        );
+    }
+
+    #[tokio::test]
+    async fn initial_lookup_miss_requests_a2dp_once_then_switches_recovered_card_once() {
+        let mut operations = RecordingActivationOperations::new(
+            [None, Some(42), Some(42)],
+            [true],
+            Some("off"),
+            false,
+        );
+
+        let result = activate_a2dp_profile_with_operations(&mut operations).await;
+
+        assert_eq!(result, Ok(()));
+        assert_eq!(
+            operations
+                .actions
+                .iter()
+                .filter(|action| matches!(action, ActivationAction::RequestA2dpConnection))
+                .count(),
+            1,
+            "initial missing card must request A2DP exactly once"
+        );
+        assert_eq!(
+            operations.actions,
+            vec![
+                ActivationAction::ResolveDeviceIndex,
+                ActivationAction::RequestA2dpConnection,
+                ActivationAction::Sleep(Duration::from_secs(2)),
+                ActivationAction::Probe,
+                ActivationAction::CurrentDeviceIndex,
+                ActivationAction::ActiveProfile(42),
+                ActivationAction::PreferredProfile,
+                ActivationAction::ResolveDeviceIndex,
+                ActivationAction::SwitchProfile {
+                    card_index: 42,
+                    profile: "a2dp-sink".into(),
+                },
+            ]
+        );
+        assert_eq!(operations.current_device_index, Some(42));
         assert_eq!(
             operations
                 .actions
