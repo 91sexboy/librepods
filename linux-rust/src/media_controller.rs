@@ -734,6 +734,20 @@ impl MediaController {
         }
     }
 
+    pub(crate) fn is_current_playback_session(&self) -> bool {
+        let listener_generation = self
+            .playback_listener_generation
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone();
+        listener_generation.is_some_and(|listener_generation| {
+            self.playback_listeners.is_current(
+                &listener_generation.device_mac,
+                listener_generation.generation,
+            )
+        })
+    }
+
     pub async fn start_playback_listener(&self, aacp_manager: AACPManager) {
         self.start_playback_listener_with_activation(aacp_manager, |controller| async move {
             controller.activate_a2dp_profile().await
@@ -1236,6 +1250,16 @@ impl MediaController {
     {
         let _activation_guard = self.a2dp_activation_lock.lock().await;
         activation.await
+    }
+
+    async fn run_a2dp_deactivation<Deactivation>(
+        &self,
+        deactivation: Deactivation,
+    ) -> ProfileOperationResult
+    where
+        Deactivation: std::future::Future<Output = ProfileOperationResult> + Send,
+    {
+        deactivation.await
     }
 
     #[cfg(test)]
@@ -2494,6 +2518,84 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn activation_and_deactivation_share_one_profile_operation_gate() {
+        let controller = controller();
+        let (activation_started_tx, activation_started_rx) = oneshot::channel();
+        let (release_activation_tx, release_activation_rx) = oneshot::channel();
+        let activation_controller = controller.clone();
+        let activation = tokio::spawn(async move {
+            activation_controller
+                .run_a2dp_activation(async move {
+                    activation_started_tx
+                        .send(())
+                        .expect("activation start receiver dropped");
+                    release_activation_rx
+                        .await
+                        .expect("activation release sender dropped");
+                    Ok(())
+                })
+                .await
+        });
+
+        timeout(Duration::from_secs(1), activation_started_rx)
+            .await
+            .expect("activation did not start")
+            .expect("activation start sender dropped");
+
+        let (deactivation_started_tx, mut deactivation_started_rx) = oneshot::channel();
+        let (deactivation_polled_tx, deactivation_polled_rx) = oneshot::channel();
+        let deactivation_controller = controller.clone();
+        let deactivation = tokio::spawn(async move {
+            let mut pipeline = Box::pin(async move {
+                deactivation_controller
+                    .run_a2dp_deactivation(async move {
+                        let _ = deactivation_started_tx.send(());
+                        Ok(())
+                    })
+                    .await
+            });
+            let mut deactivation_polled_tx = Some(deactivation_polled_tx);
+            std::future::poll_fn(move |context| {
+                let result = std::future::Future::poll(pipeline.as_mut(), context);
+                if let Some(deactivation_polled_tx) = deactivation_polled_tx.take() {
+                    let _ = deactivation_polled_tx.send(());
+                }
+                result
+            })
+            .await
+        });
+        timeout(Duration::from_secs(1), deactivation_polled_rx)
+            .await
+            .expect("deactivation was not polled")
+            .expect("deactivation poll sender dropped");
+        let deactivation_started_before_release = match deactivation_started_rx.try_recv() {
+            Ok(()) => true,
+            Err(oneshot::error::TryRecvError::Empty) => false,
+            Err(oneshot::error::TryRecvError::Closed) => {
+                panic!("deactivation start sender dropped")
+            }
+        };
+
+        release_activation_tx
+            .send(())
+            .expect("activation release receiver dropped");
+        let (activation_result, deactivation_result) = timeout(Duration::from_secs(1), async {
+            tokio::join!(activation, deactivation)
+        })
+        .await
+        .expect("activation and deactivation did not finish");
+        assert_eq!(activation_result.expect("activation task failed"), Ok(()));
+        assert_eq!(
+            deactivation_result.expect("deactivation task failed"),
+            Ok(())
+        );
+        assert!(
+            !deactivation_started_before_release,
+            "deactivation entered while activation held the profile-operation gate"
+        );
+    }
+
+    #[tokio::test]
     async fn stale_listener_generation_skips_blocking_profile_action() {
         let playback_listeners = PlaybackListenerRegistry::default();
         let first_listener = tokio::spawn(std::future::pending::<()>());
@@ -2574,6 +2676,37 @@ mod tests {
         })
         .await
         .expect("listener future was not polled after activation failure");
+    }
+
+    #[tokio::test]
+    async fn controller_session_predicate_tracks_same_mac_listener_replacement() {
+        let playback_listeners = PlaybackListenerRegistry::default();
+        let first = controller_with_listener_registry(CONNECTED_MAC, playback_listeners.clone());
+        first
+            .start_playback_listener_without_initial_activation(AACPManager::new())
+            .await;
+        let first_listener = playback_listeners
+            .current_entry(CONNECTED_MAC)
+            .expect("first playback listener was not registered");
+        assert!(first.is_current_playback_session());
+
+        let replacement =
+            controller_with_listener_registry("aa-bb-cc-dd-ee-ff", playback_listeners.clone());
+        replacement
+            .start_playback_listener_without_initial_activation(AACPManager::new())
+            .await;
+        let replacement_listener = playback_listeners
+            .current_entry(CONNECTED_MAC)
+            .expect("replacement playback listener was not registered");
+
+        wait_until_finished(&first_listener.abort_handle).await;
+        assert!(!first.is_current_playback_session());
+        assert!(replacement.is_current_playback_session());
+
+        assert!(
+            playback_listeners.remove_if_current(CONNECTED_MAC, replacement_listener.generation)
+        );
+        replacement_listener.abort_handle.abort();
     }
 
     #[tokio::test]

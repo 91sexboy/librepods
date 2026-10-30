@@ -805,6 +805,14 @@ impl AACPManager {
         })
     }
 
+    pub(crate) async fn is_connection_generation_current(
+        &self,
+        connection_generation: u64,
+    ) -> bool {
+        let state = self.state.lock().await;
+        Self::packet_generation_is_current(&state, Some(connection_generation))
+    }
+
     async fn receive_packet_inner(&self, packet: &[u8], expected_generation: Option<u64>) {
         if !packet.starts_with(&HEADER_BYTES) {
             debug!(
@@ -1776,6 +1784,23 @@ mod tests {
             vec![EarDetectionStatus::OutOfEar]
         );
         assert!(events.try_recv().is_err());
+    }
+
+    #[tokio::test]
+    async fn connection_generation_query_requires_matching_live_connection() {
+        let manager = AACPManager::new();
+        let (sender, _receiver) = mpsc::channel(1);
+        let generation = manager.install_connection(sender, None).await;
+
+        assert!(manager.is_connection_generation_current(generation).await);
+        assert!(
+            !manager
+                .is_connection_generation_current(generation.wrapping_add(1))
+                .await
+        );
+
+        assert!(manager.clear_connection_if_current(generation).await);
+        assert!(!manager.is_connection_generation_current(generation).await);
     }
 
     #[tokio::test]

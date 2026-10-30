@@ -14,17 +14,66 @@ use tokio::time::{Duration, sleep};
 
 const OWNERSHIP_ACKNOWLEDGEMENT_TIMEOUT: Duration = Duration::from_secs(1);
 
-async fn cleanup_then_bounded_acknowledgement<Cleanup, Acknowledgement, Error>(
-    cleanup: Cleanup,
+async fn guarded_ownership_cleanup<
+    CurrentBeforePause,
+    Pause,
+    CurrentBeforeDeactivation,
+    Deactivation,
+>(
+    current_before_pause: CurrentBeforePause,
+    pause: Pause,
+    current_before_deactivation: CurrentBeforeDeactivation,
+    deactivation: Deactivation,
+) -> bool
+where
+    CurrentBeforePause: std::future::Future<Output = bool>,
+    Pause: std::future::Future<Output = ()>,
+    CurrentBeforeDeactivation: std::future::Future<Output = bool>,
+    Deactivation: std::future::Future<Output = ()>,
+{
+    let _ = current_before_pause.await;
+    pause.await;
+    let _ = current_before_deactivation.await;
+    deactivation.await;
+    true
+}
+
+async fn cleanup_then_bounded_acknowledgement<
+    CurrentBeforePause,
+    Pause,
+    CurrentBeforeDeactivation,
+    Deactivation,
+    CurrentBeforeAcknowledgement,
+    Acknowledgement,
+    Error,
+>(
+    current_before_pause: CurrentBeforePause,
+    pause: Pause,
+    current_before_deactivation: CurrentBeforeDeactivation,
+    deactivation: Deactivation,
+    current_before_acknowledgement: CurrentBeforeAcknowledgement,
     acknowledgement: Acknowledgement,
     timeout: Duration,
-) -> Result<Result<(), Error>, tokio::time::error::Elapsed>
+) -> Result<Option<Result<(), Error>>, tokio::time::error::Elapsed>
 where
-    Cleanup: std::future::Future<Output = ()>,
+    CurrentBeforePause: std::future::Future<Output = bool>,
+    Pause: std::future::Future<Output = ()>,
+    CurrentBeforeDeactivation: std::future::Future<Output = bool>,
+    Deactivation: std::future::Future<Output = ()>,
+    CurrentBeforeAcknowledgement: std::future::Future<Output = bool>,
     Acknowledgement: std::future::Future<Output = Result<(), Error>>,
 {
-    cleanup.await;
-    tokio::time::timeout(timeout, acknowledgement).await
+    guarded_ownership_cleanup(
+        current_before_pause,
+        pause,
+        current_before_deactivation,
+        deactivation,
+    )
+    .await;
+    let _ = current_before_acknowledgement.await;
+    tokio::time::timeout(timeout, acknowledgement)
+        .await
+        .map(Some)
 }
 
 pub struct AirPodsDevice {
@@ -365,10 +414,13 @@ impl AirPodsDevice {
                         info!(
                             "Received ownership to false request. Pausing media before acknowledging ownership loss."
                         );
-                        let cleanup = async {
-                            let controller = mc_clone.lock().await;
-                            controller.pause_all_media().await;
-                            if let Err(error) = controller.deactivate_a2dp_profile().await {
+                        let pause = async {
+                            mc_clone.lock().await.pause_all_media().await;
+                        };
+                        let deactivation = async {
+                            if let Err(error) =
+                                mc_clone.lock().await.deactivate_a2dp_profile().await
+                            {
                                 error!(
                                     "Failed to deactivate A2DP after ownership request: {:?}",
                                     error
@@ -382,16 +434,21 @@ impl AirPodsDevice {
                                 connection_generation,
                             );
                         match cleanup_then_bounded_acknowledgement(
-                            cleanup,
+                            async { true },
+                            pause,
+                            async { true },
+                            deactivation,
+                            async { true },
                             acknowledgement,
                             OWNERSHIP_ACKNOWLEDGEMENT_TIMEOUT,
                         )
                         .await
                         {
-                            Ok(Ok(())) => {}
-                            Ok(Err(error)) => {
+                            Ok(Some(Ok(()))) => {}
+                            Ok(Some(Err(error))) => {
                                 error!("Failed to relinquish AACP ownership: {}", error)
                             }
+                            Ok(None) => {}
                             Err(_) => error!(
                                 "Timed out while acknowledging AACP ownership relinquishment"
                             ),
@@ -467,13 +524,20 @@ mod tests {
     #[tokio::test]
     async fn ownership_cleanup_finishes_before_acknowledgement_is_polled() {
         let actions = Arc::new(StdMutex::new(Vec::new()));
-        let cleanup_actions = Arc::clone(&actions);
+        let pause_actions = Arc::clone(&actions);
+        let deactivation_actions = Arc::clone(&actions);
         let acknowledgement_actions = Arc::clone(&actions);
 
         let outcome = cleanup_then_bounded_acknowledgement(
+            async { true },
             async move {
-                cleanup_actions.lock().unwrap().push("cleanup");
+                pause_actions.lock().unwrap().push("pause");
             },
+            async { true },
+            async move {
+                deactivation_actions.lock().unwrap().push("deactivation");
+            },
+            async { true },
             async move {
                 acknowledgement_actions
                     .lock()
@@ -485,10 +549,10 @@ mod tests {
         )
         .await;
 
-        assert!(matches!(outcome, Ok(Ok(()))));
+        assert!(matches!(outcome, Ok(Some(Ok(())))));
         assert_eq!(
             actions.lock().unwrap().as_slice(),
-            ["cleanup", "acknowledgement"]
+            ["pause", "deactivation", "acknowledgement"]
         );
     }
 
@@ -498,9 +562,13 @@ mod tests {
         let cleanup_flag = Arc::clone(&cleanup_finished);
 
         let outcome = cleanup_then_bounded_acknowledgement(
+            async { true },
+            async {},
+            async { true },
             async move {
                 cleanup_flag.store(true, Ordering::SeqCst);
             },
+            async { true },
             std::future::pending::<Result<(), &'static str>>(),
             Duration::from_millis(10),
         )
@@ -508,5 +576,113 @@ mod tests {
 
         assert!(outcome.is_err());
         assert!(cleanup_finished.load(Ordering::SeqCst));
+    }
+
+    #[tokio::test]
+    async fn stale_ownership_request_before_pause_skips_all_side_effects() {
+        let actions = Arc::new(StdMutex::new(Vec::new()));
+        let pause_actions = Arc::clone(&actions);
+        let deactivation_actions = Arc::clone(&actions);
+        let acknowledgement_actions = Arc::clone(&actions);
+
+        let outcome = cleanup_then_bounded_acknowledgement(
+            async { false },
+            async move {
+                pause_actions.lock().unwrap().push("pause");
+            },
+            async { true },
+            async move {
+                deactivation_actions.lock().unwrap().push("deactivation");
+            },
+            async { true },
+            async move {
+                acknowledgement_actions
+                    .lock()
+                    .unwrap()
+                    .push("acknowledgement");
+                Ok::<(), &'static str>(())
+            },
+            Duration::from_millis(50),
+        )
+        .await;
+
+        assert!(matches!(outcome, Ok(None)));
+        assert!(actions.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn replaced_media_session_after_pause_skips_deactivation_and_acknowledgement() {
+        let session_current = Arc::new(AtomicBool::new(true));
+        let session_before_pause = Arc::clone(&session_current);
+        let session_during_pause = Arc::clone(&session_current);
+        let session_before_deactivation = Arc::clone(&session_current);
+        let actions = Arc::new(StdMutex::new(Vec::new()));
+        let pause_actions = Arc::clone(&actions);
+        let deactivation_actions = Arc::clone(&actions);
+        let acknowledgement_actions = Arc::clone(&actions);
+
+        let outcome = cleanup_then_bounded_acknowledgement(
+            async move { session_before_pause.load(Ordering::SeqCst) },
+            async move {
+                pause_actions.lock().unwrap().push("pause");
+                session_during_pause.store(false, Ordering::SeqCst);
+            },
+            async move { session_before_deactivation.load(Ordering::SeqCst) },
+            async move {
+                deactivation_actions.lock().unwrap().push("deactivation");
+            },
+            async { true },
+            async move {
+                acknowledgement_actions
+                    .lock()
+                    .unwrap()
+                    .push("acknowledgement");
+                Ok::<(), &'static str>(())
+            },
+            Duration::from_millis(50),
+        )
+        .await;
+
+        assert!(matches!(outcome, Ok(None)));
+        assert_eq!(actions.lock().unwrap().as_slice(), ["pause"]);
+    }
+
+    #[tokio::test]
+    async fn stale_connection_before_acknowledgement_does_not_acknowledge_replacement() {
+        let connection_current = Arc::new(AtomicBool::new(true));
+        let connection_during_deactivation = Arc::clone(&connection_current);
+        let connection_before_acknowledgement = Arc::clone(&connection_current);
+        let actions = Arc::new(StdMutex::new(Vec::new()));
+        let pause_actions = Arc::clone(&actions);
+        let deactivation_actions = Arc::clone(&actions);
+        let acknowledgement_actions = Arc::clone(&actions);
+
+        let outcome = cleanup_then_bounded_acknowledgement(
+            async { true },
+            async move {
+                pause_actions.lock().unwrap().push("pause");
+            },
+            async { true },
+            async move {
+                deactivation_actions.lock().unwrap().push("deactivation");
+                connection_during_deactivation.store(false, Ordering::SeqCst);
+            },
+            async move { connection_before_acknowledgement.load(Ordering::SeqCst) },
+            async move {
+                acknowledgement_actions
+                    .lock()
+                    .unwrap()
+                    .push("acknowledgement");
+                Ok::<(), &'static str>(())
+            },
+            Duration::from_millis(50),
+        )
+        .await;
+
+        assert!(matches!(outcome, Ok(None)));
+        assert_eq!(
+            actions.lock().unwrap().as_slice(),
+            ["pause", "deactivation"]
+        );
     }
 }
