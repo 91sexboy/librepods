@@ -73,6 +73,23 @@ trait A2dpRecoveryOperations: Send {
     fn sleep(&mut self, duration: Duration) -> A2dpRecoveryFuture<'_, ()>;
 }
 
+trait A2dpActivationOperations: A2dpRecoveryOperations {
+    fn resolve_device_index(
+        &mut self,
+    ) -> A2dpRecoveryFuture<'_, Result<u32, ProfileOperationError>>;
+    fn get_active_profile(&mut self, card_index: u32) -> A2dpRecoveryFuture<'_, Option<String>>;
+    fn is_a2dp_profile_available(&mut self) -> A2dpRecoveryFuture<'_, bool>;
+    fn current_device_index(
+        &mut self,
+    ) -> A2dpRecoveryFuture<'_, Result<u32, ProfileOperationError>>;
+    fn get_preferred_a2dp_profile(&mut self) -> A2dpRecoveryFuture<'_, String>;
+    fn switch_profile(
+        &mut self,
+        card_index: u32,
+        profile: String,
+    ) -> A2dpRecoveryFuture<'_, ProfileOperationResult>;
+}
+
 async fn recover_a2dp_profile<Operations>(operations: &mut Operations) -> ProfileOperationResult
 where
     Operations: A2dpRecoveryOperations + ?Sized,
@@ -106,6 +123,114 @@ where
 
     error!("A2DP profile still not available after WirePlumber restart");
     Err(ProfileOperationError::A2dpProfileUnavailable)
+}
+
+async fn active_a2dp_profile_is_current<Operations>(
+    operations: &mut Operations,
+    device_index: u32,
+) -> Result<bool, ProfileOperationError>
+where
+    Operations: A2dpActivationOperations + ?Sized,
+{
+    let Some(active_profile) = operations.get_active_profile(device_index).await else {
+        return Ok(false);
+    };
+    if should_switch_to_a2dp_profile(Some(active_profile.as_str())) {
+        return Ok(false);
+    }
+
+    let current_device_index = operations.current_device_index().await?;
+    if current_device_index == device_index {
+        info!(
+            "A2DP profile {} already active, not switching",
+            active_profile
+        );
+        return Ok(true);
+    }
+
+    debug!(
+        "Ignoring active profile {} from stale audio device index {}; current index is {}",
+        active_profile, device_index, current_device_index
+    );
+    Ok(false)
+}
+
+async fn activate_a2dp_profile_with_operations<Operations>(
+    operations: &mut Operations,
+) -> ProfileOperationResult
+where
+    Operations: A2dpActivationOperations + ?Sized,
+{
+    let initial_device_index = match operations.resolve_device_index().await {
+        Ok(device_index) => Some(device_index),
+        Err(ProfileOperationError::AudioDeviceNotFound) => None,
+        Err(error) => return Err(error),
+    };
+
+    if let Some(device_index) = initial_device_index
+        && active_a2dp_profile_is_current(operations, device_index).await?
+    {
+        return Ok(());
+    }
+
+    let needs_recovery = match initial_device_index {
+        Some(_) => !operations.is_a2dp_profile_available().await,
+        None => true,
+    };
+    if needs_recovery {
+        recover_a2dp_profile(operations).await?;
+    }
+
+    let active_profile_device_index = if needs_recovery {
+        let recovered_device_index = operations.current_device_index().await?;
+        if active_a2dp_profile_is_current(operations, recovered_device_index).await? {
+            return Ok(());
+        }
+        Some(recovered_device_index)
+    } else {
+        initial_device_index
+    };
+
+    let preferred_profile = operations.get_preferred_a2dp_profile().await;
+    if preferred_profile.is_empty() {
+        error!("No suitable A2DP profile found");
+        return Err(ProfileOperationError::NoPreferredA2dpProfile);
+    }
+
+    let current_device_index = operations.resolve_device_index().await?;
+    if active_profile_device_index != Some(current_device_index)
+        && active_a2dp_profile_is_current(operations, current_device_index).await?
+    {
+        return Ok(());
+    }
+    if let Some(initial_device_index) = initial_device_index
+        && current_device_index != initial_device_index
+    {
+        debug!(
+            "Audio device index changed from {} to {} during activation",
+            initial_device_index, current_device_index
+        );
+    }
+
+    operations
+        .switch_profile(current_device_index, preferred_profile)
+        .await
+}
+
+async fn activate_profile_then_start_listener<Activation, Listener>(
+    initial_activation: Activation,
+    start_listener: Listener,
+) where
+    Activation: std::future::Future<Output = ProfileOperationResult>,
+    Listener: std::future::Future<Output = ()>,
+{
+    if let Err(error) = initial_activation.await {
+        error!(
+            "Failed to activate A2DP during media controller setup: {:?}",
+            error
+        );
+    }
+    start_listener.await;
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -375,12 +500,12 @@ pub struct MediaController {
     playback_listeners: PlaybackListenerRegistry,
 }
 
-struct MediaControllerA2dpRecovery<'a> {
+struct MediaControllerA2dpOperations<'a> {
     controller: &'a MediaController,
     expected_mac: &'a str,
 }
 
-impl A2dpRecoveryOperations for MediaControllerA2dpRecovery<'_> {
+impl A2dpRecoveryOperations for MediaControllerA2dpOperations<'_> {
     fn probe(&mut self) -> A2dpRecoveryFuture<'_, Result<bool, ProfileOperationError>> {
         let controller = self.controller;
         let expected_mac = self.expected_mac;
@@ -402,6 +527,78 @@ impl A2dpRecoveryOperations for MediaControllerA2dpRecovery<'_> {
 
     fn sleep(&mut self, duration: Duration) -> A2dpRecoveryFuture<'_, ()> {
         Box::pin(async move { tokio::time::sleep(duration).await })
+    }
+}
+
+impl A2dpActivationOperations for MediaControllerA2dpOperations<'_> {
+    fn resolve_device_index(
+        &mut self,
+    ) -> A2dpRecoveryFuture<'_, Result<u32, ProfileOperationError>> {
+        let controller = self.controller;
+        let expected_mac = self.expected_mac;
+        Box::pin(async move {
+            controller
+                .resolve_device_index(
+                    expected_mac,
+                    controller.get_audio_device_index(expected_mac),
+                )
+                .await
+        })
+    }
+
+    fn get_active_profile(&mut self, card_index: u32) -> A2dpRecoveryFuture<'_, Option<String>> {
+        let controller = self.controller;
+        Box::pin(async move { controller.get_active_profile(card_index).await })
+    }
+
+    fn is_a2dp_profile_available(&mut self) -> A2dpRecoveryFuture<'_, bool> {
+        let controller = self.controller;
+        Box::pin(async move { controller.is_a2dp_profile_available().await })
+    }
+
+    fn current_device_index(
+        &mut self,
+    ) -> A2dpRecoveryFuture<'_, Result<u32, ProfileOperationError>> {
+        let controller = self.controller;
+        let expected_mac = self.expected_mac;
+        Box::pin(async move {
+            let state = controller.state.lock().await;
+            if state.connected_device_mac != expected_mac {
+                return Err(ProfileOperationError::ConnectedDeviceChanged);
+            }
+            state
+                .device_index
+                .ok_or(ProfileOperationError::AudioDeviceNotFound)
+        })
+    }
+
+    fn get_preferred_a2dp_profile(&mut self) -> A2dpRecoveryFuture<'_, String> {
+        let controller = self.controller;
+        Box::pin(async move { controller.get_preferred_a2dp_profile().await })
+    }
+
+    fn switch_profile(
+        &mut self,
+        card_index: u32,
+        profile: String,
+    ) -> A2dpRecoveryFuture<'_, ProfileOperationResult> {
+        Box::pin(async move {
+            info!("Activating A2DP profile for AirPods: {}", profile);
+            let profile_name = profile.clone();
+            let success = tokio::task::spawn_blocking(move || {
+                set_card_profile_sync(card_index, &profile_name)
+            })
+            .await
+            .map_err(|_| ProfileOperationError::ProfileWorkerStopped)?;
+
+            if !success {
+                warn!("Failed to activate A2DP profile: {}", profile);
+                return Err(ProfileOperationError::ProfileSwitchFailed(profile));
+            }
+
+            info!("Successfully activated A2DP profile: {}", profile);
+            Ok(())
+        })
     }
 }
 
@@ -430,6 +627,26 @@ impl MediaController {
     }
 
     pub async fn start_playback_listener(&self, aacp_manager: AACPManager) {
+        self.start_playback_listener_with_activation(aacp_manager, |controller| async move {
+            controller.activate_a2dp_profile().await
+        })
+        .await;
+    }
+
+    #[cfg(test)]
+    async fn start_playback_listener_without_initial_activation(&self, aacp_manager: AACPManager) {
+        self.start_playback_listener_with_activation(aacp_manager, |_| async { Ok(()) })
+            .await;
+    }
+
+    async fn start_playback_listener_with_activation<Activate, Activation>(
+        &self,
+        aacp_manager: AACPManager,
+        initial_activation: Activate,
+    ) where
+        Activate: FnOnce(MediaController) -> Activation + Send + 'static,
+        Activation: std::future::Future<Output = ProfileOperationResult> + Send + 'static,
+    {
         let connected_device_mac = self.state.lock().await.connected_device_mac.clone();
         let (generation_tx, generation_rx) = oneshot::channel();
 
@@ -444,9 +661,15 @@ impl MediaController {
                 device_mac: listener_device_mac.clone(),
                 generation: listener_generation,
             };
-            controller_clone
-                .playback_listener_loop(aacp_manager, &listener_device_mac, listener_generation)
-                .await;
+            activate_profile_then_start_listener(
+                initial_activation(controller_clone.clone()),
+                controller_clone.playback_listener_loop(
+                    aacp_manager,
+                    &listener_device_mac,
+                    listener_generation,
+                ),
+            )
+            .await;
         });
         let listener_generation = self
             .playback_listeners
@@ -875,87 +1098,11 @@ impl MediaController {
             return Err(ProfileOperationError::NoConnectedDevice);
         }
 
-        self.activate_a2dp_profile_with_lookup(&mac, self.get_audio_device_index(&mac))
-            .await
-    }
-
-    async fn activate_a2dp_profile_with_lookup<Lookup>(
-        &self,
-        mac: &str,
-        lookup: Lookup,
-    ) -> ProfileOperationResult
-    where
-        Lookup: std::future::Future<Output = Option<u32>>,
-    {
-        let device_index = self.resolve_device_index(mac, lookup).await?;
-
-        if let Some(active_profile) = self.get_active_profile(device_index).await
-            && !should_switch_to_a2dp_profile(Some(active_profile.as_str()))
-        {
-            let state = self.state.lock().await;
-            if state.connected_device_mac != mac {
-                return Err(ProfileOperationError::ConnectedDeviceChanged);
-            }
-            if state.device_index == Some(device_index) {
-                info!(
-                    "A2DP profile {} already active, not switching",
-                    active_profile
-                );
-                return Ok(());
-            }
-            debug!(
-                "Ignoring active profile {} from stale audio device index {}; current index is {:?}",
-                active_profile, device_index, state.device_index
-            );
-        }
-
-        if !self.is_a2dp_profile_available().await {
-            let mut recovery = MediaControllerA2dpRecovery {
-                controller: self,
-                expected_mac: mac,
-            };
-            recover_a2dp_profile(&mut recovery).await?;
-        }
-
-        let preferred_profile = self.get_preferred_a2dp_profile().await;
-        if preferred_profile.is_empty() {
-            error!("No suitable A2DP profile found");
-            return Err(ProfileOperationError::NoPreferredA2dpProfile);
-        }
-
-        let current_device_index = {
-            let state = self.state.lock().await;
-            if state.connected_device_mac != mac {
-                return Err(ProfileOperationError::ConnectedDeviceChanged);
-            }
-            state.device_index
+        let mut operations = MediaControllerA2dpOperations {
+            controller: self,
+            expected_mac: &mac,
         };
-        let current_device_index =
-            current_device_index.ok_or(ProfileOperationError::AudioDeviceNotFound)?;
-        if current_device_index != device_index {
-            debug!(
-                "Audio device index changed from {} to {} during activation",
-                device_index, current_device_index
-            );
-        }
-
-        info!("Activating A2DP profile for AirPods: {}", preferred_profile);
-        let profile_name = preferred_profile.clone();
-        let success = tokio::task::spawn_blocking(move || {
-            set_card_profile_sync(current_device_index, &profile_name)
-        })
-        .await
-        .map_err(|_| ProfileOperationError::ProfileWorkerStopped)?;
-
-        if !success {
-            warn!("Failed to activate A2DP profile: {}", preferred_profile);
-            return Err(ProfileOperationError::ProfileSwitchFailed(
-                preferred_profile,
-            ));
-        }
-
-        info!("Successfully activated A2DP profile: {}", preferred_profile);
-        Ok(())
+        activate_a2dp_profile_with_operations(&mut operations).await
     }
 
     async fn resolve_device_index<Lookup>(
@@ -1766,6 +1913,7 @@ mod tests {
     use super::*;
     use crate::bluetooth::aacp::{ConnectedDevice, opcodes};
     use std::collections::VecDeque;
+    use std::sync::atomic::{AtomicUsize, Ordering};
     use tokio::sync::{mpsc, oneshot};
     use tokio::time::timeout;
 
@@ -1821,6 +1969,149 @@ mod tests {
         }
     }
 
+    #[derive(Clone, Debug, PartialEq, Eq)]
+    enum ActivationAction {
+        ResolveDeviceIndex,
+        ActiveProfile(u32),
+        ProfileAvailable,
+        CurrentDeviceIndex,
+        PreferredProfile,
+        Probe,
+        Restart,
+        Sleep(Duration),
+        SwitchProfile { card_index: u32, profile: String },
+    }
+
+    struct RecordingActivationOperations {
+        lookup_results: VecDeque<Result<Option<u32>, ProfileOperationError>>,
+        profile_available_results: VecDeque<bool>,
+        active_profile: Option<String>,
+        preferred_profile: String,
+        current_device_index: Option<u32>,
+        restart_result: bool,
+        actions: Vec<ActivationAction>,
+    }
+
+    impl RecordingActivationOperations {
+        fn new(
+            lookup_results: impl IntoIterator<Item = Option<u32>>,
+            profile_available_results: impl IntoIterator<Item = bool>,
+            active_profile: Option<&str>,
+            restart_result: bool,
+        ) -> Self {
+            Self {
+                lookup_results: lookup_results.into_iter().map(Ok).collect(),
+                profile_available_results: profile_available_results.into_iter().collect(),
+                active_profile: active_profile.map(str::to_owned),
+                preferred_profile: "a2dp-sink".into(),
+                current_device_index: None,
+                restart_result,
+                actions: Vec::new(),
+            }
+        }
+
+        fn take_lookup_result(&mut self) -> Result<Option<u32>, ProfileOperationError> {
+            let result = self
+                .lookup_results
+                .pop_front()
+                .expect("activation performed an unexpected audio card lookup");
+            if let Ok(device_index) = &result {
+                self.current_device_index = *device_index;
+            }
+            result
+        }
+    }
+
+    impl A2dpRecoveryOperations for RecordingActivationOperations {
+        fn probe(&mut self) -> A2dpRecoveryFuture<'_, Result<bool, ProfileOperationError>> {
+            self.actions.push(ActivationAction::Probe);
+            let result = match self.take_lookup_result() {
+                Ok(Some(_)) => Ok(self
+                    .profile_available_results
+                    .pop_front()
+                    .expect("profile availability was not injected for the discovered card")),
+                Ok(None) => Ok(false),
+                Err(error) => Err(error),
+            };
+            Box::pin(async move { result })
+        }
+
+        fn restart_wire_plumber(&mut self) -> A2dpRecoveryFuture<'_, bool> {
+            self.actions.push(ActivationAction::Restart);
+            let result = self.restart_result;
+            Box::pin(async move { result })
+        }
+
+        fn sleep(&mut self, duration: Duration) -> A2dpRecoveryFuture<'_, ()> {
+            self.actions.push(ActivationAction::Sleep(duration));
+            Box::pin(async {})
+        }
+    }
+
+    impl A2dpActivationOperations for RecordingActivationOperations {
+        fn resolve_device_index(
+            &mut self,
+        ) -> A2dpRecoveryFuture<'_, Result<u32, ProfileOperationError>> {
+            self.actions.push(ActivationAction::ResolveDeviceIndex);
+            let result = match self.take_lookup_result() {
+                Ok(Some(device_index)) => Ok(device_index),
+                Ok(None) => Err(ProfileOperationError::AudioDeviceNotFound),
+                Err(error) => Err(error),
+            };
+            Box::pin(async move { result })
+        }
+
+        fn get_active_profile(
+            &mut self,
+            card_index: u32,
+        ) -> A2dpRecoveryFuture<'_, Option<String>> {
+            assert_eq!(self.current_device_index, Some(card_index));
+            self.actions
+                .push(ActivationAction::ActiveProfile(card_index));
+            let profile = self.active_profile.clone();
+            Box::pin(async move { profile })
+        }
+
+        fn is_a2dp_profile_available(&mut self) -> A2dpRecoveryFuture<'_, bool> {
+            self.actions.push(ActivationAction::ProfileAvailable);
+            let available = self
+                .profile_available_results
+                .pop_front()
+                .expect("profile availability was not injected");
+            Box::pin(async move { available })
+        }
+
+        fn current_device_index(
+            &mut self,
+        ) -> A2dpRecoveryFuture<'_, Result<u32, ProfileOperationError>> {
+            self.actions.push(ActivationAction::CurrentDeviceIndex);
+            let result = self
+                .current_device_index
+                .ok_or(ProfileOperationError::AudioDeviceNotFound);
+            Box::pin(async move { result })
+        }
+
+        fn get_preferred_a2dp_profile(&mut self) -> A2dpRecoveryFuture<'_, String> {
+            self.actions.push(ActivationAction::PreferredProfile);
+            let profile = self.preferred_profile.clone();
+            Box::pin(async move { profile })
+        }
+
+        fn switch_profile(
+            &mut self,
+            card_index: u32,
+            profile: String,
+        ) -> A2dpRecoveryFuture<'_, ProfileOperationResult> {
+            assert_eq!(self.current_device_index, Some(card_index));
+            self.actions.push(ActivationAction::SwitchProfile {
+                card_index,
+                profile: profile.clone(),
+            });
+            self.active_profile = Some(profile);
+            Box::pin(async { Ok(()) })
+        }
+    }
+
     fn controller() -> MediaController {
         MediaController::new(CONNECTED_MAC.into(), LOCAL_MAC.into())
     }
@@ -1873,10 +2164,69 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn listener_setup_requests_one_activation_and_survives_failure() {
+        let playback_listeners = PlaybackListenerRegistry::default();
+        let controller =
+            controller_with_listener_registry(CONNECTED_MAC, playback_listeners.clone());
+        let activation_requests = Arc::new(AtomicUsize::new(0));
+        let activation_count = Arc::clone(&activation_requests);
+        let (activation_finished_tx, activation_finished_rx) = oneshot::channel();
+
+        controller
+            .start_playback_listener_with_activation(AACPManager::new(), move |_| async move {
+                activation_count.fetch_add(1, Ordering::SeqCst);
+                activation_finished_tx
+                    .send(())
+                    .expect("activation completion receiver dropped");
+                Err(ProfileOperationError::AudioDeviceNotFound)
+            })
+            .await;
+        let listener = playback_listeners
+            .current_entry(CONNECTED_MAC)
+            .expect("playback listener was not registered");
+        timeout(Duration::from_millis(250), activation_finished_rx)
+            .await
+            .expect("initial activation did not finish")
+            .expect("activation completion sender dropped");
+        tokio::task::yield_now().await;
+
+        assert_eq!(activation_requests.load(Ordering::SeqCst), 1);
+        assert!(!listener.abort_handle.is_finished());
+        assert!(playback_listeners.is_current(CONNECTED_MAC, listener.generation));
+
+        assert!(playback_listeners.remove_if_current(CONNECTED_MAC, listener.generation));
+        listener.abort_handle.abort();
+    }
+
+    #[tokio::test]
+    async fn activation_failure_still_polls_listener_future() {
+        let (listener_started_tx, listener_started_rx) = oneshot::channel();
+
+        timeout(Duration::from_millis(250), async move {
+            activate_profile_then_start_listener(
+                async { Err(ProfileOperationError::AudioDeviceNotFound) },
+                async move {
+                    listener_started_tx
+                        .send(())
+                        .expect("listener start receiver dropped");
+                },
+            )
+            .await;
+            listener_started_rx
+                .await
+                .expect("listener start sender dropped");
+        })
+        .await
+        .expect("listener future was not polled after activation failure");
+    }
+
+    #[tokio::test]
     async fn same_mac_listener_replacement_aborts_previous_listener() {
         let playback_listeners = PlaybackListenerRegistry::default();
         let first = controller_with_listener_registry(CONNECTED_MAC, playback_listeners.clone());
-        first.start_playback_listener(AACPManager::new()).await;
+        first
+            .start_playback_listener_without_initial_activation(AACPManager::new())
+            .await;
         let first_listener = playback_listeners
             .current_entry(CONNECTED_MAC)
             .expect("first playback listener was not registered");
@@ -1884,7 +2234,7 @@ mod tests {
         let replacement =
             controller_with_listener_registry("aa-bb-cc-dd-ee-ff", playback_listeners.clone());
         replacement
-            .start_playback_listener(AACPManager::new())
+            .start_playback_listener_without_initial_activation(AACPManager::new())
             .await;
         let replacement_listener = playback_listeners
             .current_entry(CONNECTED_MAC)
@@ -1903,16 +2253,64 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn same_mac_replacement_cancels_in_flight_initial_activation() {
+        let playback_listeners = PlaybackListenerRegistry::default();
+        let first = controller_with_listener_registry(CONNECTED_MAC, playback_listeners.clone());
+        let (activation_started_tx, activation_started_rx) = oneshot::channel();
+        let (release_activation_tx, release_activation_rx) = oneshot::channel();
+        first
+            .start_playback_listener_with_activation(AACPManager::new(), move |_| async move {
+                activation_started_tx
+                    .send(())
+                    .expect("activation start receiver dropped");
+                release_activation_rx
+                    .await
+                    .expect("activation release sender dropped");
+                Ok(())
+            })
+            .await;
+        let first_listener = playback_listeners
+            .current_entry(CONNECTED_MAC)
+            .expect("first playback listener was not registered");
+        timeout(Duration::from_millis(250), activation_started_rx)
+            .await
+            .expect("initial activation did not start")
+            .expect("activation start sender dropped");
+
+        let replacement =
+            controller_with_listener_registry("aa-bb-cc-dd-ee-ff", playback_listeners.clone());
+        replacement
+            .start_playback_listener_without_initial_activation(AACPManager::new())
+            .await;
+        let replacement_listener = playback_listeners
+            .current_entry(CONNECTED_MAC)
+            .expect("replacement playback listener was not registered");
+
+        wait_until_finished(&first_listener.abort_handle).await;
+        assert!(release_activation_tx.send(()).is_err());
+        assert!(playback_listeners.is_current(CONNECTED_MAC, replacement_listener.generation));
+
+        assert!(
+            playback_listeners.remove_if_current(CONNECTED_MAC, replacement_listener.generation)
+        );
+        replacement_listener.abort_handle.abort();
+    }
+
+    #[tokio::test]
     async fn other_mac_listener_is_preserved_during_replacement() {
         let playback_listeners = PlaybackListenerRegistry::default();
         let first = controller_with_listener_registry(CONNECTED_MAC, playback_listeners.clone());
-        first.start_playback_listener(AACPManager::new()).await;
+        first
+            .start_playback_listener_without_initial_activation(AACPManager::new())
+            .await;
         let first_listener = playback_listeners
             .current_entry(CONNECTED_MAC)
             .expect("first playback listener was not registered");
 
         let other = controller_with_listener_registry(REMOTE_MAC, playback_listeners.clone());
-        other.start_playback_listener(AACPManager::new()).await;
+        other
+            .start_playback_listener_without_initial_activation(AACPManager::new())
+            .await;
         let other_listener = playback_listeners
             .current_entry(REMOTE_MAC)
             .expect("other playback listener was not registered");
@@ -1920,7 +2318,7 @@ mod tests {
         let replacement =
             controller_with_listener_registry(CONNECTED_MAC, playback_listeners.clone());
         replacement
-            .start_playback_listener(AACPManager::new())
+            .start_playback_listener_without_initial_activation(AACPManager::new())
             .await;
         let replacement_listener = playback_listeners
             .current_entry(CONNECTED_MAC)
@@ -2174,6 +2572,137 @@ mod tests {
         assert_eq!(operations.probe_results.len(), 1);
     }
 
+    #[tokio::test]
+    async fn initial_lookup_miss_recovers_when_card_appears_during_grace() {
+        let mut operations = RecordingActivationOperations::new(
+            [None, Some(42), Some(42)],
+            [true],
+            Some("off"),
+            false,
+        );
+        operations.current_device_index = Some(7);
+
+        let result = activate_a2dp_profile_with_operations(&mut operations).await;
+
+        assert_eq!(result, Ok(()));
+        assert_eq!(
+            operations.actions,
+            vec![
+                ActivationAction::ResolveDeviceIndex,
+                ActivationAction::Sleep(Duration::from_secs(2)),
+                ActivationAction::Probe,
+                ActivationAction::CurrentDeviceIndex,
+                ActivationAction::ActiveProfile(42),
+                ActivationAction::PreferredProfile,
+                ActivationAction::ResolveDeviceIndex,
+                ActivationAction::SwitchProfile {
+                    card_index: 42,
+                    profile: "a2dp-sink".into(),
+                },
+            ]
+        );
+        assert_eq!(operations.current_device_index, Some(42));
+        assert_eq!(
+            operations
+                .actions
+                .iter()
+                .filter(|action| matches!(action, ActivationAction::Restart))
+                .count(),
+            0
+        );
+        assert_eq!(
+            operations
+                .actions
+                .iter()
+                .filter(|action| matches!(action, ActivationAction::SwitchProfile { .. }))
+                .count(),
+            1
+        );
+    }
+
+    #[tokio::test]
+    async fn persistent_initial_lookup_miss_stays_bounded_and_returns_error() {
+        let mut operations = RecordingActivationOperations::new(
+            std::iter::repeat(None).take(7),
+            [],
+            Some("off"),
+            true,
+        );
+
+        let result = activate_a2dp_profile_with_operations(&mut operations).await;
+
+        assert_eq!(result, Err(ProfileOperationError::A2dpProfileUnavailable));
+        assert_eq!(
+            operations.actions,
+            vec![
+                ActivationAction::ResolveDeviceIndex,
+                ActivationAction::Sleep(Duration::from_secs(2)),
+                ActivationAction::Probe,
+                ActivationAction::Restart,
+                ActivationAction::Sleep(Duration::from_secs(2)),
+                ActivationAction::Probe,
+                ActivationAction::Sleep(Duration::from_secs(1)),
+                ActivationAction::Probe,
+                ActivationAction::Sleep(Duration::from_secs(2)),
+                ActivationAction::Probe,
+                ActivationAction::Sleep(Duration::from_secs(3)),
+                ActivationAction::Probe,
+                ActivationAction::Sleep(Duration::from_secs(4)),
+                ActivationAction::Probe,
+            ]
+        );
+        assert!(operations.lookup_results.is_empty());
+        assert!(
+            !operations
+                .actions
+                .iter()
+                .any(|action| matches!(action, ActivationAction::SwitchProfile { .. }))
+        );
+    }
+
+    #[tokio::test]
+    async fn initial_active_a2dp_profile_remains_untouched() {
+        let mut operations =
+            RecordingActivationOperations::new([Some(42)], [], Some("a2dp-sink-aac"), false);
+
+        let result = activate_a2dp_profile_with_operations(&mut operations).await;
+
+        assert_eq!(result, Ok(()));
+        assert_eq!(
+            operations.actions,
+            vec![
+                ActivationAction::ResolveDeviceIndex,
+                ActivationAction::ActiveProfile(42),
+                ActivationAction::CurrentDeviceIndex,
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn activation_refreshes_card_index_after_profile_selection() {
+        let mut operations =
+            RecordingActivationOperations::new([Some(21), Some(42)], [true], Some("off"), false);
+
+        let result = activate_a2dp_profile_with_operations(&mut operations).await;
+
+        assert_eq!(result, Ok(()));
+        assert_eq!(
+            operations.actions,
+            vec![
+                ActivationAction::ResolveDeviceIndex,
+                ActivationAction::ActiveProfile(21),
+                ActivationAction::ProfileAvailable,
+                ActivationAction::PreferredProfile,
+                ActivationAction::ResolveDeviceIndex,
+                ActivationAction::ActiveProfile(42),
+                ActivationAction::SwitchProfile {
+                    card_index: 42,
+                    profile: "a2dp-sink".into(),
+                },
+            ]
+        );
+    }
+
     async fn takeover_manager(capacity: usize) -> (AACPManager, mpsc::Receiver<Vec<u8>>) {
         let manager = AACPManager::new();
         let (packet_tx, packet_rx) = mpsc::channel(capacity);
@@ -2269,28 +2798,6 @@ mod tests {
             42
         );
         assert_eq!(controller.state.lock().await.device_index, Some(42));
-    }
-
-    #[tokio::test]
-    async fn activation_does_not_fall_back_to_stale_device_index() {
-        let controller = controller();
-        controller.state.lock().await.device_index = Some(7);
-        let lookup_controller = controller.clone();
-
-        let result = timeout(
-            Duration::from_millis(250),
-            controller.activate_a2dp_profile_with_lookup(CONNECTED_MAC, async move {
-                let state = lookup_controller.state.lock().await;
-                assert_eq!(state.device_index, Some(7));
-                drop(state);
-                None
-            }),
-        )
-        .await
-        .expect("activation lookup waited on a MediaController state guard");
-
-        assert_eq!(result, Err(ProfileOperationError::AudioDeviceNotFound));
-        assert_eq!(controller.state.lock().await.device_index, None);
     }
 
     #[tokio::test]
