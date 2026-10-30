@@ -35,7 +35,10 @@ This packet is necessary to receive notifications from the AirPods like ear dete
 04 00 04 00 0F 00 FF FF FE FF
 ```
 
-This packet also works.
+The `FF FF FE FF` request above works on AirPods Pro 2 (USB-C) firmware 7A305,
+but it does not deliver battery notifications on every model. AirPods Pro 2 (A2698,
+firmware `81.2675000075000000.6877`) still emits ear-detection notifications but no
+battery packets. Prefer `04 00 04 00 0F 00 FF FF FF FF` for full notifications.
 
 ```plaintext
 04 00 04 00 0F 00 FF FF FF FF
