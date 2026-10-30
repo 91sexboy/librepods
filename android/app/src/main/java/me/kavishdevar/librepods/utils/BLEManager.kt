@@ -40,7 +40,7 @@ internal data class DecodedBattery(val charging: Boolean, val level: Int?)
 internal fun decodeEncryptedBattery(byteVal: Int, fallback: DecodedBattery): DecodedBattery {
     val charging = (byteVal and 0x80) != 0
     val level = byteVal and 0x7F
-    return DecodedBattery(charging, level)
+    return if (level > 100) fallback else DecodedBattery(charging, level)
 }
 
 /**
