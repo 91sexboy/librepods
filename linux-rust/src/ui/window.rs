@@ -12,20 +12,23 @@ use crate::ui::nothing::nothing_view;
 use crate::utils::{
     MyTheme, get_app_settings_path, get_devices_path, save_app_settings, upsert_device,
 };
-use bluer::{Address};
+use bluer::Address;
 use iced::border::Radius;
 use iced::overlay::menu;
 use iced::widget::button::Style;
 use iced::widget::rule::FillMode;
 use iced::widget::{
     Space, button, column, combo_box, container, pane_grid, row, rule, scrollable, text,
-    text_input, toggler
+    text_input, toggler,
 };
-use iced::{Background, Border, Center, Element, Font, Length, Padding, Size, Subscription, Task, Theme, daemon, window, Settings, Program};
+use iced::{
+    Background, Border, Center, Element, Font, Length, Padding, Program, Settings, Size,
+    Subscription, Task, Theme, daemon, window,
+};
 use log::{debug, error};
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use tokio::sync::mpsc::UnboundedReceiver;
 use tokio::sync::{Mutex, RwLock};
 
@@ -74,7 +77,11 @@ pub fn start_ui(
     .title(App::title)
     .settings(Settings {
         id: Some("librepods".to_string()),
-        fonts: vec![include_bytes!("../../assets/font/sf_pro.otf").as_slice().into()],
+        fonts: vec![
+            include_bytes!("../../assets/font/sf_pro.otf")
+                .as_slice()
+                .into(),
+        ],
         default_font: Font::with_name("SF Pro Text"),
         ..Settings::default()
     })
@@ -189,7 +196,6 @@ impl App {
         let (mut panes, first_pane) = pane_grid::State::new(Pane::Sidebar);
         let split = panes.split(pane_grid::Axis::Vertical, first_pane, Pane::Content);
         panes.resize(split.unwrap().1, 0.2);
-
 
         let wait_task = Task::perform(wait_for_message(Arc::clone(&ui_rx)), |msg| msg);
 
@@ -503,7 +509,8 @@ impl App {
 
                         self.device_states.remove(&mac);
 
-                        if matches!(&self.selected_tab, Tab::Device(selected_mac) if selected_mac == &mac) {
+                        if matches!(&self.selected_tab, Tab::Device(selected_mac) if selected_mac == &mac)
+                        {
                             self.selected_tab = Tab::Device("none".to_string());
                         }
 

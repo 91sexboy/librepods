@@ -3,6 +3,7 @@ use crate::bluetooth::aacp::{AACPEvent, AACPManager, AirPodsLEKeys, ProximityKey
 use crate::media_controller::MediaController;
 use crate::ui::messages::BluetoothUIMessage;
 use crate::ui::tray::MyTray;
+use crate::utils::get_app_settings_path;
 use bluer::Address;
 use ksni::Handle;
 use log::{debug, error, info};
@@ -10,7 +11,6 @@ use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use tokio::sync::Mutex;
 use tokio::time::{Duration, sleep};
-use crate::utils::get_app_settings_path;
 
 pub struct AirPodsDevice {
     pub mac_address: Address,
@@ -368,10 +368,7 @@ impl AirPodsDevice {
                     }
                     AACPEvent::StemPress(press_type, bud_type) => {
                         use crate::bluetooth::aacp::StemPressType;
-                        info!(
-                            "Received Stem Press: {:?} on {:?}",
-                            press_type, bud_type
-                        );
+                        info!("Received Stem Press: {:?} on {:?}", press_type, bud_type);
                         if stem_control {
                             let controller = mc_clone.lock().await;
                             match press_type {
