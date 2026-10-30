@@ -83,9 +83,13 @@ import me.kavishdevar.librepods.R
 import me.kavishdevar.librepods.constants.AirPodsNotifications
 import me.kavishdevar.librepods.constants.Battery
 import me.kavishdevar.librepods.constants.BatteryComponent
+import me.kavishdevar.librepods.constants.BatteryMetadataField
+import me.kavishdevar.librepods.constants.BatteryReadingPresentation
 import me.kavishdevar.librepods.constants.BatteryStatus
 import me.kavishdevar.librepods.constants.StemAction
 import me.kavishdevar.librepods.constants.isHeadTrackingData
+import me.kavishdevar.librepods.constants.planBatteryMetadata
+import me.kavishdevar.librepods.constants.planBatteryPresentation
 import me.kavishdevar.librepods.utils.AACPManager
 import me.kavishdevar.librepods.utils.AACPManager.Companion.StemPressType
 import me.kavishdevar.librepods.utils.ATTManager
@@ -1388,10 +1392,7 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
         reversed: Boolean = false,
         otherDeviceName: String? = null,
     ) {
-        val level = batteryNotification.getBattery()
-            .filter { it.component == BatteryComponent.LEFT || it.component == BatteryComponent.RIGHT }
-            .minOfOrNull { it.level }
-            ?: return
+        val level = planBatteryPresentation(batteryNotification.getBattery()).minimumBudLevel ?: return
         showIsland(this, level, type, reversed, otherDeviceName)
     }
 
@@ -1543,37 +1544,18 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
     }
 
     fun setBatteryMetadata() {
-        device?.let { it ->
-            SystemApisUtils.setMetadata(
-                it,
-                it.METADATA_UNTETHERED_CASE_BATTERY,
-                batteryNotification.getBattery().find { it.component == BatteryComponent.CASE }?.level.toString().toByteArray()
-            )
-            SystemApisUtils.setMetadata(
-                it,
-                it.METADATA_UNTETHERED_CASE_CHARGING,
-                (if (batteryNotification.getBattery().find { it.component == BatteryComponent.CASE}?.status == BatteryStatus.CHARGING) "1".toByteArray() else "0".toByteArray())
-            )
-            SystemApisUtils.setMetadata(
-                it,
-                it.METADATA_UNTETHERED_LEFT_BATTERY,
-                batteryNotification.getBattery().find { it.component == BatteryComponent.LEFT }?.level.toString().toByteArray()
-            )
-            SystemApisUtils.setMetadata(
-                it,
-                it.METADATA_UNTETHERED_LEFT_CHARGING,
-                (if (batteryNotification.getBattery().find { it.component == BatteryComponent.LEFT}?.status == BatteryStatus.CHARGING) "1".toByteArray() else "0".toByteArray())
-            )
-            SystemApisUtils.setMetadata(
-                it,
-                it.METADATA_UNTETHERED_RIGHT_BATTERY,
-                batteryNotification.getBattery().find { it.component == BatteryComponent.RIGHT }?.level.toString().toByteArray()
-            )
-            SystemApisUtils.setMetadata(
-                it,
-                it.METADATA_UNTETHERED_RIGHT_CHARGING,
-                (if (batteryNotification.getBattery().find { it.component == BatteryComponent.RIGHT}?.status == BatteryStatus.CHARGING) "1".toByteArray() else "0".toByteArray())
-            )
+        device?.let { bluetoothDevice ->
+            planBatteryMetadata(batteryNotification.getBattery()).forEach { payload ->
+                val key = when (payload.field) {
+                    BatteryMetadataField.CASE_LEVEL -> bluetoothDevice.METADATA_UNTETHERED_CASE_BATTERY
+                    BatteryMetadataField.CASE_CHARGING -> bluetoothDevice.METADATA_UNTETHERED_CASE_CHARGING
+                    BatteryMetadataField.LEFT_LEVEL -> bluetoothDevice.METADATA_UNTETHERED_LEFT_BATTERY
+                    BatteryMetadataField.LEFT_CHARGING -> bluetoothDevice.METADATA_UNTETHERED_LEFT_CHARGING
+                    BatteryMetadataField.RIGHT_LEVEL -> bluetoothDevice.METADATA_UNTETHERED_RIGHT_BATTERY
+                    BatteryMetadataField.RIGHT_CHARGING -> bluetoothDevice.METADATA_UNTETHERED_RIGHT_CHARGING
+                }
+                SystemApisUtils.setMetadata(bluetoothDevice, key, payload.value.toByteArray())
+            }
         }
     }
 
@@ -1583,69 +1565,54 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
         val componentName = ComponentName(this, BatteryWidget::class.java)
         val widgetIds = appWidgetManager.getAppWidgetIds(componentName)
 
-        val remoteViews = RemoteViews(packageName, R.layout.battery_widget).also { it ->
+        val remoteViews = RemoteViews(packageName, R.layout.battery_widget).also { remoteViews ->
             val openActivityIntent = PendingIntent.getActivity(this, 0, Intent(this, MainActivity::class.java), PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
-            it.setOnClickPendingIntent(R.id.battery_widget, openActivityIntent)
+            remoteViews.setOnClickPendingIntent(R.id.battery_widget, openActivityIntent)
 
-            val leftBattery =
-                batteryNotification.getBattery().find { it.component == BatteryComponent.LEFT }
-            val rightBattery =
-                batteryNotification.getBattery().find { it.component == BatteryComponent.RIGHT }
-            val caseBattery =
-                batteryNotification.getBattery().find { it.component == BatteryComponent.CASE }
+            fun updateBatteryReading(
+                reading: BatteryReadingPresentation?,
+                containerId: Int,
+                textId: Int,
+                progressId: Int,
+                chargingIconId: Int,
+            ) {
+                remoteViews.setViewVisibility(
+                    containerId,
+                    if (reading == null) View.GONE else View.VISIBLE,
+                )
+                reading ?: return
+                remoteViews.setTextViewText(textId, "${reading.level}%")
+                remoteViews.setProgressBar(progressId, 100, reading.level, false)
+                remoteViews.setViewVisibility(
+                    chargingIconId,
+                    if (reading.charging) View.VISIBLE else View.GONE,
+                )
+            }
 
-            it.setTextViewText(
+            val presentation = planBatteryPresentation(batteryNotification.getBattery())
+            updateBatteryReading(
+                presentation.left,
+                R.id.left_battery_widget_container,
                 R.id.left_battery_widget,
-                leftBattery?.let {
-                    "${it.level}%"
-                } ?: ""
-            )
-            it.setProgressBar(
                 R.id.left_battery_progress,
-                100,
-                leftBattery?.level ?: 0,
-                false
-            )
-            it.setViewVisibility(
                 R.id.left_charging_icon,
-                if (leftBattery?.status == BatteryStatus.CHARGING) View.VISIBLE else View.GONE
             )
-
-            it.setTextViewText(
+            updateBatteryReading(
+                presentation.right,
+                R.id.right_battery_widget_container,
                 R.id.right_battery_widget,
-                rightBattery?.let {
-                    "${it.level}%"
-                } ?: ""
-            )
-            it.setProgressBar(
                 R.id.right_battery_progress,
-                100,
-                rightBattery?.level ?: 0,
-                false
-            )
-            it.setViewVisibility(
                 R.id.right_charging_icon,
-                if (rightBattery?.status == BatteryStatus.CHARGING) View.VISIBLE else View.GONE
             )
-
-            it.setTextViewText(
+            updateBatteryReading(
+                presentation.case,
+                R.id.case_battery_widget_container,
                 R.id.case_battery_widget,
-                caseBattery?.let {
-                    "${it.level}%"
-                } ?: ""
-            )
-            it.setProgressBar(
                 R.id.case_battery_progress,
-                100,
-                caseBattery?.level ?: 0,
-                false
-            )
-            it.setViewVisibility(
                 R.id.case_charging_icon,
-                if (caseBattery?.status == BatteryStatus.CHARGING) View.VISIBLE else View.GONE
             )
 
-            it.setViewVisibility(
+            remoteViews.setViewVisibility(
                 R.id.phone_battery_widget_container,
                 if (widgetMobileBatteryEnabled) View.VISIBLE else View.GONE
             )
@@ -1655,15 +1622,15 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
                     batteryManager.getIntProperty(BatteryManager.BATTERY_PROPERTY_CAPACITY)
                 val charging =
                     batteryManager.getIntProperty(BatteryManager.BATTERY_PROPERTY_STATUS) == BatteryManager.BATTERY_STATUS_CHARGING
-                it.setTextViewText(
+                remoteViews.setTextViewText(
                     R.id.phone_battery_widget,
                     "$batteryLevel%"
                 )
-                it.setViewVisibility(
+                remoteViews.setViewVisibility(
                     R.id.phone_charging_icon,
                     if (charging) View.VISIBLE else View.GONE
                 )
-                it.setProgressBar(
+                remoteViews.setProgressBar(
                     R.id.phone_battery_progress,
                     100,
                     batteryLevel,
@@ -1760,32 +1727,7 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
             val updatedNotificationBuilder = NotificationCompat.Builder(this, "airpods_connection_status")
                 .setSmallIcon(R.drawable.airpods)
                 .setContentTitle(airpodsName ?: config.deviceName)
-                .setContentText(
-                    """${
-                        batteryList?.find { it.component == BatteryComponent.LEFT }?.let {
-                            if (it.status != BatteryStatus.DISCONNECTED) {
-                                "L: ${if (it.status == BatteryStatus.CHARGING) "⚡" else ""} ${it.level}%"
-                            } else {
-                                ""
-                            }
-                        } ?: ""
-                    } ${
-                        batteryList?.find { it.component == BatteryComponent.RIGHT }?.let {
-                            if (it.status != BatteryStatus.DISCONNECTED) {
-                                "R: ${if (it.status == BatteryStatus.CHARGING) "⚡" else ""} ${it.level}%"
-                            } else {
-                                ""
-                            }
-                        } ?: ""
-                    } ${
-                        batteryList?.find { it.component == BatteryComponent.CASE }?.let {
-                            if (it.status != BatteryStatus.DISCONNECTED) {
-                                "Case: ${if (it.status == BatteryStatus.CHARGING) "⚡" else ""} ${it.level}%"
-                            } else {
-                                ""
-                            }
-                        } ?: ""
-                    }""")
+                .setContentText(planBatteryPresentation(batteryList).notificationText())
                 .setContentIntent(pendingIntent)
                 .setCategory(Notification.CATEGORY_STATUS)
                 .setPriority(NotificationCompat.PRIORITY_LOW)
@@ -1956,20 +1898,8 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
     fun broadcastBatteryInformation() {
         if (device == null) return
 
-        val batteryList = batteryNotification.getBattery()
-        val leftBattery = batteryList.find { it.component == BatteryComponent.LEFT }
-        val rightBattery = batteryList.find { it.component == BatteryComponent.RIGHT }
-
-        // Calculate unified battery level (minimum of left and right)
-        val batteryUnified = minOf(
-            leftBattery?.level ?: 100,
-            rightBattery?.level ?: 100
-        )
-
-        // Check charging status
-        val isLeftCharging = leftBattery?.status == BatteryStatus.CHARGING
-        val isRightCharging = rightBattery?.status == BatteryStatus.CHARGING
-        isLeftCharging && isRightCharging
+        val batteryUnified =
+            planBatteryPresentation(batteryNotification.getBattery()).minimumBudLevel ?: return
 
         // Create arguments for vendor-specific event
         val arguments = arrayOf<Any>(
