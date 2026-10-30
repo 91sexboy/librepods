@@ -131,6 +131,15 @@ class PackagingTests(unittest.TestCase):
         self.assertEqual("${{ env.TARGET_BRANCH }}", pull_request["with"]["base"])
         self.assertEqual("flake.lock", pull_request["with"]["add-paths"])
 
+    def test_nixpkgs_lock_is_newer_than_reported_stale_revision(self):
+        lock = json.loads(FLAKE_LOCK.read_text(encoding="utf-8"))
+
+        self.assertNotEqual(
+            "5d6bdbddb4695a62f0d00a3620b37a15275a5093",
+            lock["nodes"]["nixpkgs"]["locked"]["rev"],
+            "flake.lock must advance beyond the stale revision reported in #550",
+        )
+
     def test_treefmt_uses_root_nixpkgs_input(self):
         lock = json.loads(FLAKE_LOCK.read_text(encoding="utf-8"))
         nodes = lock["nodes"]
