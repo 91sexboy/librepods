@@ -27,6 +27,7 @@ NIX_UPDATE_WORKFLOW = (
 FLATPAK_MANIFEST = LINUX_ROOT / "flatpak" / "me.kavishdevar.librepods.yaml"
 METAINFO = LINUX_ROOT / "flatpak" / "me.kavishdevar.librepods.metainfo.xml"
 FLAKE_LOCK = REPOSITORY_ROOT / "flake.lock"
+AAP_DEFINITIONS = REPOSITORY_ROOT / "AAP Definitions.md"
 
 
 def load_yaml(path: Path):
@@ -97,6 +98,21 @@ def built_source_archive(version: str = "9.8.7"):
 
 
 class PackagingTests(unittest.TestCase):
+    def test_notification_request_documents_a2698_battery_limitation(self):
+        definitions = AAP_DEFINITIONS.read_text(encoding="utf-8")
+        notification_section = definitions.split("# Requesting notifications", 1)[1].split(
+            "# Notifications", 1
+        )[0]
+
+        self.assertIn("04 00 04 00 0F 00 FF FF FE FF", notification_section)
+        self.assertIn("04 00 04 00 0F 00 FF FF FF FF", notification_section)
+        self.assertIn("AirPods Pro 2 (A2698", notification_section)
+        self.assertIn("does not deliver battery notifications", notification_section)
+        self.assertIn(
+            "Prefer `04 00 04 00 0F 00 FF FF FF FF`",
+            notification_section,
+        )
+
     def test_nix_update_workflow_refreshes_linux_rust_via_pull_request(self):
         self.assertTrue(
             NIX_UPDATE_WORKFLOW.exists(),
