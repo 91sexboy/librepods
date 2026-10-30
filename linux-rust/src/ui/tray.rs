@@ -163,6 +163,21 @@ fn displayed_setting<T: Copy>(
     pending.as_ref().map(|request| request.value).or(confirmed)
 }
 
+fn apply_setting_report<T: Copy + PartialEq>(
+    confirmed: &mut Option<T>,
+    pending: &mut Option<PendingTrayRequest<T>>,
+    reported_value: T,
+) {
+    *confirmed = Some(reported_value);
+    if pending
+        .as_ref()
+        .is_some_and(|request| request.value == reported_value)
+        && let Some(request) = pending.take()
+    {
+        drop(request.cancellation);
+    }
+}
+
 fn queue_pending_request<T: Copy>(
     command_tx: Option<&UnboundedSender<TrayCommand>>,
     next_request_id: &mut u64,
@@ -222,13 +237,19 @@ impl MyTray {
     }
 
     pub(crate) fn apply_listening_mode_report(&mut self, mode: u8) {
-        self.listening_mode = Some(mode);
-        self.pending_listening_mode = None;
+        apply_setting_report(
+            &mut self.listening_mode,
+            &mut self.pending_listening_mode,
+            mode,
+        );
     }
 
     pub(crate) fn apply_conversation_detection_report(&mut self, enabled: bool) {
-        self.conversation_detect_enabled = Some(enabled);
-        self.pending_conversation_detection = None;
+        apply_setting_report(
+            &mut self.conversation_detect_enabled,
+            &mut self.pending_conversation_detection,
+            enabled,
+        );
     }
 
     pub(crate) fn clear_pending_listening_mode_request(&mut self, request_id: u64) {
@@ -761,7 +782,7 @@ mod tests {
     }
 
     #[test]
-    fn listening_mode_report_confirms_device_state_and_clears_pending_request() {
+    fn matching_listening_mode_report_confirms_device_state_and_clears_pending_request() {
         let (command_tx, mut command_rx) = tokio::sync::mpsc::unbounded_channel();
         let mut tray = empty_tray();
         tray.listening_mode = Some(0x02);
@@ -770,11 +791,11 @@ mod tests {
         let group = listening_mode_group(&tray);
         (group.select)(&mut tray, 1);
         command_rx.try_recv().unwrap();
-        tray.apply_listening_mode_report(0x04);
+        tray.apply_listening_mode_report(0x03);
 
-        assert_eq!(tray.listening_mode, Some(0x04));
+        assert_eq!(tray.listening_mode, Some(0x03));
         assert!(tray.pending_listening_mode.is_none());
-        assert_eq!(listening_mode_group(&tray).selected, 2);
+        assert_eq!(listening_mode_group(&tray).selected, 1);
     }
 
     #[test]
