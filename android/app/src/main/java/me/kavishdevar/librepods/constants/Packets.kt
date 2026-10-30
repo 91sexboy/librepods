@@ -166,16 +166,16 @@ class AirPodsNotifications {
         }
 
         fun setBatteryDirect(
-            leftLevel: Int,
+            leftLevel: Int?,
             leftCharging: Boolean,
-            rightLevel: Int,
+            rightLevel: Int?,
             rightCharging: Boolean,
-            caseLevel: Int,
+            caseLevel: Int?,
             caseCharging: Boolean
         ) {
-            first = Battery(BatteryComponent.LEFT, leftLevel, if (leftCharging) BatteryStatus.CHARGING else BatteryStatus.NOT_CHARGING)
-            second = Battery(BatteryComponent.RIGHT, rightLevel, if (rightCharging) BatteryStatus.CHARGING else BatteryStatus.NOT_CHARGING)
-            case = Battery(BatteryComponent.CASE, caseLevel, if (caseCharging) BatteryStatus.CHARGING else BatteryStatus.NOT_CHARGING)
+            first = Battery(BatteryComponent.LEFT, leftLevel ?: 0, if (leftCharging) BatteryStatus.CHARGING else BatteryStatus.NOT_CHARGING)
+            second = Battery(BatteryComponent.RIGHT, rightLevel ?: 0, if (rightCharging) BatteryStatus.CHARGING else BatteryStatus.NOT_CHARGING)
+            case = Battery(BatteryComponent.CASE, caseLevel ?: 0, if (caseCharging) BatteryStatus.CHARGING else BatteryStatus.NOT_CHARGING)
         }
 
         private fun batteryOrPrevious(

@@ -21,4 +21,29 @@ class BLEBatteryDecoderTest {
             decodeEncryptedBattery(byteVal = 0xB2, fallback = fallback),
         )
     }
+
+    @Test
+    fun firstUnknownEncryptedLevelPreservesNullFallback() {
+        val fallback = DecodedBattery(charging = false, level = null)
+
+        assertEquals(
+            fallback,
+            decodeEncryptedBattery(byteVal = 0x7F, fallback = fallback),
+        )
+    }
+
+    @Test
+    fun invalidEncryptedCaseUsesLastKnownFallback() {
+        val publicFallback = DecodedBattery(charging = false, level = 80)
+        val lastKnown = DecodedBattery(charging = true, level = 67)
+
+        assertEquals(
+            lastKnown,
+            decodeEncryptedBattery(
+                byteVal = 0x7F,
+                fallback = publicFallback,
+                lastKnown = lastKnown,
+            ),
+        )
+    }
 }
