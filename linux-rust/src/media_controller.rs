@@ -579,7 +579,7 @@ impl MediaControllerState {
 pub struct MediaController {
     state: Arc<Mutex<MediaControllerState>>,
     device_index_lookup_lock: Arc<Mutex<()>>,
-    a2dp_activation_lock: Arc<Mutex<()>>,
+    profile_operation_lock: Arc<Mutex<()>>,
     playback_listeners: PlaybackListenerRegistry,
     playback_listener_generation: Arc<StdMutex<Option<PlaybackListenerGeneration>>>,
 }
@@ -728,7 +728,7 @@ impl MediaController {
         MediaController {
             state: Arc::new(Mutex::new(state)),
             device_index_lookup_lock: Arc::new(Mutex::new(())),
-            a2dp_activation_lock: Arc::new(Mutex::new(())),
+            profile_operation_lock: Arc::new(Mutex::new(())),
             playback_listeners,
             playback_listener_generation: Arc::new(StdMutex::new(None)),
         }
@@ -1248,7 +1248,7 @@ impl MediaController {
     where
         Activation: std::future::Future<Output = ProfileOperationResult> + Send,
     {
-        let _activation_guard = self.a2dp_activation_lock.lock().await;
+        let _operation_guard = self.profile_operation_lock.lock().await;
         activation.await
     }
 
@@ -1259,6 +1259,7 @@ impl MediaController {
     where
         Deactivation: std::future::Future<Output = ProfileOperationResult> + Send,
     {
+        let _operation_guard = self.profile_operation_lock.lock().await;
         deactivation.await
     }
 
@@ -1676,11 +1677,11 @@ impl MediaController {
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .clone();
-        self.deactivate_a2dp_profile_for_listener_with_lookup(
+        self.run_a2dp_deactivation(self.deactivate_a2dp_profile_for_listener_with_lookup(
             &mac,
             self.get_audio_device_index(&mac),
             listener_generation,
-        )
+        ))
         .await
     }
 

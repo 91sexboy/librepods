@@ -31,9 +31,13 @@ where
     CurrentBeforeDeactivation: std::future::Future<Output = bool>,
     Deactivation: std::future::Future<Output = ()>,
 {
-    let _ = current_before_pause.await;
+    if !current_before_pause.await {
+        return false;
+    }
     pause.await;
-    let _ = current_before_deactivation.await;
+    if !current_before_deactivation.await {
+        return false;
+    }
     deactivation.await;
     true
 }
@@ -63,17 +67,33 @@ where
     CurrentBeforeAcknowledgement: std::future::Future<Output = bool>,
     Acknowledgement: std::future::Future<Output = Result<(), Error>>,
 {
-    guarded_ownership_cleanup(
+    if !guarded_ownership_cleanup(
         current_before_pause,
         pause,
         current_before_deactivation,
         deactivation,
     )
-    .await;
-    let _ = current_before_acknowledgement.await;
+    .await
+    {
+        return Ok(None);
+    }
+    if !current_before_acknowledgement.await {
+        return Ok(None);
+    }
     tokio::time::timeout(timeout, acknowledgement)
         .await
         .map(Some)
+}
+
+async fn ownership_request_is_current(
+    aacp_manager: &AACPManager,
+    media_controller: &MediaController,
+    connection_generation: u64,
+) -> bool {
+    aacp_manager
+        .is_connection_generation_current(connection_generation)
+        .await
+        && media_controller.is_current_playback_session()
 }
 
 pub struct AirPodsDevice {
@@ -284,13 +304,23 @@ impl AirPodsDevice {
                 let owns = value.first().copied().unwrap_or(0) != 0;
                 if !owns {
                     info!("Lost ownership, pausing media and disconnecting audio");
-                    let controller = mc_clone_owns.lock().await;
-                    controller.pause_all_media().await;
-                    if let Err(error) = controller.deactivate_a2dp_profile().await {
-                        error!(
-                            "Failed to deactivate A2DP after ownership loss: {:?}",
-                            error
-                        );
+                    let controller = mc_clone_owns.lock().await.clone();
+                    let cleanup_completed = guarded_ownership_cleanup(
+                        async { controller.is_current_playback_session() },
+                        controller.pause_all_media(),
+                        async { controller.is_current_playback_session() },
+                        async {
+                            if let Err(error) = controller.deactivate_a2dp_profile().await {
+                                error!(
+                                    "Failed to deactivate A2DP after ownership loss: {:?}",
+                                    error
+                                );
+                            }
+                        },
+                    )
+                    .await;
+                    if !cleanup_completed {
+                        debug!("Skipping ownership-loss cleanup for a replaced media session");
                     }
                 }
             }
@@ -414,13 +444,9 @@ impl AirPodsDevice {
                         info!(
                             "Received ownership to false request. Pausing media before acknowledging ownership loss."
                         );
-                        let pause = async {
-                            mc_clone.lock().await.pause_all_media().await;
-                        };
+                        let controller = mc_clone.lock().await.clone();
                         let deactivation = async {
-                            if let Err(error) =
-                                mc_clone.lock().await.deactivate_a2dp_profile().await
-                            {
+                            if let Err(error) = controller.deactivate_a2dp_profile().await {
                                 error!(
                                     "Failed to deactivate A2DP after ownership request: {:?}",
                                     error
@@ -434,11 +460,23 @@ impl AirPodsDevice {
                                 connection_generation,
                             );
                         match cleanup_then_bounded_acknowledgement(
-                            async { true },
-                            pause,
-                            async { true },
+                            ownership_request_is_current(
+                                &aacp_manager_clone_events,
+                                &controller,
+                                connection_generation,
+                            ),
+                            controller.pause_all_media(),
+                            ownership_request_is_current(
+                                &aacp_manager_clone_events,
+                                &controller,
+                                connection_generation,
+                            ),
                             deactivation,
-                            async { true },
+                            ownership_request_is_current(
+                                &aacp_manager_clone_events,
+                                &controller,
+                                connection_generation,
+                            ),
                             acknowledgement,
                             OWNERSHIP_ACKNOWLEDGEMENT_TIMEOUT,
                         )
@@ -448,7 +486,9 @@ impl AirPodsDevice {
                             Ok(Some(Err(error))) => {
                                 error!("Failed to relinquish AACP ownership: {}", error)
                             }
-                            Ok(None) => {}
+                            Ok(None) => debug!(
+                                "Skipping ownership request from a stale connection or media session"
+                            ),
                             Err(_) => error!(
                                 "Timed out while acknowledging AACP ownership relinquishment"
                             ),
