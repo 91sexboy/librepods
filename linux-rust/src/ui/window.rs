@@ -9,7 +9,9 @@ use crate::devices::enums::{
 use crate::ui::airpods::airpods_view;
 use crate::ui::messages::BluetoothUIMessage;
 use crate::ui::nothing::nothing_view;
-use crate::utils::{MyTheme, get_app_settings_path, get_devices_path};
+use crate::utils::{
+    MyTheme, get_app_settings_path, get_devices_path, save_app_settings, upsert_device,
+};
 use bluer::{Address};
 use iced::border::Radius;
 use iced::overlay::menu;
@@ -222,6 +224,26 @@ impl App {
         )
     }
 
+    fn persist_settings(
+        &self,
+        selected_theme: MyTheme,
+        tray_text_mode: bool,
+        stem_control: bool,
+    ) -> std::io::Result<()> {
+        let app_settings_path = get_app_settings_path();
+        let settings = serde_json::json!({
+            "theme": selected_theme,
+            "tray_text_mode": tray_text_mode,
+            "stem_control": stem_control,
+        });
+        debug!(
+            "Writing settings to {}: {}",
+            app_settings_path.display(),
+            settings
+        );
+        save_app_settings(&app_settings_path, &settings)
+    }
+
     fn title(&self, _id: window::Id) -> String {
         "LibrePods".to_string()
     }
@@ -247,19 +269,10 @@ impl App {
                 Task::none()
             }
             Message::ThemeSelected(theme) => {
-                self.selected_theme = theme;
-                let app_settings_path = get_app_settings_path();
-                let settings = serde_json::json!({
-                    "theme": self.selected_theme,
-                    "tray_text_mode": self.tray_text_mode,
-                    "stem_control": self.stem_control,
-                });
-                debug!(
-                    "Writing settings to {}: {}",
-                    app_settings_path.to_str().unwrap(),
-                    settings
-                );
-                std::fs::write(app_settings_path, settings.to_string()).ok();
+                match self.persist_settings(theme, self.tray_text_mode, self.stem_control) {
+                    Ok(()) => self.selected_theme = theme,
+                    Err(error) => error!("Failed to persist theme selection: {error}"),
+                }
                 Task::none()
             }
             Message::CopyToClipboard(data) => iced::clipboard::write(data),
@@ -554,35 +567,36 @@ impl App {
                 Task::none()
             }
             Message::ConfirmAddDevice => {
-                if let Some((name, addr)) = self.pending_add_device.take()
-                    && let Some(type_) = self.selected_device_type.take()
+                if let Some((name, addr)) = self.pending_add_device.as_ref()
+                    && let Some(type_) = self.selected_device_type.as_ref()
                 {
                     let devices_path = get_devices_path();
-                    let devices_json = std::fs::read_to_string(&devices_path).unwrap_or_else(|e| {
-                        error!("Failed to read devices file: {}", e);
-                        "{}".to_string()
-                    });
-                    let mut devices_list: HashMap<String, DeviceData> =
-                        serde_json::from_str(&devices_json).unwrap_or_else(|e| {
-                            error!("Deserialization failed: {}", e);
-                            HashMap::new()
+                    let device_key = addr.to_string();
+                    let name = name.clone();
+                    let type_ = type_.clone();
+                    match upsert_device(&devices_path, &device_key, move |existing| {
+                        let information = existing.and_then(|device| {
+                            if device.type_ == type_ {
+                                device.information
+                            } else {
+                                None
+                            }
                         });
-                    devices_list.insert(
-                        addr.to_string(),
                         DeviceData {
                             name,
-                            type_: type_.clone(),
-                            information: None,
-                        },
-                    );
-                    let updated_json = serde_json::to_string(&devices_list).unwrap_or_else(|e| {
-                        error!("Serialization failed: {}", e);
-                        "{}".to_string()
-                    });
-                    if let Err(e) = std::fs::write(&devices_path, updated_json) {
-                        error!("Failed to write devices file: {}", e);
+                            type_,
+                            information,
+                        }
+                    }) {
+                        Ok(_) => {
+                            self.pending_add_device = None;
+                            self.selected_device_type = None;
+                            self.selected_tab = Tab::Device(device_key);
+                        }
+                        Err(error) => {
+                            error!("Failed to persist added device: {error}");
+                        }
                     }
-                    self.selected_tab = Tab::Device(addr.to_string());
                 }
                 Task::none()
             }
@@ -625,35 +639,17 @@ impl App {
                 Task::none()
             }
             Message::TrayTextModeChanged(is_enabled) => {
-                self.tray_text_mode = is_enabled;
-                let app_settings_path = get_app_settings_path();
-                let settings = serde_json::json!({
-                    "theme": self.selected_theme,
-                    "tray_text_mode": self.tray_text_mode,
-                    "stem_control": self.stem_control,
-                });
-                debug!(
-                    "Writing settings to {}: {}",
-                    app_settings_path.to_str().unwrap(),
-                    settings
-                );
-                std::fs::write(app_settings_path, settings.to_string()).ok();
+                match self.persist_settings(self.selected_theme, is_enabled, self.stem_control) {
+                    Ok(()) => self.tray_text_mode = is_enabled,
+                    Err(error) => error!("Failed to persist tray text setting: {error}"),
+                }
                 Task::none()
             }
             Message::StemControlChanged(is_enabled) => {
-                self.stem_control = is_enabled;
-                let app_settings_path = get_app_settings_path();
-                let settings = serde_json::json!({
-                    "theme": self.selected_theme,
-                    "tray_text_mode": self.tray_text_mode,
-                    "stem_control": self.stem_control,
-                });
-                debug!(
-                    "Writing settings to {}: {}",
-                    app_settings_path.to_str().unwrap(),
-                    settings
-                );
-                std::fs::write(app_settings_path, settings.to_string()).ok();
+                match self.persist_settings(self.selected_theme, self.tray_text_mode, is_enabled) {
+                    Ok(()) => self.stem_control = is_enabled,
+                    Err(error) => error!("Failed to persist stem control setting: {error}"),
+                }
                 Task::none()
             }
         }

@@ -1,6 +1,6 @@
 use crate::devices::airpods::AirPodsInformation;
 use crate::devices::enums::{DeviceData, DeviceInformation, DeviceType};
-use crate::utils::get_devices_path;
+use crate::utils::{get_devices_path, upsert_device};
 use bluer::{
     Address, AddressType, Error, Result,
     l2cap::{SeqPacket, Socket, SocketAddr},
@@ -714,21 +714,21 @@ impl AACPManager {
                     },
                 };
                 let mut state = self.state.lock().await;
-                if let Some(mac) = state.airpods_mac
-                    && let Some(device_data) = state.devices.get_mut(&mac.to_string())
+                let persisted_device = if let Some(mac) = state.airpods_mac {
+                    let key = mac.to_string();
+                    state.devices.get_mut(&key).map(|device_data| {
+                        device_data.name = info.name.clone();
+                        device_data.information = Some(DeviceInformation::AirPods(info.clone()));
+                        (key, device_data.clone())
+                    })
+                } else {
+                    None
+                };
+                drop(state);
+                if let Some((key, device)) = persisted_device
+                    && let Err(error) = upsert_device(&get_devices_path(), &key, |_| device)
                 {
-                    device_data.name = info.name.clone();
-                    device_data.information = Some(DeviceInformation::AirPods(info.clone()));
-                }
-                let json = serde_json::to_string(&state.devices).unwrap();
-                if let Some(parent) = get_devices_path().parent()
-                    && let Err(e) = tokio::fs::create_dir_all(&parent).await
-                {
-                    error!("Failed to create directory for devices: {}", e);
-                    return;
-                }
-                if let Err(e) = tokio::fs::write(&get_devices_path(), json).await {
-                    error!("Failed to save devices: {}", e);
+                    error!("Failed to save AirPods information: {error}");
                 }
                 info!("Received Information: {:?}", info);
             }
@@ -807,15 +807,21 @@ impl AACPManager {
                         }
                     }
                 }
-                let json = serde_json::to_string(&state.devices).unwrap();
-                if let Some(parent) = get_devices_path().parent()
-                    && let Err(e) = tokio::fs::create_dir_all(&parent).await
+                let persisted_device = if let Some(mac) = state.airpods_mac {
+                    let key = mac.to_string();
+                    state
+                        .devices
+                        .get(&key)
+                        .cloned()
+                        .map(|device| (key, device))
+                } else {
+                    None
+                };
+                drop(state);
+                if let Some((key, device)) = persisted_device
+                    && let Err(error) = upsert_device(&get_devices_path(), &key, |_| device)
                 {
-                    error!("Failed to create directory for devices: {}", e);
-                    return;
-                }
-                if let Err(e) = tokio::fs::write(&get_devices_path(), json).await {
-                    error!("Failed to save devices: {}", e);
+                    error!("Failed to save AirPods proximity keys: {error}");
                 }
             }
             opcodes::STEM_PRESS => {
