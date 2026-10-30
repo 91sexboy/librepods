@@ -440,17 +440,64 @@ impl ksni::Tray for MyTray {
 }
 
 fn tray_text_color(theme: Option<MyTheme>, charging: bool) -> [u8; 4] {
-    match (charging, theme) {
-        (true, _) => [0, 255, 0, 255],
-        (false, Some(MyTheme::Light)) => [0, 0, 0, 255],
-        (false, _) => [255, 255, 255, 255],
+    if charging {
+        return [0, 255, 0, 255];
     }
+
+    let theme: iced::Theme = theme.unwrap_or(MyTheme::Dark).into();
+    if theme.palette().background.relative_luminance() > 0.5 {
+        [0, 0, 0, 255]
+    } else {
+        [255, 255, 255, 255]
+    }
+}
+
+fn tray_text_outline_color(text_color: [u8; 4]) -> [u8; 4] {
+    let text_color = iced::Color::from_rgb8(text_color[0], text_color[1], text_color[2]);
+    if text_color.relative_contrast(iced::Color::BLACK)
+        >= text_color.relative_contrast(iced::Color::WHITE)
+    {
+        [0, 0, 0, 255]
+    } else {
+        [255, 255, 255, 255]
+    }
+}
+
+fn draw_outlined_text(
+    image: &mut image::RgbaImage,
+    font: &ab_glyph::FontRef<'_>,
+    text: &str,
+    x: i32,
+    y: i32,
+    scale: ab_glyph::PxScale,
+    text_color: [u8; 4],
+) {
+    use image::Rgba;
+    use imageproc::drawing::draw_text_mut;
+
+    let outline = Rgba(tray_text_outline_color(text_color));
+    for offset_y in -2..=2 {
+        for offset_x in -2..=2 {
+            if offset_x == 0 && offset_y == 0 {
+                continue;
+            }
+            draw_text_mut(
+                image,
+                outline,
+                x + offset_x,
+                y + offset_y,
+                scale,
+                font,
+                text,
+            );
+        }
+    }
+    draw_text_mut(image, Rgba(text_color), x, y, scale, font, text);
 }
 
 fn generate_icon(text: &str, text_mode: bool, charging: bool, text_color: [u8; 4]) -> Icon {
     use ab_glyph::{FontRef, PxScale};
     use image::{ImageBuffer, Rgba};
-    use imageproc::drawing::draw_text_mut;
 
     let width = 64;
     let height = 64;
@@ -507,7 +554,6 @@ fn generate_icon(text: &str, text_mode: bool, charging: bool, text_color: [u8; 4
         if charging {
             let emoji = "⚡";
             let scale = PxScale::from(48.0);
-            let color = Rgba([0u8, 255u8, 0u8, 255u8]);
             let scaled_font = font.as_scaled(scale);
             let mut emoji_width = 0.0;
             for c in emoji.chars() {
@@ -516,12 +562,11 @@ fn generate_icon(text: &str, text_mode: bool, charging: bool, text_color: [u8; 4
             }
             let x = ((width as f32 - emoji_width) / 2.0).max(0.0) as i32;
             let y = ((height as f32 - scale.y) / 2.0).max(0.0) as i32;
-            draw_text_mut(&mut img, color, x, y, scale, &font, emoji);
+            draw_outlined_text(&mut img, &font, emoji, x, y, scale, [0, 255, 0, 255]);
         }
     } else {
         // battery text
         let scale = PxScale::from(48.0);
-        let color = Rgba(text_color);
 
         let scaled_font = font.as_scaled(scale);
         let mut text_width = 0.0;
@@ -532,7 +577,7 @@ fn generate_icon(text: &str, text_mode: bool, charging: bool, text_color: [u8; 4
         let x = ((width as f32 - text_width) / 2.0).max(0.0) as i32;
         let y = ((height as f32 - scale.y) / 2.0).max(0.0) as i32;
 
-        draw_text_mut(&mut img, color, x, y, scale, &font, text);
+        draw_outlined_text(&mut img, &font, text, x, y, scale, text_color);
     }
 
     let mut data = Vec::with_capacity((width * height * 4) as usize);
@@ -1033,10 +1078,9 @@ mod tests {
     ];
 
     fn icon_contains_color(icon: &Icon, rgba: [u8; 4]) -> bool {
-        let argb = [rgba[3], rgba[0], rgba[1], rgba[2]];
         icon.data
             .chunks_exact(4)
-            .any(|pixel| pixel == argb.as_slice())
+            .any(|pixel| pixel[0] > 0 && pixel[1..] == rgba[..3])
     }
 
     #[test]
@@ -1074,7 +1118,14 @@ mod tests {
                     .map(|theme| (theme, [255, 255, 255, 255], [0, 0, 0, 255])),
             )
         {
-            let icon = generate_icon("88", true, false, tray_text_color(Some(theme), false));
+            let resolved_main = tray_text_color(Some(theme), false);
+            assert_eq!(resolved_main, main, "wrong main for {theme}");
+            assert_eq!(
+                tray_text_outline_color(resolved_main),
+                outline,
+                "wrong outline for {theme}"
+            );
+            let icon = generate_icon("88", true, false, resolved_main);
             assert!(icon_contains_color(&icon, main), "missing main for {theme}");
             assert!(
                 icon_contains_color(&icon, outline),
@@ -1089,6 +1140,7 @@ mod tests {
             let main = tray_text_color(Some(theme), true);
             let icon = generate_icon("88", true, true, main);
             assert_eq!(main, [0, 255, 0, 255], "{theme}");
+            assert_eq!(tray_text_outline_color(main), [0, 0, 0, 255], "{theme}");
             assert!(
                 icon_contains_color(&icon, [0, 255, 0, 255]),
                 "missing charging main for {theme}"
