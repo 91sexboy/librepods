@@ -2332,6 +2332,23 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn regular_media_information_uses_wire_key_casing() {
+        let (manager, mut receiver) = manager_with_packet_capture().await;
+
+        manager
+            .send_media_information("66:77:88:99:aa:bb", "00:11:22:33:44:55", true)
+            .await
+            .unwrap();
+        let packet = receiver
+            .recv()
+            .await
+            .expect("builder did not send a packet");
+
+        assert_eq!(&packet[17..27], b"playingApp");
+        assert_eq!(&packet[51..69], b"hostStreamingState");
+    }
+
+    #[tokio::test]
     async fn smart_routing_builders_match_captured_packets() {
         let self_mac = "66:77:88:99:aa:bb";
         let target_mac = "00:11:22:33:44:55";
