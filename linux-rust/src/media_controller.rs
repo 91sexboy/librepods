@@ -2820,17 +2820,17 @@ mod tests {
 
     #[tokio::test]
     async fn media_controller_requests_a2dp_once_across_repeated_misses() {
-        let controller = controller();
+        let first_controller = controller();
         let requests = Arc::new(AtomicUsize::new(0));
         let first_requests = requests.clone();
         let second_requests = requests.clone();
 
         let (first, second) = tokio::join!(
-            controller.request_a2dp_connection_once_with(CONNECTED_MAC, move |_| {
+            first_controller.request_a2dp_connection_once_with(CONNECTED_MAC, move |_| {
                 first_requests.fetch_add(1, Ordering::SeqCst);
                 Ok(())
             }),
-            controller.request_a2dp_connection_once_with(CONNECTED_MAC, move |_| {
+            first_controller.request_a2dp_connection_once_with(CONNECTED_MAC, move |_| {
                 second_requests.fetch_add(1, Ordering::SeqCst);
                 Ok(())
             }),
@@ -2842,7 +2842,7 @@ mod tests {
 
         let later_requests = requests.clone();
         assert_eq!(
-            controller
+            first_controller
                 .request_a2dp_connection_once_with(CONNECTED_MAC, move |_| {
                     later_requests.fetch_add(1, Ordering::SeqCst);
                     Ok(())
