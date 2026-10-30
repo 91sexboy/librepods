@@ -1004,27 +1004,107 @@ mod tests {
         assert!(tooltip.description.contains("L: 79%"));
     }
 
-    #[test]
-    fn tray_text_color_contrasts_with_theme_and_charging_state() {
-        let cases = [
-            (
-                "noncharging Light",
-                Some(MyTheme::Light),
-                false,
-                [0, 0, 0, 255],
-            ),
-            (
-                "noncharging Dark",
-                Some(MyTheme::Dark),
-                false,
-                [255, 255, 255, 255],
-            ),
-            ("noncharging Auto", None, false, [255, 255, 255, 255]),
-            ("charging", Some(MyTheme::Light), true, [0, 255, 0, 255]),
-        ];
+    const LIGHT_THEMES: [MyTheme; 6] = [
+        MyTheme::Light,
+        MyTheme::SolarizedLight,
+        MyTheme::GruvboxLight,
+        MyTheme::CatppuccinLatte,
+        MyTheme::TokyoNightLight,
+        MyTheme::KanagawaLotus,
+    ];
 
-        for (case, theme, charging, expected) in cases {
-            assert_eq!(tray_text_color(theme, charging), expected, "{case}");
+    const DARK_THEMES: [MyTheme; 16] = [
+        MyTheme::Dark,
+        MyTheme::Dracula,
+        MyTheme::Nord,
+        MyTheme::SolarizedDark,
+        MyTheme::GruvboxDark,
+        MyTheme::CatppuccinFrappe,
+        MyTheme::CatppuccinMacchiato,
+        MyTheme::CatppuccinMocha,
+        MyTheme::TokyoNight,
+        MyTheme::TokyoNightStorm,
+        MyTheme::KanagawaWave,
+        MyTheme::KanagawaDragon,
+        MyTheme::Moonfly,
+        MyTheme::Nightfly,
+        MyTheme::Oxocarbon,
+        MyTheme::Ferra,
+    ];
+
+    fn icon_contains_color(icon: &Icon, rgba: [u8; 4]) -> bool {
+        let argb = [rgba[3], rgba[0], rgba[1], rgba[2]];
+        icon.data
+            .chunks_exact(4)
+            .any(|pixel| pixel == argb.as_slice())
+    }
+
+    #[test]
+    fn tray_text_main_color_covers_every_iced_theme_variant() {
+        assert_eq!(
+            LIGHT_THEMES.len() + DARK_THEMES.len(),
+            iced::Theme::ALL.len()
+        );
+
+        for theme in LIGHT_THEMES {
+            assert_eq!(
+                tray_text_color(Some(theme), false),
+                [0, 0, 0, 255],
+                "{theme}"
+            );
         }
+        for theme in DARK_THEMES {
+            assert_eq!(
+                tray_text_color(Some(theme), false),
+                [255, 255, 255, 255],
+                "{theme}"
+            );
+        }
+        assert_eq!(tray_text_color(None, false), [255, 255, 255, 255]);
+    }
+
+    #[test]
+    fn noncharging_text_icons_contain_contrasting_main_and_outline_colors() {
+        for (theme, main, outline) in LIGHT_THEMES
+            .into_iter()
+            .map(|theme| (theme, [0, 0, 0, 255], [255, 255, 255, 255]))
+            .chain(
+                DARK_THEMES
+                    .into_iter()
+                    .map(|theme| (theme, [255, 255, 255, 255], [0, 0, 0, 255])),
+            )
+        {
+            let icon = generate_icon("88", true, false, tray_text_color(Some(theme), false));
+            assert!(icon_contains_color(&icon, main), "missing main for {theme}");
+            assert!(
+                icon_contains_color(&icon, outline),
+                "missing outline for {theme}"
+            );
+        }
+    }
+
+    #[test]
+    fn charging_text_icons_contain_green_main_and_black_outline_for_every_theme() {
+        for theme in LIGHT_THEMES.into_iter().chain(DARK_THEMES) {
+            let main = tray_text_color(Some(theme), true);
+            let icon = generate_icon("88", true, true, main);
+            assert_eq!(main, [0, 255, 0, 255], "{theme}");
+            assert!(
+                icon_contains_color(&icon, [0, 255, 0, 255]),
+                "missing charging main for {theme}"
+            );
+            assert!(
+                icon_contains_color(&icon, [0, 0, 0, 255]),
+                "missing charging outline for {theme}"
+            );
+        }
+    }
+
+    #[test]
+    fn charging_ring_glyph_contains_green_main_and_black_outline() {
+        let icon = generate_icon("50", false, true, [0, 255, 0, 255]);
+
+        assert!(icon_contains_color(&icon, [0, 255, 0, 255]));
+        assert!(icon_contains_color(&icon, [0, 0, 0, 255]));
     }
 }
