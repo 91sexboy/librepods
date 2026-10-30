@@ -28,6 +28,7 @@ struct OwnedCardInfo {
     index: u32,
     proplist: Proplist,
     profiles: Vec<OwnedCardProfileInfo>,
+    active_profile: Option<String>,
 }
 
 #[derive(Clone, Debug)]
@@ -89,6 +90,10 @@ fn is_a2dp_sink_profile(profile: &str) -> bool {
         || profile
             .strip_prefix("a2dp-sink-")
             .is_some_and(|codec| !codec.is_empty())
+}
+
+fn should_switch_to_a2dp_profile(active_profile: Option<&str>) -> bool {
+    !active_profile.is_some_and(is_a2dp_sink_profile)
 }
 
 fn preferred_a2dp_profile<'a>(profiles: impl IntoIterator<Item = &'a str>) -> Option<&'a str> {
@@ -494,6 +499,26 @@ impl MediaController {
             .resolve_device_index(&mac, cached_device_index, self.get_audio_device_index(&mac))
             .await?;
 
+        if let Some(active_profile) = self.get_active_profile(device_index).await
+            && !should_switch_to_a2dp_profile(Some(active_profile.as_str()))
+        {
+            let state = self.state.lock().await;
+            if state.connected_device_mac != mac {
+                return Err(ProfileOperationError::ConnectedDeviceChanged);
+            }
+            if state.device_index == Some(device_index) {
+                info!(
+                    "A2DP profile {} already active, not switching",
+                    active_profile
+                );
+                return Ok(());
+            }
+            debug!(
+                "Ignoring active profile {} from stale audio device index {}; current index is {:?}",
+                active_profile, device_index, state.device_index
+            );
+        }
+
         if !self.is_a2dp_profile_available().await {
             warn!("A2DP profile not available, attempting to restart WirePlumber");
             if !self.restart_wire_plumber().await {
@@ -826,6 +851,17 @@ impl MediaController {
         }
         debug!("No suitable profile found");
         String::new()
+    }
+
+    async fn get_active_profile(&self, card_index: u32) -> Option<String> {
+        tokio::task::spawn_blocking(move || {
+            get_card_info_list_sync()
+                .into_iter()
+                .find(|card| card.index == card_index)
+                .and_then(|card| card.active_profile)
+        })
+        .await
+        .unwrap_or(None)
     }
 
     async fn is_profile_available(&self, card_index: u32, profile: &str) -> bool {
@@ -1195,6 +1231,10 @@ fn get_card_info_list_sync() -> Vec<OwnedCardInfo> {
                     index: item.index,
                     proplist: item.proplist.clone(),
                     profiles,
+                    active_profile: item
+                        .active_profile
+                        .as_ref()
+                        .and_then(|profile| profile.name.as_ref().map(|name| name.to_string())),
                 });
             }
         }
@@ -1577,6 +1617,26 @@ mod tests {
             ]
         );
         assert!(packet_rx.try_recv().is_err());
+    }
+
+    #[test]
+    fn active_hyphenated_a2dp_codec_skips_profile_switch() {
+        assert!(!should_switch_to_a2dp_profile(Some("a2dp-sink-aac")));
+    }
+
+    #[test]
+    fn active_underscored_a2dp_codec_skips_profile_switch() {
+        assert!(!should_switch_to_a2dp_profile(Some("a2dp_sink_aac")));
+    }
+
+    #[test]
+    fn active_off_profile_requires_profile_switch() {
+        assert!(should_switch_to_a2dp_profile(Some("off")));
+    }
+
+    #[test]
+    fn active_headset_profile_requires_profile_switch() {
+        assert!(should_switch_to_a2dp_profile(Some("headset-head-unit")));
     }
 
     #[test]
