@@ -366,6 +366,8 @@ fn parse_information_payload(payload: &[u8]) -> Option<AirPodsInformation> {
 
 pub struct AACPManagerState {
     pub sender: Option<mpsc::Sender<Vec<u8>>>,
+    // Bumped whenever the active packet channel is installed or invalidated.
+    pub(crate) connection_generation: u64,
     pub control_command_status_list: Vec<ControlCommandStatus>,
     pub control_command_subscribers:
         HashMap<ControlCommandIdentifiers, Vec<mpsc::UnboundedSender<Vec<u8>>>>,
@@ -390,6 +392,7 @@ impl AACPManagerState {
             .unwrap_or_default();
         AACPManagerState {
             sender: None,
+            connection_generation: 0,
             control_command_status_list: Vec::new(),
             control_command_subscribers: HashMap::new(),
             owns: false,
@@ -477,39 +480,125 @@ impl AACPManager {
 
         let (tx, rx) = mpsc::channel(128);
 
-        let manager_clone = self.clone();
-        {
-            let mut state = self.state.lock().await;
-            state.sender = Some(tx);
-        }
+        let connection_generation = self.install_connection(tx).await;
 
         let mut tasks = self.tasks.lock().await;
-        tasks.spawn(recv_thread(manager_clone, seq_packet.clone()));
-        tasks.spawn(send_thread(rx, seq_packet));
+        tasks.spawn(recv_thread(
+            self.clone(),
+            seq_packet.clone(),
+            connection_generation,
+        ));
+        tasks.spawn(send_thread(
+            self.clone(),
+            rx,
+            seq_packet,
+            connection_generation,
+        ));
     }
 
     async fn send_packet(&self, data: &[u8]) -> Result<()> {
-        let state = self.state.lock().await;
-        if let Some(sender) = &state.sender {
-            sender.send(data.to_vec()).await.map_err(|e| {
-                error!("Failed to send packet to channel: {}", e);
-                Error::from(std::io::Error::new(
+        self.send_packet_for_generation(data, None).await
+    }
+
+    async fn send_packet_for_generation(
+        &self,
+        data: &[u8],
+        expected_generation: Option<u64>,
+    ) -> Result<()> {
+        let (sender, connection_generation) = {
+            let state = self.state.lock().await;
+            if expected_generation.is_some_and(|expected| {
+                expected != state.connection_generation || state.sender.is_none()
+            }) {
+                return Err(Error::from(std::io::Error::new(
                     std::io::ErrorKind::NotConnected,
-                    "L2CAP send channel closed",
-                ))
-            })
-        } else {
+                    "AACP connection generation changed",
+                )));
+            }
+            (state.sender.clone(), state.connection_generation)
+        };
+        let Some(sender) = sender else {
             error!("Cannot send packet, sender is not available.");
-            Err(Error::from(std::io::Error::new(
+            return Err(Error::from(std::io::Error::new(
                 std::io::ErrorKind::NotConnected,
                 "L2CAP stream not connected",
-            )))
+            )));
+        };
+
+        let permit = match sender.clone().reserve_owned().await {
+            Ok(permit) => permit,
+            Err(e) => {
+                error!("Failed to reserve packet channel capacity: {}", e);
+                self.clear_connection_if_current(connection_generation)
+                    .await;
+                return Err(Error::from(std::io::Error::new(
+                    std::io::ErrorKind::NotConnected,
+                    "L2CAP send channel closed",
+                )));
+            }
+        };
+
+        let state = self.state.lock().await;
+        let sender_is_current = state.connection_generation == connection_generation
+            && expected_generation.is_none_or(|expected| expected == connection_generation)
+            && state
+                .sender
+                .as_ref()
+                .is_some_and(|current| current.same_channel(&sender));
+        if !sender_is_current {
+            error!("Cannot send packet, the L2CAP connection changed while waiting.");
+            return Err(Error::from(std::io::Error::new(
+                std::io::ErrorKind::NotConnected,
+                "L2CAP connection changed while sending",
+            )));
         }
+
+        permit.send(data.to_vec());
+        Ok(())
+    }
+
+    async fn install_connection(&self, sender: mpsc::Sender<Vec<u8>>) -> u64 {
+        let mut state = self.state.lock().await;
+        state.connection_generation = state.connection_generation.wrapping_add(1);
+        state.sender = Some(sender);
+        Self::clear_connection_data(&mut state);
+        state.connection_generation
+    }
+
+    async fn clear_connection_if_current(&self, connection_generation: u64) -> bool {
+        let mut state = self.state.lock().await;
+        if state.connection_generation != connection_generation {
+            return false;
+        }
+
+        state.sender = None;
+        Self::clear_connection_data(&mut state);
+        state.connection_generation = state.connection_generation.wrapping_add(1);
+        true
+    }
+
+    fn clear_connection_data(state: &mut AACPManagerState) {
+        state.owns = false;
+        state.old_connected_devices.clear();
+        state.connected_devices.clear();
+        state.audio_source = None;
+        state.control_command_status_list.clear();
+        state.old_ear_detection_status.clear();
+        state.ear_detection_status.clear();
     }
 
     async fn send_data_packet(&self, data: &[u8]) -> Result<()> {
+        self.send_data_packet_for_generation(data, None).await
+    }
+
+    async fn send_data_packet_for_generation(
+        &self,
+        data: &[u8],
+        connection_generation: Option<u64>,
+    ) -> Result<()> {
         let packet = [HEADER_BYTES.as_slice(), data].concat();
-        self.send_packet(&packet).await
+        self.send_packet_for_generation(&packet, connection_generation)
+            .await
     }
 
     pub async fn set_event_channel(&self, tx: mpsc::UnboundedSender<AACPEvent>) {
@@ -823,11 +912,7 @@ impl AACPManager {
                 }
                 let persisted_device = if let Some(mac) = state.airpods_mac {
                     let key = mac.to_string();
-                    state
-                        .devices
-                        .get(&key)
-                        .cloned()
-                        .map(|device| (key, device))
+                    state.devices.get(&key).cloned().map(|device| (key, device))
                 } else {
                     None
                 };
@@ -1001,13 +1086,38 @@ impl AACPManager {
         identifier: ControlCommandIdentifiers,
         value: &[u8],
     ) -> Result<()> {
+        self.send_control_command_for_generation_inner(identifier, value, None)
+            .await
+    }
+
+    pub(crate) async fn send_control_command_for_generation(
+        &self,
+        identifier: ControlCommandIdentifiers,
+        value: &[u8],
+        connection_generation: u64,
+    ) -> Result<()> {
+        self.send_control_command_for_generation_inner(
+            identifier,
+            value,
+            Some(connection_generation),
+        )
+        .await
+    }
+
+    async fn send_control_command_for_generation_inner(
+        &self,
+        identifier: ControlCommandIdentifiers,
+        value: &[u8],
+        connection_generation: Option<u64>,
+    ) -> Result<()> {
         let opcode = [opcodes::CONTROL_COMMAND, 0x00];
         let mut data = vec![identifier as u8];
         for i in 0..4 {
             data.push(value.get(i).copied().unwrap_or(0));
         }
         let packet = [opcode.as_slice(), data.as_slice()].concat();
-        self.send_data_packet(&packet).await
+        self.send_data_packet_for_generation(&packet, connection_generation)
+            .await
     }
 
     pub async fn send_media_information_new_device(
@@ -1048,6 +1158,27 @@ impl AACPManager {
     }
 
     pub async fn send_hijack_request(&self, target_mac_address: &str) -> Result<()> {
+        self.send_hijack_request_for_generation_inner(target_mac_address, None)
+            .await
+    }
+
+    pub(crate) async fn send_hijack_request_for_generation(
+        &self,
+        target_mac_address: &str,
+        connection_generation: u64,
+    ) -> Result<()> {
+        self.send_hijack_request_for_generation_inner(
+            target_mac_address,
+            Some(connection_generation),
+        )
+        .await
+    }
+
+    async fn send_hijack_request_for_generation_inner(
+        &self,
+        target_mac_address: &str,
+        connection_generation: Option<u64>,
+    ) -> Result<()> {
         let target_address = parse_address(target_mac_address)?;
         let opcode = [opcodes::SMART_ROUTING, 0x00];
         let mut buffer = Vec::with_capacity(106);
@@ -1075,7 +1206,8 @@ impl AACPManager {
         }
 
         let packet = [opcode.as_slice(), buffer.as_slice()].concat();
-        self.send_data_packet(&packet).await
+        self.send_data_packet_for_generation(&packet, connection_generation)
+            .await
     }
 
     pub async fn send_media_information(
@@ -1083,6 +1215,38 @@ impl AACPManager {
         self_mac_address: &str,
         target_mac_address: &str,
         streaming_state: bool,
+    ) -> Result<()> {
+        self.send_media_information_for_generation_inner(
+            self_mac_address,
+            target_mac_address,
+            streaming_state,
+            None,
+        )
+        .await
+    }
+
+    pub(crate) async fn send_media_information_for_generation(
+        &self,
+        self_mac_address: &str,
+        target_mac_address: &str,
+        streaming_state: bool,
+        connection_generation: u64,
+    ) -> Result<()> {
+        self.send_media_information_for_generation_inner(
+            self_mac_address,
+            target_mac_address,
+            streaming_state,
+            Some(connection_generation),
+        )
+        .await
+    }
+
+    async fn send_media_information_for_generation_inner(
+        &self,
+        self_mac_address: &str,
+        target_mac_address: &str,
+        streaming_state: bool,
+        connection_generation: Option<u64>,
     ) -> Result<()> {
         let self_address = parse_address(self_mac_address)?.to_string();
         let target_address = parse_address(target_mac_address)?;
@@ -1114,10 +1278,32 @@ impl AACPManager {
             buffer.push(0x00);
         }
         let packet = [opcode.as_slice(), buffer.as_slice()].concat();
-        self.send_data_packet(&packet).await
+        self.send_data_packet_for_generation(&packet, connection_generation)
+            .await
     }
 
     pub async fn send_smart_routing_show_ui(&self, target_mac_address: &str) -> Result<()> {
+        self.send_smart_routing_show_ui_for_generation_inner(target_mac_address, None)
+            .await
+    }
+
+    pub(crate) async fn send_smart_routing_show_ui_for_generation(
+        &self,
+        target_mac_address: &str,
+        connection_generation: u64,
+    ) -> Result<()> {
+        self.send_smart_routing_show_ui_for_generation_inner(
+            target_mac_address,
+            Some(connection_generation),
+        )
+        .await
+    }
+
+    async fn send_smart_routing_show_ui_for_generation_inner(
+        &self,
+        target_mac_address: &str,
+        connection_generation: Option<u64>,
+    ) -> Result<()> {
         let target_address = parse_address(target_mac_address)?;
         let opcode = [opcodes::SMART_ROUTING, 0x00];
         let mut buffer = Vec::with_capacity(134);
@@ -1147,7 +1333,8 @@ impl AACPManager {
         }
 
         let packet = [opcode.as_slice(), buffer.as_slice()].concat();
-        self.send_data_packet(&packet).await
+        self.send_data_packet_for_generation(&packet, connection_generation)
+            .await
     }
 
     pub async fn send_hijack_reversed(&self, target_mac_address: &str) -> Result<()> {
@@ -1214,7 +1401,7 @@ impl AACPManager {
     }
 }
 
-async fn recv_thread(manager: AACPManager, sp: Arc<SeqPacket>) {
+async fn recv_thread(manager: AACPManager, sp: Arc<SeqPacket>, connection_generation: u64) {
     let mut buf = vec![0u8; 1024];
     loop {
         match sp.recv(&mut buf).await {
@@ -1229,39 +1416,44 @@ async fn recv_thread(manager: AACPManager, sp: Arc<SeqPacket>) {
             }
             Err(e) => {
                 debug!("Read error: {}", e);
-                info!(
-                    "We have probably disconnected, clearing state variables (owns=false, connected_devices=empty, control_command_status_list=empty)."
-                );
-                let mut state = manager.state.lock().await;
-                state.owns = false;
-                state.connected_devices.clear();
-                state.control_command_status_list.clear();
                 break;
             }
         }
     }
-    let mut state = manager.state.lock().await;
-    state.sender = None;
+    if manager
+        .clear_connection_if_current(connection_generation)
+        .await
+    {
+        info!("Cleared AACP state for disconnected connection");
+    }
 }
 
-async fn send_thread(mut rx: mpsc::Receiver<Vec<u8>>, sp: Arc<SeqPacket>) {
+async fn send_thread(
+    manager: AACPManager,
+    mut rx: mpsc::Receiver<Vec<u8>>,
+    sp: Arc<SeqPacket>,
+    connection_generation: u64,
+) {
     while let Some(data) = rx.recv().await {
         let mut attempts = 0;
         loop {
-          match sp.send(&data).await {
-            Ok(_) => {
-              debug!("Sent {} bytes: {}", data.len(), hex::encode(&data));
-              break;
+            match sp.send(&data).await {
+                Ok(_) => {
+                    debug!("Sent {} bytes: {}", data.len(), hex::encode(&data));
+                    break;
+                }
+                Err(e) if e.raw_os_error() == Some(107) && attempts < 10 => {
+                    attempts += 1;
+                    sleep(Duration::from_millis(100)).await;
+                }
+                Err(e) => {
+                    error!("Failed to send data: {}", e);
+                    manager
+                        .clear_connection_if_current(connection_generation)
+                        .await;
+                    return;
+                }
             }
-            Err(e) if e.raw_os_error() == Some(107) && attempts < 10 => {
-              attempts += 1;
-              sleep(Duration::from_millis(100)).await;
-            }
-            Err(e) => {
-              error!("Failed to send data: {}", e);
-              return;
-            }
-          }
         }
     }
     info!("Send thread finished.");
@@ -1280,10 +1472,7 @@ mod tests {
     }
 
     fn information_packet(fields: &[&[u8]]) -> Vec<u8> {
-        let mut packet = protocol_packet(
-            opcodes::INFORMATION,
-            &[0x02, 0xD5, 0x00, 0x04, 0x00],
-        );
+        let mut packet = protocol_packet(opcodes::INFORMATION, &[0x02, 0xD5, 0x00, 0x04, 0x00]);
         for field in fields {
             packet.extend_from_slice(field);
             packet.push(0x00);
@@ -1326,11 +1515,11 @@ mod tests {
         (manager, receiver)
     }
 
-    async fn assert_captured_packet(
-        receiver: &mut mpsc::Receiver<Vec<u8>>,
-        expected_hex: &str,
-    ) {
-        let actual = receiver.recv().await.expect("builder did not send a packet");
+    async fn assert_captured_packet(receiver: &mut mpsc::Receiver<Vec<u8>>, expected_hex: &str) {
+        let actual = receiver
+            .recv()
+            .await
+            .expect("builder did not send a packet");
         let expected = hex::decode(expected_hex).expect("captured packet must be valid hex");
         assert_eq!(actual, expected);
     }
@@ -1338,8 +1527,7 @@ mod tests {
     #[tokio::test]
     async fn ear_detection_requires_four_payload_bytes_and_accepts_exact_boundary() {
         let manager = AACPManager::new();
-        manager.state.lock().await.ear_detection_status =
-            vec![EarDetectionStatus::OutOfEar];
+        manager.state.lock().await.ear_detection_status = vec![EarDetectionStatus::OutOfEar];
 
         let truncated = protocol_packet(opcodes::EAR_DETECTION, &[0x00]);
         manager.receive_packet(&truncated).await;
@@ -1456,8 +1644,7 @@ mod tests {
             .receive_packet(&information_packet(&malformed_fields))
             .await;
 
-        let dummy_fields: [&[u8]; INFORMATION_FIELD_COUNT] =
-            [b""; INFORMATION_FIELD_COUNT];
+        let dummy_fields: [&[u8]; INFORMATION_FIELD_COUNT] = [b""; INFORMATION_FIELD_COUNT];
         manager
             .receive_packet(&information_packet(&dummy_fields))
             .await;
@@ -1515,8 +1702,8 @@ mod tests {
             [0x00, 0x00],
             2,
             &[
-                0x00, 0x11, 0x22, 0x33, 0x44, 0x55, 0xA1, 0xB1, 0x66, 0x77, 0x88, 0x99,
-                0xAA, 0xBB, 0xA2, 0xB2,
+                0x00, 0x11, 0x22, 0x33, 0x44, 0x55, 0xA1, 0xB1, 0x66, 0x77, 0x88, 0x99, 0xAA, 0xBB,
+                0xA2, 0xB2,
             ],
         );
 
@@ -1548,10 +1735,7 @@ mod tests {
 
         manager.receive_packet(&packet).await;
 
-        assert_eq!(
-            manager.state.lock().await.connected_devices,
-            vec![existing]
-        );
+        assert_eq!(manager.state.lock().await.connected_devices, vec![existing]);
     }
 
     #[tokio::test]
@@ -1731,5 +1915,103 @@ mod tests {
             ),
         )
         .await;
+    }
+
+    use std::task::Poll;
+    use tokio::time::timeout;
+
+    #[tokio::test]
+    async fn pending_send_releases_state_lock() {
+        let manager = AACPManager::new();
+        let (sender, mut receiver) = mpsc::channel(1);
+        sender.send(vec![0xAA]).await.unwrap();
+        manager.install_connection(sender).await;
+
+        let send = manager.send_handshake();
+        tokio::pin!(send);
+        assert!(matches!(futures::poll!(send.as_mut()), Poll::Pending));
+
+        let state = timeout(Duration::from_millis(250), manager.state.lock())
+            .await
+            .expect("AACP state lock stayed held while the bounded channel was full");
+        drop(state);
+
+        assert_eq!(receiver.recv().await, Some(vec![0xAA]));
+        send.await.unwrap();
+        assert!(receiver.recv().await.is_some());
+    }
+
+    #[tokio::test]
+    async fn disconnect_invalidates_pending_send_and_connection_state() {
+        let manager = AACPManager::new();
+        let (sender, receiver) = mpsc::channel(1);
+        sender.send(vec![0xAA]).await.unwrap();
+        let generation = manager.install_connection(sender).await;
+        {
+            let mut state = manager.state.lock().await;
+            state.owns = true;
+            state.connected_devices.push(ConnectedDevice {
+                mac: "11:22:33:44:55:66".into(),
+                info1: 0,
+                info2: 0,
+                r#type: None,
+            });
+            state.ear_detection_status = vec![EarDetectionStatus::InEar];
+        }
+
+        let send = manager.send_handshake();
+        tokio::pin!(send);
+        assert!(matches!(futures::poll!(send.as_mut()), Poll::Pending));
+
+        assert!(manager.clear_connection_if_current(generation).await);
+        drop(receiver);
+        assert!(
+            timeout(Duration::from_millis(250), send)
+                .await
+                .expect("pending send did not finish after disconnect")
+                .is_err()
+        );
+
+        let state = manager.state.lock().await;
+        assert!(state.sender.is_none());
+        assert!(!state.owns);
+        assert!(state.connected_devices.is_empty());
+        assert!(state.ear_detection_status.is_empty());
+        assert_ne!(state.connection_generation, generation);
+    }
+
+    #[tokio::test]
+    async fn closed_send_channel_returns_error_and_invalidates_generation() {
+        let manager = AACPManager::new();
+        let (sender, receiver) = mpsc::channel(1);
+        let generation = manager.install_connection(sender).await;
+        drop(receiver);
+
+        assert!(manager.send_handshake().await.is_err());
+
+        let state = manager.state.lock().await;
+        assert!(state.sender.is_none());
+        assert_ne!(state.connection_generation, generation);
+    }
+
+    #[tokio::test]
+    async fn stale_disconnect_does_not_clear_replacement_connection() {
+        let manager = AACPManager::new();
+        let (old_sender, _old_receiver) = mpsc::channel(1);
+        let old_generation = manager.install_connection(old_sender).await;
+        let (new_sender, _new_receiver) = mpsc::channel(1);
+        let expected_sender = new_sender.clone();
+        let new_generation = manager.install_connection(new_sender).await;
+
+        assert!(!manager.clear_connection_if_current(old_generation).await);
+
+        let state = manager.state.lock().await;
+        assert_eq!(state.connection_generation, new_generation);
+        assert!(
+            state
+                .sender
+                .as_ref()
+                .is_some_and(|sender| sender.same_channel(&expected_sender))
+        );
     }
 }

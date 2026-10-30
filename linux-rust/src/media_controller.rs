@@ -1,5 +1,4 @@
-use crate::bluetooth::aacp::AACPManager;
-use crate::bluetooth::aacp::EarDetectionStatus;
+use crate::bluetooth::aacp::{AACPManager, ControlCommandIdentifiers, EarDetectionStatus};
 use dbus::arg::RefArg;
 use dbus::blocking::Connection;
 use dbus::blocking::stdintf::org_freedesktop_dbus::Properties;
@@ -36,6 +35,48 @@ struct OwnedSinkInfo {
     name: Option<String>,
     proplist: Proplist,
     volume: ChannelVolumes,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ProfileOperationError {
+    NoConnectedDevice,
+    AudioDeviceNotFound,
+    ConnectedDeviceChanged,
+    WirePlumberRestartFailed,
+    A2dpProfileUnavailable,
+    NoPreferredA2dpProfile,
+    ProfileWorkerStopped,
+    ProfileSwitchFailed(String),
+}
+
+pub type ProfileOperationResult = std::result::Result<(), ProfileOperationError>;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum RoutingPacketKind {
+    MediaInformation,
+    ShowUi,
+    HijackRequest,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum PlaybackTakeoverFailure {
+    ProfileActivation(ProfileOperationError),
+    OwnershipSend(String),
+    RoutingSend {
+        device_mac: String,
+        packet: RoutingPacketKind,
+        error: String,
+    },
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum PlaybackTakeoverOutcome {
+    Completed,
+    SkippedNotInEar,
+    AbortedDisconnected,
+    AbortedConnectionChanged,
+    AbortedEarStateChanged,
+    Failed(PlaybackTakeoverFailure),
 }
 
 struct MediaControllerState {
@@ -91,14 +132,7 @@ impl MediaController {
         }
     }
 
-    pub async fn start_playback_listener(
-        &self,
-        aacp_manager: AACPManager,
-        control_tx: tokio::sync::mpsc::UnboundedSender<(
-            crate::bluetooth::aacp::ControlCommandIdentifiers,
-            Vec<u8>,
-        )>,
-    ) {
+    pub async fn start_playback_listener(&self, aacp_manager: AACPManager) {
         let mut state = self.state.lock().await;
         if state.playback_listener_running {
             debug!("Playback listener already running");
@@ -109,20 +143,11 @@ impl MediaController {
 
         let controller_clone = self.clone();
         tokio::spawn(async move {
-            controller_clone
-                .playback_listener_loop(aacp_manager, control_tx)
-                .await;
+            controller_clone.playback_listener_loop(aacp_manager).await;
         });
     }
 
-    async fn playback_listener_loop(
-        &self,
-        aacp_manager: AACPManager,
-        control_tx: tokio::sync::mpsc::UnboundedSender<(
-            crate::bluetooth::aacp::ControlCommandIdentifiers,
-            Vec<u8>,
-        )>,
-    ) {
+    async fn playback_listener_loop(&self, aacp_manager: AACPManager) {
         info!("Starting playback listener loop");
         loop {
             tokio::time::sleep(Duration::from_millis(500)).await;
@@ -138,47 +163,153 @@ impl MediaController {
             drop(state);
 
             if !was_playing && is_playing {
-                let aacp_state = aacp_manager.state.lock().await;
-                if !aacp_state
-                    .ear_detection_status
-                    .contains(&EarDetectionStatus::InEar)
+                match self
+                    .handle_playback_started(
+                        &aacp_manager,
+                        &local_mac,
+                        self.activate_a2dp_profile(),
+                    )
+                    .await
                 {
-                    info!("Media playback started but buds not in ear, skipping takeover");
-                    continue;
-                }
-                info!("Media playback started, taking ownership and activating a2dp");
-                let _ = control_tx.send((
-                    crate::bluetooth::aacp::ControlCommandIdentifiers::OwnsConnection,
-                    vec![0x01],
-                ));
-                self.activate_a2dp_profile().await;
-
-                info!("already connected locally, hijacking connection by asking AirPods");
-
-                let connected_devices = aacp_state.connected_devices.clone();
-                for device in connected_devices {
-                    if device.mac != local_mac {
-                        if let Err(e) = aacp_manager
-                            .send_media_information(&local_mac, &device.mac, true)
-                            .await
-                        {
-                            error!("Failed to send media information to {}: {}", device.mac, e);
-                        }
-                        if let Err(e) = aacp_manager.send_smart_routing_show_ui(&device.mac).await {
-                            error!(
-                                "Failed to send smart routing show ui to {}: {}",
-                                device.mac, e
-                            );
-                        }
-                        if let Err(e) = aacp_manager.send_hijack_request(&device.mac).await {
-                            error!("Failed to send hijack request to {}: {}", device.mac, e);
-                        }
+                    PlaybackTakeoverOutcome::Completed => {}
+                    PlaybackTakeoverOutcome::SkippedNotInEar => {
+                        info!("Media playback started but buds not in ear, skipping takeover");
+                    }
+                    PlaybackTakeoverOutcome::AbortedDisconnected => {
+                        warn!("Playback takeover aborted because AACP disconnected");
+                    }
+                    PlaybackTakeoverOutcome::AbortedConnectionChanged => {
+                        warn!("Playback takeover aborted because the AACP connection changed");
+                    }
+                    PlaybackTakeoverOutcome::AbortedEarStateChanged => {
+                        info!("Playback takeover aborted because the buds left the ear");
+                    }
+                    PlaybackTakeoverOutcome::Failed(failure) => {
+                        error!("Playback takeover failed: {:?}", failure);
                     }
                 }
-
-                debug!("completed playback takeover process");
             }
         }
+    }
+
+    async fn handle_playback_started(
+        &self,
+        aacp_manager: &AACPManager,
+        local_mac: &str,
+        activate_a2dp: impl std::future::Future<Output = ProfileOperationResult>,
+    ) -> PlaybackTakeoverOutcome {
+        let connection_generation = {
+            let aacp_state = aacp_manager.state.lock().await;
+            if aacp_state.sender.is_none() {
+                return PlaybackTakeoverOutcome::AbortedDisconnected;
+            }
+            if !aacp_state
+                .ear_detection_status
+                .contains(&EarDetectionStatus::InEar)
+            {
+                return PlaybackTakeoverOutcome::SkippedNotInEar;
+            }
+            aacp_state.connection_generation
+        };
+
+        info!("Media playback started, activating A2DP before taking ownership");
+        if let Err(error) = activate_a2dp.await {
+            return PlaybackTakeoverOutcome::Failed(PlaybackTakeoverFailure::ProfileActivation(
+                error,
+            ));
+        }
+
+        {
+            let aacp_state = aacp_manager.state.lock().await;
+            if aacp_state.connection_generation != connection_generation {
+                return PlaybackTakeoverOutcome::AbortedConnectionChanged;
+            }
+            if aacp_state.sender.is_none() {
+                return PlaybackTakeoverOutcome::AbortedDisconnected;
+            }
+            if !aacp_state
+                .ear_detection_status
+                .contains(&EarDetectionStatus::InEar)
+            {
+                return PlaybackTakeoverOutcome::AbortedEarStateChanged;
+            }
+        }
+
+        if let Err(error) = aacp_manager
+            .send_control_command_for_generation(
+                ControlCommandIdentifiers::OwnsConnection,
+                &[0x01],
+                connection_generation,
+            )
+            .await
+        {
+            return PlaybackTakeoverOutcome::Failed(PlaybackTakeoverFailure::OwnershipSend(
+                error.to_string(),
+            ));
+        }
+
+        let connected_devices = {
+            let aacp_state = aacp_manager.state.lock().await;
+            if aacp_state.connection_generation != connection_generation {
+                return PlaybackTakeoverOutcome::AbortedConnectionChanged;
+            }
+            if aacp_state.sender.is_none() {
+                return PlaybackTakeoverOutcome::AbortedDisconnected;
+            }
+            if !aacp_state
+                .ear_detection_status
+                .contains(&EarDetectionStatus::InEar)
+            {
+                return PlaybackTakeoverOutcome::AbortedEarStateChanged;
+            }
+            aacp_state.connected_devices.clone()
+        };
+
+        info!("Ownership queued, sending smart-routing takeover packets");
+        for device in connected_devices {
+            if device.mac == local_mac {
+                continue;
+            }
+
+            if let Err(error) = aacp_manager
+                .send_media_information_for_generation(
+                    local_mac,
+                    &device.mac,
+                    true,
+                    connection_generation,
+                )
+                .await
+            {
+                return PlaybackTakeoverOutcome::Failed(PlaybackTakeoverFailure::RoutingSend {
+                    device_mac: device.mac,
+                    packet: RoutingPacketKind::MediaInformation,
+                    error: error.to_string(),
+                });
+            }
+            if let Err(error) = aacp_manager
+                .send_smart_routing_show_ui_for_generation(&device.mac, connection_generation)
+                .await
+            {
+                return PlaybackTakeoverOutcome::Failed(PlaybackTakeoverFailure::RoutingSend {
+                    device_mac: device.mac,
+                    packet: RoutingPacketKind::ShowUi,
+                    error: error.to_string(),
+                });
+            }
+            if let Err(error) = aacp_manager
+                .send_hijack_request_for_generation(&device.mac, connection_generation)
+                .await
+            {
+                return PlaybackTakeoverOutcome::Failed(PlaybackTakeoverFailure::RoutingSend {
+                    device_mac: device.mac,
+                    packet: RoutingPacketKind::HijackRequest,
+                    error: error.to_string(),
+                });
+            }
+        }
+
+        debug!("Completed playback takeover process");
+        PlaybackTakeoverOutcome::Completed
     }
 
     fn check_if_playing() -> bool {
@@ -238,7 +369,9 @@ impl MediaController {
 
         if new_has_at_least_one_in && old_all_out {
             debug!("Condition met: buds inserted, activating A2DP and checking play state");
-            self.activate_a2dp_profile().await;
+            if let Err(error) = self.activate_a2dp_profile().await {
+                error!("Failed to activate A2DP after ear insertion: {:?}", error);
+            }
             {
                 let mut state = self.state.lock().await;
                 if state.is_playing {
@@ -249,12 +382,11 @@ impl MediaController {
         } else if new_all_out {
             debug!("Condition met: buds removed, pausing media");
             self.pause().await;
-            {
-                let state = self.state.lock().await;
-                if state.disconnect_when_not_wearing {
-                    debug!("Disconnect when not wearing enabled, deactivating A2DP");
-                    drop(state);
-                    self.deactivate_a2dp_profile().await;
+            let disconnect_when_not_wearing = self.state.lock().await.disconnect_when_not_wearing;
+            if disconnect_when_not_wearing {
+                debug!("Disconnect when not wearing enabled, deactivating A2DP");
+                if let Err(error) = self.deactivate_a2dp_profile().await {
+                    error!("Failed to deactivate A2DP after ear removal: {:?}", error);
                 }
             }
         }
@@ -301,76 +433,135 @@ impl MediaController {
         }
     }
 
-    pub async fn activate_a2dp_profile(&self) {
+    pub async fn activate_a2dp_profile(&self) -> ProfileOperationResult {
         debug!("Entering activate_a2dp_profile");
-        let state = self.state.lock().await;
+        let (mac, cached_device_index) = {
+            let state = self.state.lock().await;
+            (state.connected_device_mac.clone(), state.device_index)
+        };
 
-        if state.connected_device_mac.is_empty() {
+        if mac.is_empty() {
             warn!("Connected device MAC is empty, cannot activate A2DP profile");
-            return;
+            return Err(ProfileOperationError::NoConnectedDevice);
         }
 
-        let device_index = state.device_index;
-        let mac = state.connected_device_mac.clone();
-        drop(state);
-
-        let mut current_device_index = device_index;
-
-        if current_device_index.is_none() {
-            warn!("Device index not found, trying to get it.");
-            current_device_index = self.get_audio_device_index(&mac).await;
-            if let Some(idx) = current_device_index {
-                self.state.lock().await.device_index = Some(idx);
-            } else {
-                warn!("Could not get device index. Cannot activate A2DP profile.");
-                return;
-            }
-        }
+        let device_index = self
+            .resolve_device_index(&mac, cached_device_index, self.get_audio_device_index(&mac))
+            .await?;
 
         if !self.is_a2dp_profile_available().await {
             warn!("A2DP profile not available, attempting to restart WirePlumber");
-            if self.restart_wire_plumber().await {
-                let mut state = self.state.lock().await;
-                state.device_index = self
-                    .get_audio_device_index(&state.connected_device_mac)
-                    .await;
-                debug!(
-                    "Updated device_index after WirePlumber restart: {:?}",
-                    state.device_index
-                );
-                if !self.is_a2dp_profile_available().await {
-                    error!("A2DP profile still not available after WirePlumber restart");
-                    return;
-                }
-            } else {
+            if !self.restart_wire_plumber().await {
                 error!("Could not restart WirePlumber, A2DP profile unavailable");
-                return;
+                return Err(ProfileOperationError::WirePlumberRestartFailed);
             }
+
+            self.refresh_device_index_and_recheck(
+                &mac,
+                self.get_audio_device_index(&mac),
+                self.is_a2dp_profile_available(),
+            )
+            .await?;
         }
 
         let preferred_profile = self.get_preferred_a2dp_profile().await;
         if preferred_profile.is_empty() {
             error!("No suitable A2DP profile found");
-            return;
+            return Err(ProfileOperationError::NoPreferredA2dpProfile);
         }
 
-        let device_index = self.state.lock().await.device_index;
-        if let Some(idx) = device_index {
-            info!("Activating A2DP profile for AirPods: {}", preferred_profile);
-            let profile_name = preferred_profile.clone();
-            let success =
-                tokio::task::spawn_blocking(move || set_card_profile_sync(idx, &profile_name))
-                    .await
-                    .unwrap_or(false);
-
-            if success {
-                info!("Successfully activated A2DP profile: {}", preferred_profile);
-            } else {
-                warn!("Failed to activate A2DP profile: {}", preferred_profile);
+        let current_device_index = {
+            let state = self.state.lock().await;
+            if state.connected_device_mac != mac {
+                return Err(ProfileOperationError::ConnectedDeviceChanged);
             }
-        } else {
-            error!("Device index not available for activating profile.");
+            state.device_index
+        };
+        let current_device_index =
+            current_device_index.ok_or(ProfileOperationError::AudioDeviceNotFound)?;
+        if current_device_index != device_index {
+            debug!(
+                "Audio device index changed from {} to {} during activation",
+                device_index, current_device_index
+            );
         }
+
+        info!("Activating A2DP profile for AirPods: {}", preferred_profile);
+        let profile_name = preferred_profile.clone();
+        let success = tokio::task::spawn_blocking(move || {
+            set_card_profile_sync(current_device_index, &profile_name)
+        })
+        .await
+        .map_err(|_| ProfileOperationError::ProfileWorkerStopped)?;
+
+        if !success {
+            warn!("Failed to activate A2DP profile: {}", preferred_profile);
+            return Err(ProfileOperationError::ProfileSwitchFailed(
+                preferred_profile,
+            ));
+        }
+
+        info!("Successfully activated A2DP profile: {}", preferred_profile);
+        Ok(())
+    }
+
+    async fn resolve_device_index<Lookup>(
+        &self,
+        expected_mac: &str,
+        cached_device_index: Option<u32>,
+        lookup: Lookup,
+    ) -> Result<u32, ProfileOperationError>
+    where
+        Lookup: std::future::Future<Output = Option<u32>>,
+    {
+        if let Some(device_index) = cached_device_index {
+            return Ok(device_index);
+        }
+
+        warn!("Device index not found, trying to get it.");
+        let device_index = lookup
+            .await
+            .ok_or(ProfileOperationError::AudioDeviceNotFound)?;
+        let mut state = self.state.lock().await;
+        if state.connected_device_mac != expected_mac {
+            return Err(ProfileOperationError::ConnectedDeviceChanged);
+        }
+        state.device_index = Some(device_index);
+        Ok(device_index)
+    }
+
+    async fn refresh_device_index_and_recheck<Lookup, Recheck>(
+        &self,
+        expected_mac: &str,
+        lookup: Lookup,
+        recheck: Recheck,
+    ) -> Result<u32, ProfileOperationError>
+    where
+        Lookup: std::future::Future<Output = Option<u32>>,
+        Recheck: std::future::Future<Output = bool>,
+    {
+        let refreshed_device_index = lookup.await;
+        {
+            let mut state = self.state.lock().await;
+            if state.connected_device_mac != expected_mac {
+                return Err(ProfileOperationError::ConnectedDeviceChanged);
+            }
+            state.device_index = refreshed_device_index;
+        }
+
+        debug!(
+            "Updated device_index after WirePlumber restart: {:?}",
+            refreshed_device_index
+        );
+        let refreshed_device_index =
+            refreshed_device_index.ok_or(ProfileOperationError::AudioDeviceNotFound)?;
+
+        if !recheck.await {
+            error!("A2DP profile still not available after WirePlumber restart");
+            return Err(ProfileOperationError::A2dpProfileUnavailable);
+        }
+
+        Ok(refreshed_device_index)
     }
 
     async fn pause(&self) {
@@ -523,8 +714,12 @@ impl MediaController {
     }
 
     async fn is_a2dp_profile_available(&self) -> bool {
-        let index = match self.state.lock().await.device_index {
-            Some(i) => i,
+        let device_index = {
+            let state = self.state.lock().await;
+            state.device_index
+        };
+        let index = match device_index {
+            Some(index) => index,
             None => {
                 debug!("Device index is None, returning false");
                 return false;
@@ -635,42 +830,51 @@ impl MediaController {
             .unwrap_or(None)
     }
 
-    pub async fn deactivate_a2dp_profile(&self) {
+    pub async fn deactivate_a2dp_profile(&self) -> ProfileOperationResult {
         debug!("Entering deactivate_a2dp_profile");
-        let mut state = self.state.lock().await;
+        let (mac, cached_device_index) = {
+            let state = self.state.lock().await;
+            (state.connected_device_mac.clone(), state.device_index)
+        };
 
-        if state.device_index.is_none() {
-            state.device_index = self
-                .get_audio_device_index(&state.connected_device_mac)
-                .await;
+        if mac.is_empty() {
+            warn!("Connected device MAC is empty, cannot deactivate A2DP profile");
+            return Err(ProfileOperationError::NoConnectedDevice);
         }
 
-        if state.connected_device_mac.is_empty() || state.device_index.is_none() {
-            warn!("Connected device MAC or index is empty, cannot deactivate A2DP profile");
-            return;
-        }
-        let device_index = state.device_index.unwrap();
-        drop(state);
+        self.resolve_device_index(&mac, cached_device_index, self.get_audio_device_index(&mac))
+            .await?;
+
+        let device_index = {
+            let state = self.state.lock().await;
+            if state.connected_device_mac != mac {
+                return Err(ProfileOperationError::ConnectedDeviceChanged);
+            }
+            state
+                .device_index
+                .ok_or(ProfileOperationError::AudioDeviceNotFound)?
+        };
 
         info!("Deactivating A2DP profile for AirPods by setting to off");
-
         let success = tokio::task::spawn_blocking(move || {
             std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                 set_card_profile_sync(device_index, "off")
             }))
-                .unwrap_or_else(|e| {
-                    warn!("Panic in set_card_profile_sync: {:?}", e);
-                    false
-                })
+            .unwrap_or_else(|e| {
+                warn!("Panic in set_card_profile_sync: {:?}", e);
+                false
+            })
         })
-            .await
-            .unwrap_or(false);
+        .await
+        .map_err(|_| ProfileOperationError::ProfileWorkerStopped)?;
 
-        if success {
-            info!("Successfully deactivated A2DP profile");
-        } else {
+        if !success {
             warn!("Failed to deactivate A2DP profile");
+            return Err(ProfileOperationError::ProfileSwitchFailed("off".into()));
         }
+
+        info!("Successfully deactivated A2DP profile");
+        Ok(())
     }
 
     pub async fn handle_conversational_awareness(&self, status: u8) {
@@ -1079,4 +1283,245 @@ async fn get_sink_name_by_mac(mac: &str) -> Option<String> {
     })
         .await
         .unwrap_or(None)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::bluetooth::aacp::{ConnectedDevice, opcodes};
+    use tokio::sync::mpsc;
+    use tokio::time::timeout;
+
+    const CONNECTED_MAC: &str = "AA:BB:CC:DD:EE:FF";
+    const LOCAL_MAC: &str = "11:22:33:44:55:66";
+    const REMOTE_MAC: &str = "77:88:99:AA:BB:CC";
+
+    fn controller() -> MediaController {
+        MediaController::new(CONNECTED_MAC.into(), LOCAL_MAC.into())
+    }
+
+    async fn takeover_manager(capacity: usize) -> (AACPManager, mpsc::Receiver<Vec<u8>>) {
+        let manager = AACPManager::new();
+        let (packet_tx, packet_rx) = mpsc::channel(capacity);
+        {
+            let mut state = manager.state.lock().await;
+            state.sender = Some(packet_tx);
+            state.connection_generation = 7;
+            state.ear_detection_status = vec![EarDetectionStatus::InEar];
+            state.connected_devices = vec![ConnectedDevice {
+                mac: REMOTE_MAC.into(),
+                info1: 0,
+                info2: 0,
+                r#type: None,
+            }];
+        }
+        (manager, packet_rx)
+    }
+
+    #[tokio::test]
+    async fn device_index_lookup_completes_without_media_state_guard() {
+        let controller = controller();
+        let lookup_controller = controller.clone();
+
+        let device_index = timeout(
+            Duration::from_millis(250),
+            controller.resolve_device_index(CONNECTED_MAC, None, async move {
+                let state = lookup_controller.state.lock().await;
+                drop(state);
+                Some(21)
+            }),
+        )
+        .await
+        .expect("device lookup waited on a MediaController state guard")
+        .unwrap();
+
+        assert_eq!(device_index, 21);
+        assert_eq!(controller.state.lock().await.device_index, Some(21));
+    }
+
+    #[tokio::test]
+    async fn restart_refresh_and_recheck_complete_without_media_state_guard() {
+        let controller = controller();
+        let lookup_controller = controller.clone();
+        let recheck_controller = controller.clone();
+
+        let device_index = timeout(
+            Duration::from_millis(250),
+            controller.refresh_device_index_and_recheck(
+                CONNECTED_MAC,
+                async move {
+                    let state = lookup_controller.state.lock().await;
+                    drop(state);
+                    Some(42)
+                },
+                async move {
+                    let state = recheck_controller.state.lock().await;
+                    assert_eq!(state.device_index, Some(42));
+                    true
+                },
+            ),
+        )
+        .await
+        .expect("restart refresh or profile recheck retained the MediaController state guard")
+        .unwrap();
+
+        assert_eq!(device_index, 42);
+    }
+
+    #[tokio::test]
+    async fn takeover_aborts_when_connection_generation_changes_during_activation() {
+        let controller = controller();
+        let (manager, mut packet_rx) = takeover_manager(4).await;
+        let activation_manager = manager.clone();
+
+        let outcome = controller
+            .handle_playback_started(&manager, LOCAL_MAC, async move {
+                activation_manager.state.lock().await.connection_generation += 1;
+                Ok::<(), ProfileOperationError>(())
+            })
+            .await;
+
+        assert_eq!(outcome, PlaybackTakeoverOutcome::AbortedConnectionChanged);
+        assert!(packet_rx.try_recv().is_err());
+    }
+
+    #[tokio::test]
+    async fn takeover_aborts_when_ear_state_changes_during_activation() {
+        let controller = controller();
+        let (manager, mut packet_rx) = takeover_manager(4).await;
+        let activation_manager = manager.clone();
+
+        let outcome = controller
+            .handle_playback_started(&manager, LOCAL_MAC, async move {
+                activation_manager.state.lock().await.ear_detection_status =
+                    vec![EarDetectionStatus::OutOfEar];
+                Ok::<(), ProfileOperationError>(())
+            })
+            .await;
+
+        assert_eq!(outcome, PlaybackTakeoverOutcome::AbortedEarStateChanged);
+        assert!(packet_rx.try_recv().is_err());
+    }
+
+    #[tokio::test]
+    async fn takeover_reports_profile_activation_failure_without_sending() {
+        let controller = controller();
+        let (manager, mut packet_rx) = takeover_manager(4).await;
+
+        let outcome = controller
+            .handle_playback_started(&manager, LOCAL_MAC, async {
+                Err(ProfileOperationError::WirePlumberRestartFailed)
+            })
+            .await;
+
+        assert_eq!(
+            outcome,
+            PlaybackTakeoverOutcome::Failed(PlaybackTakeoverFailure::ProfileActivation(
+                ProfileOperationError::WirePlumberRestartFailed,
+            ),)
+        );
+        assert!(packet_rx.try_recv().is_err());
+    }
+
+    #[tokio::test]
+    async fn takeover_reports_closed_ownership_channel() {
+        let controller = controller();
+        let (manager, packet_rx) = takeover_manager(4).await;
+        drop(packet_rx);
+
+        let outcome = controller
+            .handle_playback_started(&manager, LOCAL_MAC, async {
+                Ok::<(), ProfileOperationError>(())
+            })
+            .await;
+
+        assert!(matches!(
+            outcome,
+            PlaybackTakeoverOutcome::Failed(PlaybackTakeoverFailure::OwnershipSend(_))
+        ));
+    }
+
+    #[tokio::test]
+    async fn takeover_reports_routing_send_failure() {
+        let controller = controller();
+        let (manager, mut packet_rx) = takeover_manager(1).await;
+        let takeover = tokio::spawn(async move {
+            controller
+                .handle_playback_started(&manager, LOCAL_MAC, async {
+                    Ok::<(), ProfileOperationError>(())
+                })
+                .await
+        });
+
+        let ownership = timeout(Duration::from_millis(250), packet_rx.recv())
+            .await
+            .expect("timed out waiting for ownership packet")
+            .expect("ownership packet channel closed");
+        assert_eq!(ownership[4], opcodes::CONTROL_COMMAND);
+        drop(packet_rx);
+
+        let outcome = timeout(Duration::from_millis(250), takeover)
+            .await
+            .expect("routing send did not observe the closed channel")
+            .expect("takeover task failed");
+        assert!(matches!(
+            outcome,
+            PlaybackTakeoverOutcome::Failed(PlaybackTakeoverFailure::RoutingSend { .. })
+        ));
+    }
+
+    #[tokio::test]
+    async fn takeover_queues_ownership_before_exact_routing_packet_order() {
+        let controller = controller();
+        let (manager, mut packet_rx) = takeover_manager(4).await;
+
+        let outcome = timeout(
+            Duration::from_millis(250),
+            controller.handle_playback_started(&manager, LOCAL_MAC, async {
+                Ok::<(), ProfileOperationError>(())
+            }),
+        )
+        .await
+        .expect("playback takeover deadlocked while sending packets");
+        assert_eq!(outcome, PlaybackTakeoverOutcome::Completed);
+
+        let mut packets = Vec::new();
+        for _ in 0..4 {
+            packets.push(
+                timeout(Duration::from_millis(250), packet_rx.recv())
+                    .await
+                    .expect("timed out waiting for takeover packet")
+                    .expect("takeover packet channel closed"),
+            );
+        }
+
+        assert_eq!(
+            packets[0],
+            vec![
+                0x04,
+                0x00,
+                0x04,
+                0x00,
+                opcodes::CONTROL_COMMAND,
+                0x00,
+                ControlCommandIdentifiers::OwnsConnection as u8,
+                0x01,
+                0x00,
+                0x00,
+                0x00,
+            ]
+        );
+        assert_eq!(
+            packets[1..]
+                .iter()
+                .map(|packet| (packet[4], packet[12]))
+                .collect::<Vec<_>>(),
+            vec![
+                (opcodes::SMART_ROUTING, 0x82),
+                (opcodes::SMART_ROUTING, 0x7E),
+                (opcodes::SMART_ROUTING, 0x62),
+            ]
+        );
+        assert!(packet_rx.try_recv().is_err());
+    }
 }

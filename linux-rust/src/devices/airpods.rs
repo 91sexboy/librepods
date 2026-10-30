@@ -145,7 +145,7 @@ impl AirPodsDevice {
         let mc_listener = media_controller.lock().await;
         let aacp_manager_clone_listener = aacp_manager.clone();
         mc_listener
-            .start_playback_listener(aacp_manager_clone_listener, command_tx.clone())
+            .start_playback_listener(aacp_manager_clone_listener)
             .await;
         drop(mc_listener);
 
@@ -222,7 +222,12 @@ impl AirPodsDevice {
                     info!("Lost ownership, pausing media and disconnecting audio");
                     let controller = mc_clone_owns.lock().await;
                     controller.pause_all_media().await;
-                    controller.deactivate_a2dp_profile().await;
+                    if let Err(error) = controller.deactivate_a2dp_profile().await {
+                        error!(
+                            "Failed to deactivate A2DP after ownership loss: {:?}",
+                            error
+                        );
+                    }
                 }
             }
         });
@@ -230,7 +235,6 @@ impl AirPodsDevice {
         let aacp_manager_clone_events = aacp_manager.clone();
         let local_mac_events = local_mac.clone();
         let ui_tx_clone = ui_tx.clone();
-        let command_tx_clone = command_tx.clone();
         tokio::spawn(async move {
             while let Some(event) = rx.recv().await {
                 let event_clone = event.clone();
@@ -344,11 +348,23 @@ impl AirPodsDevice {
                         info!(
                             "Received ownership to false request. Setting ownership to false and pausing media."
                         );
-                        let _ = command_tx_clone
-                            .send((ControlCommandIdentifiers::OwnsConnection, vec![0x00]));
+                        if let Err(error) = aacp_manager_clone_events
+                            .send_control_command(
+                                ControlCommandIdentifiers::OwnsConnection,
+                                &[0x00],
+                            )
+                            .await
+                        {
+                            error!("Failed to relinquish AACP ownership: {}", error);
+                        }
                         let controller = mc_clone.lock().await;
                         controller.pause_all_media().await;
-                        controller.deactivate_a2dp_profile().await;
+                        if let Err(error) = controller.deactivate_a2dp_profile().await {
+                            error!(
+                                "Failed to deactivate A2DP after ownership request: {:?}",
+                                error
+                            );
+                        }
                     }
                     AACPEvent::StemPress(press_type, bud_type) => {
                         use crate::bluetooth::aacp::StemPressType;
