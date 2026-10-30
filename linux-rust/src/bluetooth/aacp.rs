@@ -1447,11 +1447,11 @@ impl AACPManager {
         buffer.extend_from_slice(&reversed_address_bytes(target_address));
         buffer.extend_from_slice(&[0x82, 0x00]);
         buffer.extend_from_slice(&[0x01, 0xE5, 0x4A]);
-        buffer.extend_from_slice(b"PlayingApp");
+        buffer.extend_from_slice(b"playingApp");
         buffer.push(0x56);
         buffer.extend_from_slice(b"com.google.ios.youtube");
         buffer.push(0x52);
-        buffer.extend_from_slice(b"HostStreamingState");
+        buffer.extend_from_slice(b"hostStreamingState");
         buffer.push(0x42);
         buffer.extend_from_slice(if streaming_state { b"YES" } else { b"NO" });
         buffer.push(0x49);
@@ -2388,8 +2388,8 @@ mod tests {
         assert_captured_packet(
             &mut receiver,
             concat!(
-                "040004001000554433221100820001e54a506c6179696e6741707056636f6d2e676f6f67",
-                "6c652e696f732e796f757475626552486f737453747265616d696e675374617465425945",
+                "040004001000554433221100820001e54a706c6179696e6741707056636f6d2e676f6f67",
+                "6c652e696f732e796f757475626552686f737453747265616d696e675374617465425945",
                 "53496274416464726573735136363a37373a38383a39393a41413a424262744e616d6543",
                 "4d6163586f74686572446576696365417564696f43617465676f7279312d010000000000"
             ),
