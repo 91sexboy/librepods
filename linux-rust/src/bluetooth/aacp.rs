@@ -286,6 +286,18 @@ impl AudioSourceType {
     }
 }
 
+impl EarDetectionStatus {
+    fn from_u8(value: u8) -> Option<Self> {
+        match value {
+            0x00 => Some(Self::InEar),
+            0x01 => Some(Self::OutOfEar),
+            0x02 => Some(Self::InCase),
+            0x03 => Some(Self::Disconnected),
+            _ => None,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AudioSource {
     pub mac: String,
@@ -331,7 +343,19 @@ fn parse_information_payload(payload: &[u8]) -> Option<AirPodsInformation> {
         return None;
     }
 
-    // Captures carry a two-byte opcode followed by a five-byte metadata preamble.
+    // Captures carry an envelope byte, a little-endian length that includes the
+    // field type, and the UTF-8 field-list type before the strings.
+    let envelope = payload.get(2..)?;
+    if envelope.first() != Some(&0x02) {
+        return None;
+    }
+    let declared_length = usize::from(u16::from_le_bytes([*envelope.get(1)?, *envelope.get(2)?]));
+    if envelope.len().checked_sub(3)? != declared_length
+        || envelope.get(3..5) != Some([0x04, 0x00].as_slice())
+    {
+        return None;
+    }
+
     let mut remaining = payload.get(INFORMATION_PREFIX_LEN..)?;
     let mut fields = Vec::with_capacity(INFORMATION_FIELD_COUNT);
     for _ in 0..INFORMATION_FIELD_COUNT {
@@ -634,6 +658,24 @@ impl AACPManager {
     }
 
     pub async fn receive_packet(&self, packet: &[u8]) {
+        self.receive_packet_inner(packet, None).await;
+    }
+
+    async fn receive_packet_for_generation(&self, packet: &[u8], connection_generation: u64) {
+        self.receive_packet_inner(packet, Some(connection_generation))
+            .await;
+    }
+
+    fn packet_generation_is_current(
+        state: &AACPManagerState,
+        expected_generation: Option<u64>,
+    ) -> bool {
+        expected_generation.is_none_or(|expected| {
+            state.connection_generation == expected && state.sender.is_some()
+        })
+    }
+
+    async fn receive_packet_inner(&self, packet: &[u8], expected_generation: Option<u64>) {
         if !packet.starts_with(&HEADER_BYTES) {
             debug!(
                 "Received packet does not start with expected header: {}",
@@ -643,6 +685,11 @@ impl AACPManager {
         }
         if packet.len() < 5 {
             debug!("Received packet too short: {}", hex::encode(packet));
+            return;
+        }
+
+        if !Self::packet_generation_is_current(&self.state.lock().await, expected_generation) {
+            debug!("Ignoring packet from a stale AACP connection generation");
             return;
         }
 
@@ -690,6 +737,9 @@ impl AACPManager {
                     });
                 }
                 let mut state = self.state.lock().await;
+                if !Self::packet_generation_is_current(&state, expected_generation) {
+                    return;
+                }
                 state.battery_info = batteries.clone();
                 if let Some(ref tx) = state.event_tx {
                     let _ = tx.send(AACPEvent::BatteryInfo(batteries));
@@ -716,6 +766,9 @@ impl AACPManager {
                         value: value.clone(),
                     };
                     let mut state = self.state.lock().await;
+                    if !Self::packet_generation_is_current(&state, expected_generation) {
+                        return;
+                    }
                     if let Some(existing) = state
                         .control_command_status_list
                         .iter_mut()
@@ -755,28 +808,19 @@ impl AACPManager {
                 }
                 let primary_status = payload[2];
                 let secondary_status = payload[3];
-                let mut statuses = Vec::new();
-                statuses.push(match primary_status {
-                    0x00 => EarDetectionStatus::InEar,
-                    0x01 => EarDetectionStatus::OutOfEar,
-                    0x02 => EarDetectionStatus::InCase,
-                    0x03 => EarDetectionStatus::Disconnected,
-                    _ => {
-                        error!("Unknown ear detection status: {:#04x}", primary_status);
-                        EarDetectionStatus::OutOfEar
-                    }
-                });
-                statuses.push(match secondary_status {
-                    0x00 => EarDetectionStatus::InEar,
-                    0x01 => EarDetectionStatus::OutOfEar,
-                    0x02 => EarDetectionStatus::InCase,
-                    0x03 => EarDetectionStatus::Disconnected,
-                    _ => {
-                        error!("Unknown ear detection status: {:#04x}", secondary_status);
-                        EarDetectionStatus::OutOfEar
-                    }
-                });
+                let Some(primary_status) = EarDetectionStatus::from_u8(primary_status) else {
+                    error!("Unknown ear detection status: {:#04x}", payload[2]);
+                    return;
+                };
+                let Some(secondary_status) = EarDetectionStatus::from_u8(secondary_status) else {
+                    error!("Unknown ear detection status: {:#04x}", payload[3]);
+                    return;
+                };
+                let statuses = vec![primary_status, secondary_status];
                 let mut state = self.state.lock().await;
+                if !Self::packet_generation_is_current(&state, expected_generation) {
+                    return;
+                }
                 state.old_ear_detection_status = state.ear_detection_status.clone();
                 state.ear_detection_status = statuses.clone();
 
@@ -799,6 +843,9 @@ impl AACPManager {
                 if packet.len() == 10 {
                     let status = packet[9];
                     let mut state = self.state.lock().await;
+                    if !Self::packet_generation_is_current(&state, expected_generation) {
+                        return;
+                    }
                     state.conversational_awareness_status = status;
                     if let Some(ref tx) = state.event_tx {
                         let _ = tx.send(AACPEvent::ConversationalAwareness(status));
@@ -817,6 +864,9 @@ impl AACPManager {
                     return;
                 };
                 let mut state = self.state.lock().await;
+                if !Self::packet_generation_is_current(&state, expected_generation) {
+                    return;
+                }
                 let persisted_device = if let Some(mac) = state.airpods_mac {
                     let key = mac.to_string();
                     state.devices.get_mut(&key).map(|device_data| {
@@ -877,6 +927,9 @@ impl AACPManager {
                         .collect::<Vec<_>>()
                 );
                 let mut state = self.state.lock().await;
+                if !Self::packet_generation_is_current(&state, expected_generation) {
+                    return;
+                }
                 for (key_type, key_data) in &keys {
                     if let Some(kt) = ProximityKeyType::from_u8(*key_type)
                         && let Some(mac) = state.airpods_mac
@@ -933,6 +986,9 @@ impl AACPManager {
                 if let (Some(press), Some(bud)) = (press_type, bud_type) {
                     info!("Received Stem Press: {:?} on {:?}", press, bud);
                     let state = self.state.lock().await;
+                    if !Self::packet_generation_is_current(&state, expected_generation) {
+                        return;
+                    }
                     if let Some(ref tx) = state.event_tx {
                         let _ = tx.send(AACPEvent::StemPress(press, bud));
                     }
@@ -955,6 +1011,9 @@ impl AACPManager {
                 let typ = AudioSourceType::from_u8(payload[8]).unwrap_or(AudioSourceType::None);
                 let audio_source = AudioSource { mac, r#type: typ };
                 let mut state = self.state.lock().await;
+                if !Self::packet_generation_is_current(&state, expected_generation) {
+                    return;
+                }
                 state.audio_source = Some(audio_source.clone());
                 if let Some(ref tx) = state.event_tx {
                     let _ = tx.send(AACPEvent::AudioSource(audio_source));
@@ -999,6 +1058,9 @@ impl AACPManager {
                     });
                 }
                 let mut state = self.state.lock().await;
+                if !Self::packet_generation_is_current(&state, expected_generation) {
+                    return;
+                }
                 state.old_connected_devices = state.connected_devices.clone();
                 state.connected_devices = devices.clone();
                 if let Some(ref tx) = state.event_tx {
@@ -1021,7 +1083,11 @@ impl AACPManager {
                 info!("Received Smart Routing Response: {}", packet_string);
                 if packet_string.contains("SetOwnershipToFalse") {
                     info!("Received OwnershipToFalse request");
-                    if let Some(ref tx) = self.state.lock().await.event_tx {
+                    let state = self.state.lock().await;
+                    if !Self::packet_generation_is_current(&state, expected_generation) {
+                        return;
+                    }
+                    if let Some(ref tx) = state.event_tx {
                         let _ = tx.send(AACPEvent::OwnershipToFalseRequest);
                     }
                 }
@@ -1412,7 +1478,9 @@ async fn recv_thread(manager: AACPManager, sp: Arc<SeqPacket>, connection_genera
             Ok(n) => {
                 let data = &buf[..n];
                 debug!("Received {} bytes: {}", n, hex::encode(data));
-                manager.receive_packet(data).await;
+                manager
+                    .receive_packet_for_generation(data, connection_generation)
+                    .await;
             }
             Err(e) => {
                 debug!("Read error: {}", e);
@@ -1472,12 +1540,14 @@ mod tests {
     }
 
     fn information_packet(fields: &[&[u8]]) -> Vec<u8> {
-        let mut packet = protocol_packet(opcodes::INFORMATION, &[0x02, 0xD5, 0x00, 0x04, 0x00]);
+        let mut body = vec![0x02, 0x00, 0x00, 0x04, 0x00];
         for field in fields {
-            packet.extend_from_slice(field);
-            packet.push(0x00);
+            body.extend_from_slice(field);
+            body.push(0x00);
         }
-        packet
+        let declared_length = u16::try_from(body.len() - 3).unwrap();
+        body[1..3].copy_from_slice(&declared_length.to_le_bytes());
+        protocol_packet(opcodes::INFORMATION, &body)
     }
 
     fn connected_devices_packet(prefix: [u8; 2], count: u8, records: &[u8]) -> Vec<u8> {
@@ -1551,6 +1621,69 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn unknown_ear_detection_status_rejects_the_whole_packet() {
+        let manager = AACPManager::new();
+        let (event_tx, mut events) = mpsc::unbounded_channel();
+        manager.set_event_channel(event_tx).await;
+        {
+            let mut state = manager.state.lock().await;
+            state.old_ear_detection_status = vec![EarDetectionStatus::InCase];
+            state.ear_detection_status = vec![EarDetectionStatus::OutOfEar];
+        }
+
+        let unknown_primary = protocol_packet(opcodes::EAR_DETECTION, &[0xFF, 0x00]);
+        manager.receive_packet(&unknown_primary).await;
+        let unknown_secondary = protocol_packet(opcodes::EAR_DETECTION, &[0x00, 0xFE]);
+        manager.receive_packet(&unknown_secondary).await;
+
+        let state = manager.state.lock().await;
+        assert_eq!(
+            state.old_ear_detection_status,
+            vec![EarDetectionStatus::InCase]
+        );
+        assert_eq!(
+            state.ear_detection_status,
+            vec![EarDetectionStatus::OutOfEar]
+        );
+        assert!(events.try_recv().is_err());
+    }
+
+    #[tokio::test]
+    async fn stale_receiver_cannot_mutate_or_emit_into_replacement_connection() {
+        let manager = AACPManager::new();
+        let (old_sender, _old_receiver) = mpsc::channel(1);
+        let old_generation = manager.install_connection(old_sender).await;
+        let (replacement_sender, _replacement_receiver) = mpsc::channel(1);
+        let replacement_generation = manager.install_connection(replacement_sender).await;
+        let (event_tx, mut events) = mpsc::unbounded_channel();
+        manager.set_event_channel(event_tx).await;
+        manager.state.lock().await.ear_detection_status = vec![EarDetectionStatus::OutOfEar];
+        let packet = protocol_packet(opcodes::EAR_DETECTION, &[0x00, 0x02]);
+
+        manager
+            .receive_packet_for_generation(&packet, old_generation)
+            .await;
+
+        assert_eq!(
+            manager.state.lock().await.ear_detection_status,
+            vec![EarDetectionStatus::OutOfEar]
+        );
+        assert!(events.try_recv().is_err());
+
+        manager
+            .receive_packet_for_generation(&packet, replacement_generation)
+            .await;
+        assert_eq!(
+            manager.state.lock().await.ear_detection_status,
+            vec![EarDetectionStatus::InEar, EarDetectionStatus::InCase]
+        );
+        assert!(matches!(
+            events.try_recv(),
+            Ok(AACPEvent::EarDetection(_, _))
+        ));
+    }
+
     #[test]
     fn captured_information_packet_preserves_all_known_fields() {
         let packet = hex::decode(concat!(
@@ -1605,6 +1738,64 @@ mod tests {
         assert_eq!(info.model_number, "");
         assert_eq!(info.manufacturer, "Apple Inc.");
         assert_eq!(info.serial_number, "SERIAL");
+    }
+
+    #[test]
+    fn information_parser_accepts_valid_variable_length_preambles() {
+        let short_fields: [&[u8]; INFORMATION_FIELD_COUNT] = [
+            b"A", b"B", b"C", b"D", b"E", b"F", b"G", b"H", b"I", b"J", b"K",
+        ];
+        let long_fields: [&[u8]; INFORMATION_FIELD_COUNT] = [
+            b"AirPods Pro (2nd generation)",
+            b"A3048",
+            b"Apple Inc.",
+            b"SERIAL",
+            b"version-1",
+            b"version-2",
+            b"hardware",
+            b"com.apple.accessory.updater.app.71",
+            b"left",
+            b"right",
+            b"version-3",
+        ];
+
+        let short_packet = information_packet(&short_fields);
+        let long_packet = information_packet(&long_fields);
+
+        assert_ne!(short_packet[7..9], long_packet[7..9]);
+        assert_eq!(
+            parse_information_payload(&short_packet[HEADER_BYTES.len()..])
+                .unwrap()
+                .name,
+            "A"
+        );
+        assert_eq!(
+            parse_information_payload(&long_packet[HEADER_BYTES.len()..])
+                .unwrap()
+                .name,
+            "AirPods Pro (2nd generation)"
+        );
+    }
+
+    #[test]
+    fn information_parser_rejects_unknown_or_inconsistent_preambles() {
+        let fields: [&[u8]; INFORMATION_FIELD_COUNT] = [
+            b"AirPods", b"model", b"maker", b"serial", b"v1", b"v2", b"hw", b"updater", b"left",
+            b"right", b"v3",
+        ];
+        let packet = information_packet(&fields);
+
+        let mut unknown_envelope = packet.clone();
+        unknown_envelope[6] = 0x03;
+        assert!(parse_information_payload(&unknown_envelope[HEADER_BYTES.len()..]).is_none());
+
+        let mut unknown_field_type = packet.clone();
+        unknown_field_type[9] = 0x05;
+        assert!(parse_information_payload(&unknown_field_type[HEADER_BYTES.len()..]).is_none());
+
+        let mut inconsistent_length = packet;
+        inconsistent_length[7] = inconsistent_length[7].wrapping_add(1);
+        assert!(parse_information_payload(&inconsistent_length[HEADER_BYTES.len()..]).is_none());
     }
 
     #[tokio::test]
