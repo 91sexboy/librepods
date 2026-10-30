@@ -37,7 +37,11 @@ import kotlin.io.encoding.ExperimentalEncodingApi
 
 internal data class DecodedBattery(val charging: Boolean, val level: Int?)
 
-internal fun decodeEncryptedBattery(byteVal: Int, fallback: DecodedBattery): DecodedBattery {
+internal fun decodeEncryptedBattery(
+    byteVal: Int,
+    fallback: DecodedBattery,
+    lastKnown: DecodedBattery? = null,
+): DecodedBattery {
     val charging = (byteVal and 0x80) != 0
     val level = byteVal and 0x7F
     return if (level > 100) fallback else DecodedBattery(charging, level)
