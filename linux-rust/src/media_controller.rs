@@ -52,6 +52,60 @@ pub enum ProfileOperationError {
 
 pub type ProfileOperationResult = std::result::Result<(), ProfileOperationError>;
 
+const A2DP_PROFILE_ENUMERATION_GRACE: Duration = Duration::from_secs(2);
+const A2DP_POST_RESTART_SETTLE: Duration = Duration::from_secs(2);
+const A2DP_POST_RESTART_PROBE_LIMIT: usize = 5;
+const A2DP_POST_RESTART_BACKOFF: [Duration; 4] = [
+    Duration::from_secs(1),
+    Duration::from_secs(2),
+    Duration::from_secs(3),
+    Duration::from_secs(4),
+];
+
+type A2dpRecoveryFuture<'a, Output> =
+    std::pin::Pin<Box<dyn std::future::Future<Output = Output> + Send + 'a>>;
+
+trait A2dpRecoveryOperations: Send {
+    fn probe(&mut self) -> A2dpRecoveryFuture<'_, Result<bool, ProfileOperationError>>;
+    fn restart_wire_plumber(&mut self) -> A2dpRecoveryFuture<'_, bool>;
+    fn sleep(&mut self, duration: Duration) -> A2dpRecoveryFuture<'_, ()>;
+}
+
+async fn recover_a2dp_profile<Operations>(operations: &mut Operations) -> ProfileOperationResult
+where
+    Operations: A2dpRecoveryOperations + ?Sized,
+{
+    operations.sleep(A2DP_PROFILE_ENUMERATION_GRACE).await;
+    if operations.probe().await? {
+        return Ok(());
+    }
+
+    warn!("A2DP profile not available after grace period, restarting WirePlumber");
+    if !operations.restart_wire_plumber().await {
+        error!("Could not restart WirePlumber, A2DP profile unavailable");
+        return Err(ProfileOperationError::WirePlumberRestartFailed);
+    }
+
+    operations.sleep(A2DP_POST_RESTART_SETTLE).await;
+    for attempt in 0..A2DP_POST_RESTART_PROBE_LIMIT {
+        if operations.probe().await? {
+            return Ok(());
+        }
+
+        if let Some(delay) = A2DP_POST_RESTART_BACKOFF.get(attempt) {
+            debug!(
+                "A2DP profile still not ready after WirePlumber restart (attempt {}/{}), retrying",
+                attempt + 1,
+                A2DP_POST_RESTART_PROBE_LIMIT
+            );
+            operations.sleep(*delay).await;
+        }
+    }
+
+    error!("A2DP profile still not available after WirePlumber restart");
+    Err(ProfileOperationError::A2dpProfileUnavailable)
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum RoutingPacketKind {
     MediaInformation,
@@ -171,6 +225,36 @@ impl MediaControllerState {
 pub struct MediaController {
     state: Arc<Mutex<MediaControllerState>>,
     device_index_lookup_lock: Arc<Mutex<()>>,
+}
+
+struct MediaControllerA2dpRecovery<'a> {
+    controller: &'a MediaController,
+    expected_mac: &'a str,
+}
+
+impl A2dpRecoveryOperations for MediaControllerA2dpRecovery<'_> {
+    fn probe(&mut self) -> A2dpRecoveryFuture<'_, Result<bool, ProfileOperationError>> {
+        let controller = self.controller;
+        let expected_mac = self.expected_mac;
+        Box::pin(async move {
+            controller
+                .probe_a2dp_profile_with_lookup(
+                    expected_mac,
+                    controller.get_audio_device_index(expected_mac),
+                    controller.is_a2dp_profile_available(),
+                )
+                .await
+        })
+    }
+
+    fn restart_wire_plumber(&mut self) -> A2dpRecoveryFuture<'_, bool> {
+        let controller = self.controller;
+        Box::pin(async move { controller.restart_wire_plumber().await })
+    }
+
+    fn sleep(&mut self, duration: Duration) -> A2dpRecoveryFuture<'_, ()> {
+        Box::pin(async move { tokio::time::sleep(duration).await })
+    }
 }
 
 impl MediaController {
@@ -532,18 +616,11 @@ impl MediaController {
         }
 
         if !self.is_a2dp_profile_available().await {
-            warn!("A2DP profile not available, attempting to restart WirePlumber");
-            if !self.restart_wire_plumber().await {
-                error!("Could not restart WirePlumber, A2DP profile unavailable");
-                return Err(ProfileOperationError::WirePlumberRestartFailed);
-            }
-
-            self.refresh_device_index_and_recheck(
-                mac,
-                self.get_audio_device_index(mac),
-                self.is_a2dp_profile_available(),
-            )
-            .await?;
+            let mut recovery = MediaControllerA2dpRecovery {
+                controller: self,
+                expected_mac: mac,
+            };
+            recover_a2dp_profile(&mut recovery).await?;
         }
 
         let preferred_profile = self.get_preferred_a2dp_profile().await;
@@ -611,29 +688,28 @@ impl MediaController {
         })
     }
 
-    async fn refresh_device_index_and_recheck<Lookup, Recheck>(
+    async fn probe_a2dp_profile_with_lookup<Lookup, Recheck>(
         &self,
         expected_mac: &str,
         lookup: Lookup,
         recheck: Recheck,
-    ) -> Result<u32, ProfileOperationError>
+    ) -> Result<bool, ProfileOperationError>
     where
         Lookup: std::future::Future<Output = Option<u32>>,
         Recheck: std::future::Future<Output = bool>,
     {
-        let refreshed_device_index = self.resolve_device_index(expected_mac, lookup).await?;
+        let refreshed_device_index = match self.resolve_device_index(expected_mac, lookup).await {
+            Ok(device_index) => device_index,
+            Err(ProfileOperationError::AudioDeviceNotFound) => return Ok(false),
+            Err(error) => return Err(error),
+        };
 
         debug!(
-            "Updated device_index after WirePlumber restart: {}",
+            "Refreshed device_index while probing for A2DP profile: {}",
             refreshed_device_index
         );
 
-        if !recheck.await {
-            error!("A2DP profile still not available after WirePlumber restart");
-            return Err(ProfileOperationError::A2dpProfileUnavailable);
-        }
-
-        Ok(refreshed_device_index)
+        Ok(recheck.await)
     }
 
     async fn pause(&self) {
@@ -894,7 +970,6 @@ impl MediaController {
         match result {
             Ok(output) if output.status.success() => {
                 info!("WirePlumber restarted successfully");
-                tokio::time::sleep(Duration::from_secs(2)).await;
                 true
             }
             _ => {
@@ -1396,6 +1471,7 @@ async fn get_sink_name_by_mac(mac: &str) -> Option<String> {
 mod tests {
     use super::*;
     use crate::bluetooth::aacp::{ConnectedDevice, opcodes};
+    use std::collections::VecDeque;
     use tokio::sync::{mpsc, oneshot};
     use tokio::time::timeout;
 
@@ -1403,8 +1479,173 @@ mod tests {
     const LOCAL_MAC: &str = "11:22:33:44:55:66";
     const REMOTE_MAC: &str = "77:88:99:AA:BB:CC";
 
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    enum RecoveryAction {
+        Probe,
+        Restart,
+        Sleep(Duration),
+    }
+
+    struct RecordingRecoveryOperations {
+        probe_results: VecDeque<Result<bool, ProfileOperationError>>,
+        restart_result: bool,
+        actions: Vec<RecoveryAction>,
+    }
+
+    impl RecordingRecoveryOperations {
+        fn new(
+            probe_results: impl IntoIterator<Item = Result<bool, ProfileOperationError>>,
+            restart_result: bool,
+        ) -> Self {
+            Self {
+                probe_results: probe_results.into_iter().collect(),
+                restart_result,
+                actions: Vec::new(),
+            }
+        }
+    }
+
+    impl A2dpRecoveryOperations for RecordingRecoveryOperations {
+        fn probe(&mut self) -> A2dpRecoveryFuture<'_, Result<bool, ProfileOperationError>> {
+            self.actions.push(RecoveryAction::Probe);
+            let result = self
+                .probe_results
+                .pop_front()
+                .expect("recovery performed an unexpected profile probe");
+            Box::pin(async move { result })
+        }
+
+        fn restart_wire_plumber(&mut self) -> A2dpRecoveryFuture<'_, bool> {
+            self.actions.push(RecoveryAction::Restart);
+            let result = self.restart_result;
+            Box::pin(async move { result })
+        }
+
+        fn sleep(&mut self, duration: Duration) -> A2dpRecoveryFuture<'_, ()> {
+            self.actions.push(RecoveryAction::Sleep(duration));
+            Box::pin(async {})
+        }
+    }
+
     fn controller() -> MediaController {
         MediaController::new(CONNECTED_MAC.into(), LOCAL_MAC.into())
+    }
+
+    #[tokio::test]
+    async fn profile_appearing_during_grace_skips_wire_plumber_restart() {
+        let mut operations = RecordingRecoveryOperations::new([Ok(true)], false);
+
+        let result = recover_a2dp_profile(&mut operations).await;
+
+        assert_eq!(result, Ok(()));
+        assert_eq!(
+            operations.actions,
+            vec![
+                RecoveryAction::Sleep(Duration::from_secs(2)),
+                RecoveryAction::Probe,
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn post_restart_recovery_retries_until_profile_is_ready() {
+        let mut operations =
+            RecordingRecoveryOperations::new([Ok(false), Ok(false), Ok(false), Ok(true)], true);
+
+        let result = recover_a2dp_profile(&mut operations).await;
+
+        assert_eq!(result, Ok(()));
+        assert_eq!(
+            operations.actions,
+            vec![
+                RecoveryAction::Sleep(Duration::from_secs(2)),
+                RecoveryAction::Probe,
+                RecoveryAction::Restart,
+                RecoveryAction::Sleep(Duration::from_secs(2)),
+                RecoveryAction::Probe,
+                RecoveryAction::Sleep(Duration::from_secs(1)),
+                RecoveryAction::Probe,
+                RecoveryAction::Sleep(Duration::from_secs(2)),
+                RecoveryAction::Probe,
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn persistent_profile_failure_is_bounded_without_final_sleep() {
+        let mut operations =
+            RecordingRecoveryOperations::new(std::iter::repeat_with(|| Ok(false)).take(6), true);
+
+        let result = recover_a2dp_profile(&mut operations).await;
+
+        assert_eq!(result, Err(ProfileOperationError::A2dpProfileUnavailable));
+        assert_eq!(
+            operations.actions,
+            vec![
+                RecoveryAction::Sleep(Duration::from_secs(2)),
+                RecoveryAction::Probe,
+                RecoveryAction::Restart,
+                RecoveryAction::Sleep(Duration::from_secs(2)),
+                RecoveryAction::Probe,
+                RecoveryAction::Sleep(Duration::from_secs(1)),
+                RecoveryAction::Probe,
+                RecoveryAction::Sleep(Duration::from_secs(2)),
+                RecoveryAction::Probe,
+                RecoveryAction::Sleep(Duration::from_secs(3)),
+                RecoveryAction::Probe,
+                RecoveryAction::Sleep(Duration::from_secs(4)),
+                RecoveryAction::Probe,
+            ]
+        );
+        assert_eq!(operations.actions.last(), Some(&RecoveryAction::Probe));
+        assert!(operations.probe_results.is_empty());
+    }
+
+    #[tokio::test]
+    async fn wire_plumber_restart_failure_is_terminal() {
+        let mut operations = RecordingRecoveryOperations::new([Ok(false)], false);
+
+        let result = recover_a2dp_profile(&mut operations).await;
+
+        assert_eq!(result, Err(ProfileOperationError::WirePlumberRestartFailed));
+        assert_eq!(
+            operations.actions,
+            vec![
+                RecoveryAction::Sleep(Duration::from_secs(2)),
+                RecoveryAction::Probe,
+                RecoveryAction::Restart,
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn connected_device_change_during_recovery_is_terminal() {
+        let mut operations = RecordingRecoveryOperations::new(
+            [
+                Ok(false),
+                Ok(false),
+                Err(ProfileOperationError::ConnectedDeviceChanged),
+                Ok(true),
+            ],
+            true,
+        );
+
+        let result = recover_a2dp_profile(&mut operations).await;
+
+        assert_eq!(result, Err(ProfileOperationError::ConnectedDeviceChanged));
+        assert_eq!(
+            operations.actions,
+            vec![
+                RecoveryAction::Sleep(Duration::from_secs(2)),
+                RecoveryAction::Probe,
+                RecoveryAction::Restart,
+                RecoveryAction::Sleep(Duration::from_secs(2)),
+                RecoveryAction::Probe,
+                RecoveryAction::Sleep(Duration::from_secs(1)),
+                RecoveryAction::Probe,
+            ]
+        );
+        assert_eq!(operations.probe_results.len(), 1);
     }
 
     async fn takeover_manager(capacity: usize) -> (AACPManager, mpsc::Receiver<Vec<u8>>) {
@@ -1564,14 +1805,14 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn restart_refresh_and_recheck_complete_without_media_state_guard() {
+    async fn profile_probe_refreshes_index_without_media_state_guard() {
         let controller = controller();
         let lookup_controller = controller.clone();
         let recheck_controller = controller.clone();
 
-        let device_index = timeout(
+        let is_available = timeout(
             Duration::from_millis(250),
-            controller.refresh_device_index_and_recheck(
+            controller.probe_a2dp_profile_with_lookup(
                 CONNECTED_MAC,
                 async move {
                     let state = lookup_controller.state.lock().await;
@@ -1586,10 +1827,24 @@ mod tests {
             ),
         )
         .await
-        .expect("restart refresh or profile recheck retained the MediaController state guard")
+        .expect("profile probe retained the MediaController state guard")
         .unwrap();
 
-        assert_eq!(device_index, 42);
+        assert!(is_available);
+        assert_eq!(controller.state.lock().await.device_index, Some(42));
+    }
+
+    #[tokio::test]
+    async fn profile_probe_treats_missing_audio_card_as_not_ready() {
+        let controller = controller();
+        controller.state.lock().await.device_index = Some(7);
+
+        let result = controller
+            .probe_a2dp_profile_with_lookup(CONNECTED_MAC, async { None }, async { true })
+            .await;
+
+        assert_eq!(result, Ok(false));
+        assert_eq!(controller.state.lock().await.device_index, None);
     }
 
     #[tokio::test]
