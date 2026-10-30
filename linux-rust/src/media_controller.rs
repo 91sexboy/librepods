@@ -137,6 +137,14 @@ enum PlaybackTakeoverOutcome {
     Failed(PlaybackTakeoverFailure),
 }
 
+fn should_attempt_playback_takeover(
+    was_playing: bool,
+    is_playing: bool,
+    takeover_was_complete: bool,
+) -> bool {
+    is_playing && (!was_playing || !takeover_was_complete)
+}
+
 fn normalized_profile_name(profile: &str) -> String {
     profile.replace('_', "-")
 }
@@ -233,6 +241,24 @@ impl PlaybackListenerRegistry {
             .is_some_and(|entry| entry.generation == generation)
     }
 
+    fn run_if_current(&self, device_mac: &str, generation: u64, action: impl FnOnce()) -> bool {
+        let device_mac = normalized_mac(device_mac);
+        let state = self
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if !state
+            .entries
+            .get(&device_mac)
+            .is_some_and(|entry| entry.generation == generation)
+        {
+            return false;
+        }
+
+        action();
+        true
+    }
+
     fn remove_if_current(&self, device_mac: &str, generation: u64) -> bool {
         let device_mac = normalized_mac(device_mac);
         let mut state = self
@@ -291,6 +317,7 @@ struct MediaControllerState {
     connected_device_mac: String,
     local_mac: String,
     is_playing: bool,
+    playback_takeover_complete: bool,
     paused_by_app_services: Vec<String>,
     device_index: Option<u32>,
     cached_a2dp_profile: String,
@@ -309,6 +336,7 @@ impl MediaControllerState {
             connected_device_mac: String::new(),
             local_mac: String::new(),
             is_playing: false,
+            playback_takeover_complete: false,
             paused_by_app_services: Vec::new(),
             device_index: None,
             cached_a2dp_profile: String::new(),
@@ -442,12 +470,16 @@ impl MediaController {
 
             let mut state = self.state.lock().await;
             let was_playing = state.is_playing;
+            let takeover_was_complete = state.playback_takeover_complete;
             state.is_playing = is_playing;
+            if !is_playing {
+                state.playback_takeover_complete = false;
+            }
             let local_mac = state.local_mac.clone();
             drop(state);
 
-            if !was_playing && is_playing {
-                match self
+            if should_attempt_playback_takeover(was_playing, is_playing, takeover_was_complete) {
+                let outcome = self
                     .handle_playback_started(
                         &aacp_manager,
                         &local_mac,
@@ -455,8 +487,8 @@ impl MediaController {
                         listener_generation,
                         self.activate_a2dp_profile(),
                     )
-                    .await
-                {
+                    .await;
+                match &outcome {
                     PlaybackTakeoverOutcome::Completed => {}
                     PlaybackTakeoverOutcome::SkippedNotInEar => {
                         info!("Media playback started but buds not in ear, skipping takeover");
@@ -469,7 +501,6 @@ impl MediaController {
                     }
                     PlaybackTakeoverOutcome::AbortedListenerReplaced => {
                         debug!("Playback takeover aborted because the listener was replaced");
-                        return;
                     }
                     PlaybackTakeoverOutcome::AbortedEarStateChanged => {
                         info!("Playback takeover aborted because the buds left the ear");
@@ -478,8 +509,32 @@ impl MediaController {
                         error!("Playback takeover failed: {:?}", failure);
                     }
                 }
+                if !self
+                    .record_takeover_outcome(listener_device_mac, listener_generation, &outcome)
+                    .await
+                {
+                    return;
+                }
             }
         }
+    }
+
+    async fn record_takeover_outcome(
+        &self,
+        listener_device_mac: &str,
+        listener_generation: u64,
+        outcome: &PlaybackTakeoverOutcome,
+    ) -> bool {
+        if matches!(outcome, PlaybackTakeoverOutcome::AbortedListenerReplaced) {
+            return false;
+        }
+
+        let takeover_completed = matches!(outcome, PlaybackTakeoverOutcome::Completed);
+        let mut state = self.state.lock().await;
+        self.playback_listeners
+            .run_if_current(listener_device_mac, listener_generation, || {
+                state.playback_takeover_complete = takeover_completed
+            })
     }
 
     async fn handle_playback_started(
@@ -1878,6 +1933,100 @@ mod tests {
             generation: replacement_generation,
         });
         assert!(playback_listeners.current_entry(CONNECTED_MAC).is_none());
+    }
+
+    #[tokio::test]
+    async fn incomplete_takeover_outcomes_restore_the_playback_retry_edge() {
+        let (controller, listener_generation) = takeover_controller();
+        let retryable_outcomes = [
+            PlaybackTakeoverOutcome::SkippedNotInEar,
+            PlaybackTakeoverOutcome::AbortedDisconnected,
+            PlaybackTakeoverOutcome::AbortedConnectionChanged,
+            PlaybackTakeoverOutcome::AbortedEarStateChanged,
+            PlaybackTakeoverOutcome::Failed(PlaybackTakeoverFailure::ProfileActivation(
+                ProfileOperationError::WirePlumberRestartFailed,
+            )),
+        ];
+
+        for outcome in retryable_outcomes {
+            {
+                let mut state = controller.state.lock().await;
+                state.is_playing = true;
+                state.playback_takeover_complete = true;
+            }
+
+            assert!(
+                controller
+                    .record_takeover_outcome(CONNECTED_MAC, listener_generation, &outcome)
+                    .await
+            );
+            let state = controller.state.lock().await;
+            assert!(state.is_playing);
+            assert!(!state.playback_takeover_complete);
+            assert!(should_attempt_playback_takeover(
+                true,
+                state.is_playing,
+                state.playback_takeover_complete,
+            ));
+        }
+    }
+
+    #[tokio::test]
+    async fn completed_takeover_keeps_the_observed_playback_state() {
+        let (controller, listener_generation) = takeover_controller();
+        controller.state.lock().await.is_playing = true;
+
+        assert!(
+            controller
+                .record_takeover_outcome(
+                    CONNECTED_MAC,
+                    listener_generation,
+                    &PlaybackTakeoverOutcome::Completed,
+                )
+                .await
+        );
+        let state = controller.state.lock().await;
+        assert!(state.is_playing);
+        assert!(state.playback_takeover_complete);
+        assert!(!should_attempt_playback_takeover(
+            true,
+            state.is_playing,
+            state.playback_takeover_complete,
+        ));
+    }
+
+    #[tokio::test]
+    async fn replaced_listener_cannot_rearm_or_mutate_replacement_playback_state() {
+        let playback_listeners = PlaybackListenerRegistry::default();
+        let controller =
+            controller_with_listener_registry(CONNECTED_MAC, playback_listeners.clone());
+        let old_placeholder = tokio::spawn(async {});
+        let old_generation =
+            playback_listeners.replace(CONNECTED_MAC, old_placeholder.abort_handle());
+        let replacement_placeholder = tokio::spawn(async {});
+        let replacement_generation =
+            playback_listeners.replace(CONNECTED_MAC, replacement_placeholder.abort_handle());
+        {
+            let mut state = controller.state.lock().await;
+            state.is_playing = true;
+            state.playback_takeover_complete = true;
+        }
+
+        assert!(
+            !controller
+                .record_takeover_outcome(
+                    CONNECTED_MAC,
+                    old_generation,
+                    &PlaybackTakeoverOutcome::Failed(PlaybackTakeoverFailure::ProfileActivation(
+                        ProfileOperationError::WirePlumberRestartFailed,
+                    ),),
+                )
+                .await
+        );
+        let state = controller.state.lock().await;
+        assert!(state.is_playing);
+        assert!(state.playback_takeover_complete);
+        assert!(playback_listeners.is_current(CONNECTED_MAC, replacement_generation));
     }
 
     #[tokio::test]
