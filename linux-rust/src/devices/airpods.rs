@@ -13,6 +13,9 @@ use tokio::sync::Mutex;
 use tokio::time::{Duration, sleep};
 
 const OWNERSHIP_ACKNOWLEDGEMENT_TIMEOUT: Duration = Duration::from_secs(1);
+// A normal AACP mode report should arrive quickly; two seconds avoids leaving a stale KDE
+// selection visible without making ordinary Bluetooth latency look like a failure.
+const LISTENING_MODE_CONFIRMATION_TIMEOUT: Duration = Duration::from_secs(2);
 
 async fn guarded_ownership_cleanup<
     CurrentBeforePause,
@@ -220,11 +223,34 @@ impl AirPodsDevice {
         }
 
         let aacp_manager_clone = aacp_manager.clone();
+        let command_tray_handle = tray_handle.clone();
         tokio::spawn(async move {
             while let Some(command) = command_rx.recv().await {
-                let (id, value, _) = command.into_parts();
+                let (id, value, listening_mode_request_id) = command.into_parts();
+                if let Some(request_id) = listening_mode_request_id {
+                    let timeout_tray_handle = command_tray_handle.clone();
+                    tokio::spawn(async move {
+                        sleep(LISTENING_MODE_CONFIRMATION_TIMEOUT).await;
+                        if let Some(handle) = timeout_tray_handle {
+                            handle
+                                .update(move |tray: &mut MyTray| {
+                                    tray.clear_pending_listening_mode_request(request_id);
+                                })
+                                .await;
+                        }
+                    });
+                }
                 if let Err(e) = aacp_manager_clone.send_control_command(id, &value).await {
                     log::error!("Failed to send control command: {}", e);
+                    if let Some(request_id) = listening_mode_request_id
+                        && let Some(handle) = &command_tray_handle
+                    {
+                        handle
+                            .update(move |tray: &mut MyTray| {
+                                tray.clear_pending_listening_mode_request(request_id);
+                            })
+                            .await;
+                    }
                 }
             }
         });
@@ -246,10 +272,12 @@ impl AirPodsDevice {
         let tray_handle_clone = tray_handle.clone();
         tokio::spawn(async move {
             while let Some(value) = listening_mode_rx.recv().await {
-                if let Some(handle) = &tray_handle_clone {
+                if let Some(mode) = value.first().copied()
+                    && let Some(handle) = &tray_handle_clone
+                {
                     handle
-                        .update(|tray: &mut MyTray| {
-                            tray.listening_mode = Some(value[0]);
+                        .update(move |tray: &mut MyTray| {
+                            tray.apply_listening_mode_report(mode);
                         })
                         .await;
                 }

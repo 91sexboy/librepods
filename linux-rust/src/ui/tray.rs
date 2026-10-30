@@ -30,6 +30,14 @@ impl TrayCommand {
         }
     }
 
+    fn listening_mode(request: PendingListeningModeRequest) -> Self {
+        Self {
+            identifier: ControlCommandIdentifiers::ListeningMode,
+            value: vec![request.mode],
+            listening_mode_request_id: Some(request.request_id),
+        }
+    }
+
     pub(crate) fn into_parts(self) -> (ControlCommandIdentifiers, Vec<u8>, Option<u64>) {
         (self.identifier, self.value, self.listening_mode_request_id)
     }
@@ -73,6 +81,24 @@ impl MyTray {
             .is_some_and(|request| request.request_id == request_id)
         {
             self.pending_listening_mode = None;
+        }
+    }
+
+    fn queue_listening_mode_request(&mut self, mode: u8) {
+        let Some(command_tx) = self.command_tx.clone() else {
+            return;
+        };
+        let request = PendingListeningModeRequest {
+            request_id: self.next_listening_mode_request_id,
+            mode,
+        };
+        self.next_listening_mode_request_id = self.next_listening_mode_request_id.wrapping_add(1);
+        let previous_request = self.pending_listening_mode.replace(request);
+        if command_tx
+            .send(TrayCommand::listening_mode(request))
+            .is_err()
+        {
+            self.pending_listening_mode = previous_request;
         }
     }
 }
@@ -195,21 +221,11 @@ impl ksni::Tray for MyTray {
             RadioGroup {
                 selected,
                 select: Box::new(move |this: &mut Self, current| {
-                    if let Some(tx) = &this.command_tx {
-                        let value = options_clone
-                            .get(current)
-                            .map(|&(_, val)| val)
-                            .unwrap_or(0x02);
-                        if tx
-                            .send(TrayCommand::control(
-                                ControlCommandIdentifiers::ListeningMode,
-                                vec![value],
-                            ))
-                            .is_ok()
-                        {
-                            this.listening_mode = Some(value);
-                        }
-                    }
+                    let value = options_clone
+                        .get(current)
+                        .map(|&(_, val)| val)
+                        .unwrap_or(0x02);
+                    this.queue_listening_mode_request(value);
                 }),
                 options: options
                     .into_iter()
