@@ -34,7 +34,9 @@ where
     if !current_before_pause.await {
         return false;
     }
-    let _ = pause.await;
+    if !pause.await {
+        return false;
+    }
     if !current_before_deactivation.await {
         return false;
     }

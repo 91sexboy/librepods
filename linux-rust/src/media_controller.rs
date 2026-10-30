@@ -576,11 +576,101 @@ impl MediaControllerState {
     }
 }
 
+#[derive(Clone, Copy)]
+struct ProfileActivationEpoch {
+    value: u64,
+    deactivation_in_progress: bool,
+}
+
+#[derive(Default)]
+struct ProfileOperationEpochState {
+    value: u64,
+    deactivations_in_progress: usize,
+}
+
+#[derive(Default)]
+struct ProfileOperationEpoch {
+    state: StdMutex<ProfileOperationEpochState>,
+}
+
+impl ProfileOperationEpoch {
+    fn capture_activation(&self) -> ProfileActivationEpoch {
+        let state = self
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        ProfileActivationEpoch {
+            value: state.value,
+            deactivation_in_progress: state.deactivations_in_progress > 0,
+        }
+    }
+
+    fn activation_is_current(&self, activation: ProfileActivationEpoch) -> bool {
+        let state = self
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        !activation.deactivation_in_progress
+            && state.deactivations_in_progress == 0
+            && state.value == activation.value
+    }
+
+    fn begin_deactivation(&self) {
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        state.deactivations_in_progress += 1;
+        state.value = state.value.wrapping_add(1);
+    }
+
+    fn invalidate_waiters(&self) {
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        state.value = state.value.wrapping_add(1);
+    }
+
+    fn finish_deactivation(&self) {
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        state.deactivations_in_progress = state
+            .deactivations_in_progress
+            .checked_sub(1)
+            .expect("profile deactivation epoch guard underflow");
+    }
+}
+
+struct ProfileDeactivationEpochGuard {
+    epoch: Arc<ProfileOperationEpoch>,
+}
+
+impl ProfileDeactivationEpochGuard {
+    fn begin(epoch: Arc<ProfileOperationEpoch>) -> Self {
+        epoch.begin_deactivation();
+        Self { epoch }
+    }
+
+    fn invalidate_waiters_after_side_effect(&self) {
+        self.epoch.invalidate_waiters();
+    }
+}
+
+impl Drop for ProfileDeactivationEpochGuard {
+    fn drop(&mut self) {
+        self.epoch.finish_deactivation();
+    }
+}
+
 #[derive(Clone)]
 pub struct MediaController {
     state: Arc<Mutex<MediaControllerState>>,
     device_index_lookup_lock: Arc<Mutex<()>>,
     profile_operation_lock: Arc<Mutex<()>>,
+    profile_operation_epoch: Arc<ProfileOperationEpoch>,
     playback_listeners: PlaybackListenerRegistry,
     playback_listener_generation: Arc<StdMutex<Option<PlaybackListenerGeneration>>>,
 }
@@ -731,6 +821,7 @@ impl MediaController {
             state: Arc::new(Mutex::new(state)),
             device_index_lookup_lock: Arc::new(Mutex::new(())),
             profile_operation_lock: Arc::new(Mutex::new(())),
+            profile_operation_epoch: Arc::new(ProfileOperationEpoch::default()),
             playback_listeners,
             playback_listener_generation: Arc::new(StdMutex::new(None)),
         }
@@ -1250,7 +1341,14 @@ impl MediaController {
     where
         Activation: std::future::Future<Output = ProfileOperationResult> + Send,
     {
+        let activation_epoch = self.profile_operation_epoch.capture_activation();
         let _operation_guard = self.profile_operation_lock.lock().await;
+        if !self
+            .profile_operation_epoch
+            .activation_is_current(activation_epoch)
+        {
+            return Err(ProfileOperationError::ActivationSupersededByDeactivation);
+        }
         activation.await
     }
 
@@ -1261,8 +1359,14 @@ impl MediaController {
     where
         Deactivation: std::future::Future<Output = ProfileOperationResult> + Send,
     {
-        let _operation_guard = self.profile_operation_lock.lock().await;
-        deactivation.await
+        let deactivation_epoch =
+            ProfileDeactivationEpochGuard::begin(Arc::clone(&self.profile_operation_epoch));
+        let operation_guard = self.profile_operation_lock.lock().await;
+        let result = deactivation.await;
+        deactivation_epoch.invalidate_waiters_after_side_effect();
+        drop(operation_guard);
+        drop(deactivation_epoch);
+        result
     }
 
     #[cfg(test)]
@@ -1460,8 +1564,30 @@ impl MediaController {
     where
         Pause: FnOnce() -> usize + Send + 'static,
     {
-        let paused_count = match tokio::task::spawn_blocking(pause).await {
-            Ok(paused_count) => paused_count,
+        let listener_generation = self
+            .playback_listener_generation
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone();
+        let Some(listener_generation) = listener_generation else {
+            debug!("Skipping ownership pause without a playback listener generation");
+            return false;
+        };
+        let playback_listeners = self.playback_listeners.clone();
+        let paused_count = match tokio::task::spawn_blocking(move || {
+            run_blocking_profile_action(&playback_listeners, Some(&listener_generation), pause)
+        })
+        .await
+        {
+            Ok(Ok(paused_count)) => paused_count,
+            Ok(Err(ProfileOperationError::ListenerReplaced)) => {
+                debug!("Skipping ownership pause for a replaced playback listener");
+                return false;
+            }
+            Ok(Err(error)) => {
+                error!("Ownership pause skipped: {:?}", error);
+                return false;
+            }
             Err(error) => {
                 error!("Ownership pause worker stopped: {}", error);
                 return false;
@@ -1651,16 +1777,31 @@ impl MediaController {
         Restart: FnOnce() -> bool + Send + 'static,
     {
         info!("Restarting WirePlumber to rediscover A2DP profiles");
-        let _ = listener_generation;
-        let result = tokio::task::spawn_blocking(restart).await;
+        let playback_listeners = self.playback_listeners.clone();
+        let result = tokio::task::spawn_blocking(move || {
+            run_blocking_profile_action(&playback_listeners, listener_generation.as_ref(), restart)
+        })
+        .await;
 
         match result {
-            Ok(true) => {
+            Ok(Ok(true)) => {
                 info!("WirePlumber restarted successfully");
                 true
             }
-            _ => {
+            Ok(Ok(false)) => {
                 error!("Failed to restart WirePlumber. Do you use wireplumber?");
+                false
+            }
+            Ok(Err(ProfileOperationError::ListenerReplaced)) => {
+                debug!("Skipping WirePlumber restart for a replaced playback listener");
+                false
+            }
+            Ok(Err(error)) => {
+                error!("WirePlumber restart skipped: {:?}", error);
+                false
+            }
+            Err(error) => {
+                error!("WirePlumber restart worker stopped: {}", error);
                 false
             }
         }
