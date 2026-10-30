@@ -79,7 +79,9 @@ pub(super) fn migrate_app_settings(legacy_path: &Path, settings_path: &Path) -> 
     };
     match atomic_write_noclobber(settings_path, &contents) {
         Ok(()) => fs::remove_file(legacy_path),
-        Err(error) if error.kind() == io::ErrorKind::AlreadyExists => Ok(()),
+        Err(error) if error.kind() == io::ErrorKind::AlreadyExists && settings_path.is_file() => {
+            Ok(())
+        }
         Err(error) => Err(error),
     }
 }
