@@ -240,7 +240,10 @@ object CrossDevice {
                     } else if (ServiceManager.getService()?.batteryNotification?.isBatteryData(trimmedPacket) == true) {
                         batteryBytes = trimmedPacket
                         ServiceManager.getService()?.batteryNotification?.setBattery(trimmedPacket)
-                        Log.d("CrossDevice", "Battery data: ${ServiceManager.getService()?.batteryNotification?.getBattery()[0]?.level}")
+                        Log.d(
+                            "CrossDevice",
+                            "Battery data: ${ServiceManager.getService()?.batteryNotification?.getBattery()?.firstOrNull()?.level}",
+                        )
                         ServiceManager.getService()?.updateBattery()
                         ServiceManager.getService()?.sendBatteryBroadcast()
                         ServiceManager.getService()?.sendBatteryNotification()

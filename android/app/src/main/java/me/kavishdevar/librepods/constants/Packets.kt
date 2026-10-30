@@ -147,23 +147,19 @@ class AirPodsNotifications {
     }
 
     class BatteryNotification {
-        private var first: Battery = Battery(BatteryComponent.LEFT, 0, BatteryStatus.DISCONNECTED)
-        private var second: Battery = Battery(BatteryComponent.RIGHT, 0, BatteryStatus.DISCONNECTED)
-        private var case: Battery = Battery(BatteryComponent.CASE, 0, BatteryStatus.DISCONNECTED)
+        private val batteries = mutableMapOf<Int, Battery>()
+        private val componentOrder = listOf(
+            BatteryComponent.LEFT,
+            BatteryComponent.RIGHT,
+            BatteryComponent.CASE,
+        )
+        private val validStatuses = setOf(
+            BatteryStatus.CHARGING,
+            BatteryStatus.NOT_CHARGING,
+            BatteryStatus.DISCONNECTED,
+        )
 
-        fun isBatteryData(data: ByteArray): Boolean {
-            if (data.joinToString("") { "%02x".format(it) }.startsWith("040004000400")) {
-                Log.d("BatteryNotification", "Battery data starts with 040004000400. Most likely is a battery packet.")
-            } else {
-                return false
-            }
-            if (data.size != 22) {
-                Log.d("BatteryNotification", "Battery data size is not 22, probably being used with Airpods with fewer or more battery count.")
-                return false
-            }
-            Log.d("BatteryNotification", data.joinToString("") { "%02x".format(it) }.startsWith("040004000400").toString())
-            return data.joinToString("") { "%02x".format(it) }.startsWith("040004000400")
-        }
+        fun isBatteryData(data: ByteArray): Boolean = parseBatteryRecords(data) != null
 
         fun setBatteryDirect(
             leftLevel: Int?,
@@ -173,40 +169,72 @@ class AirPodsNotifications {
             caseLevel: Int?,
             caseCharging: Boolean
         ) {
-            first = Battery(BatteryComponent.LEFT, leftLevel ?: 0, if (leftCharging) BatteryStatus.CHARGING else BatteryStatus.NOT_CHARGING)
-            second = Battery(BatteryComponent.RIGHT, rightLevel ?: 0, if (rightCharging) BatteryStatus.CHARGING else BatteryStatus.NOT_CHARGING)
-            case = Battery(BatteryComponent.CASE, caseLevel ?: 0, if (caseCharging) BatteryStatus.CHARGING else BatteryStatus.NOT_CHARGING)
+            mergeDirectBattery(BatteryComponent.LEFT, leftLevel, leftCharging)
+            mergeDirectBattery(BatteryComponent.RIGHT, rightLevel, rightCharging)
+            mergeDirectBattery(BatteryComponent.CASE, caseLevel, caseCharging)
         }
 
-        private fun batteryOrPrevious(
-            data: ByteArray,
-            componentIndex: Int,
-            levelIndex: Int,
-            statusIndex: Int,
-            previous: Battery,
-        ): Battery {
-            val component = data[componentIndex].toInt() and 0xFF
-            val level = data[levelIndex].toInt() and 0xFF
-            val status = data[statusIndex].toInt() and 0xFF
-            if (level > 100 || (level == 0 && status == BatteryStatus.DISCONNECTED)) {
-                return previous
+        private fun mergeDirectBattery(component: Int, level: Int?, charging: Boolean) {
+            if (level == null || level !in 0..100) return
+            batteries[component] = Battery(
+                component,
+                level,
+                if (charging) BatteryStatus.CHARGING else BatteryStatus.NOT_CHARGING,
+            )
+        }
+
+        private fun parseBatteryRecords(data: ByteArray): List<Battery>? {
+            if (data.size < BATTERY_HEADER_SIZE ||
+                BATTERY_PREFIX.indices.any { data[it] != BATTERY_PREFIX[it] }
+            ) {
+                return null
             }
-            return Battery(component, level, status)
+
+            val count = data[BATTERY_COUNT_INDEX].toInt() and 0xFF
+            if (count > componentOrder.size || data.size != BATTERY_HEADER_SIZE + count * BATTERY_RECORD_SIZE) {
+                return null
+            }
+
+            val records = ArrayList<Battery>(count)
+            repeat(count) { index ->
+                val offset = BATTERY_HEADER_SIZE + index * BATTERY_RECORD_SIZE
+                if (data[offset + 1] != BATTERY_RECORD_MARKER ||
+                    data[offset + 4] != BATTERY_RECORD_MARKER
+                ) {
+                    return null
+                }
+                records += Battery(
+                    component = data[offset].toInt() and 0xFF,
+                    level = data[offset + 2].toInt() and 0xFF,
+                    status = data[offset + 3].toInt() and 0xFF,
+                )
+            }
+            return records
         }
 
         fun setBattery(data: ByteArray) {
-            if (data.size != 22) {
-                return
+            val observations = parseBatteryRecords(data) ?: return
+            observations.forEach { observation ->
+                if (observation.component !in componentOrder || observation.status !in validStatuses) {
+                    return@forEach
+                }
+                if (observation.level > 100 ||
+                    (observation.level == 0 && observation.status == BatteryStatus.DISCONNECTED)
+                ) {
+                    return@forEach
+                }
+                batteries[observation.component] = observation
             }
-            first = batteryOrPrevious(data, 7, 9, 10, first)
-            second = batteryOrPrevious(data, 12, 14, 15, second)
-            case = batteryOrPrevious(data, 17, 19, 20, case)
         }
 
-        fun getBattery(): List<Battery> {
-            val left = if (first.component == BatteryComponent.LEFT) first else second
-            val right = if (first.component == BatteryComponent.LEFT) second else first
-            return listOf(left, right, case)
+        fun getBattery(): List<Battery> = componentOrder.mapNotNull(batteries::get)
+
+        private companion object {
+            val BATTERY_PREFIX = byteArrayOf(0x04, 0x00, 0x04, 0x00, 0x04, 0x00)
+            const val BATTERY_COUNT_INDEX = 6
+            const val BATTERY_HEADER_SIZE = 7
+            const val BATTERY_RECORD_SIZE = 5
+            const val BATTERY_RECORD_MARKER: Byte = 0x01
         }
     }
 
