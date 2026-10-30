@@ -9,6 +9,8 @@ on:
       - 'linux-v*'
     paths:
       - 'linux-rust/**'
+      - 'flake.nix'
+      - 'flake.lock'
       - '.github/workflows/ci-linux-rust.yml'
   workflow_dispatch:
 
@@ -28,6 +30,23 @@ jobs:
         run: |
           python3 -m unittest discover -s linux-rust/tests -p 'test_*.py' -v
           appstreamcli validate --no-net linux-rust/flatpak/me.kavishdevar.librepods.metainfo.xml
+
+      - name: Install Nix
+        uses: DeterminateSystems/nix-installer-action@v23
+
+      - name: Validate Nix flake
+        run: |
+          nix flake check --no-build
+          test "$(nix eval --raw .#apps.x86_64-linux.default.meta.description)" = \
+            "AirPods liberated from Apple's ecosystem"
+          nix eval --json .#packages.x86_64-linux.default.meta | python3 -c '
+          import json, sys
+          meta = json.load(sys.stdin)
+          assert meta["license"]["spdxId"] == "AGPL-3.0-only", meta["license"]
+          assert all(isinstance(maintainer, dict) for maintainer in meta["maintainers"]), meta["maintainers"]
+          '
+          nix flake check --no-build \
+            --override-input nixpkgs github:NixOS/nixpkgs/01fbdeef22b76df85ea168fbfe1bfd9e63681b30
 
       - name: Install AppImage tools
         run: |
