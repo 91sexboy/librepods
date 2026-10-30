@@ -176,23 +176,13 @@ class IslandWindow(private val context: Context) {
         val batteryText = islandView.findViewById<TextView>(R.id.island_battery_text)
         val batteryProgressBar = islandView.findViewById<ProgressBar>(R.id.island_battery_progress)
 
-        val displayBatteryLevel = if (batteryList != null) {
-            val leftBattery = batteryList.find { it.component == BatteryComponent.LEFT }
-            val rightBattery = batteryList.find { it.component == BatteryComponent.RIGHT }
-
-            when {
-                (leftBattery?.level ?: 0) > 0 && (rightBattery?.level ?: 0) > 0 ->
-                    minOf(leftBattery!!.level, rightBattery!!.level)
-                (leftBattery?.level ?: 0) > 0 -> leftBattery!!.level
-                (rightBattery?.level ?: 0) > 0 -> rightBattery!!.level
-                batteryPercentage > 0 -> batteryPercentage
-                else -> null
-            }
-        } else if (batteryPercentage > 0) {
-            batteryPercentage
-        } else {
-            null
-        }
+        val displayBatteryLevel = batteryList
+            ?.asSequence()
+            ?.filter { it.component == BatteryComponent.LEFT || it.component == BatteryComponent.RIGHT }
+            ?.map { it.level }
+            ?.filter { it > 0 }
+            ?.minOrNull()
+            ?: batteryPercentage.takeIf { it > 0 }
 
         if (displayBatteryLevel != null) {
             batteryText.text = "$displayBatteryLevel%"

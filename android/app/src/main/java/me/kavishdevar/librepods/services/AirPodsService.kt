@@ -230,6 +230,17 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
 
     lateinit var bleManager: BLEManager
 
+    private fun mergeBleBattery(status: BLEManager.AirPodsStatus) {
+        batteryNotification.setBatteryDirect(
+            leftLevel = status.leftBattery,
+            leftCharging = status.isLeftCharging,
+            rightLevel = status.rightBattery,
+            rightCharging = status.isRightCharging,
+            caseLevel = status.caseBattery,
+            caseCharging = status.isCaseCharging,
+        )
+    }
+
     private lateinit var socket: BluetoothSocket
 
     private val bleStatusListener = object : BLEManager.AirPodsStatusListener {
@@ -256,21 +267,7 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
             }
             Log.d(TAG, "Device status changed")
             if (isConnectedLocally) return
-            val leftLevel = bleManager.getMostRecentStatus()?.leftBattery?: 0
-            val rightLevel = bleManager.getMostRecentStatus()?.rightBattery?: 0
-            val caseLevel = bleManager.getMostRecentStatus()?.caseBattery?: 0
-            val leftCharging = bleManager.getMostRecentStatus()?.isLeftCharging
-            val rightCharging = bleManager.getMostRecentStatus()?.isRightCharging
-            val caseCharging = bleManager.getMostRecentStatus()?.isCaseCharging
-
-            batteryNotification.setBatteryDirect(
-                leftLevel = leftLevel,
-                leftCharging = leftCharging == true,
-                rightLevel = rightLevel,
-                rightCharging = rightCharging == true,
-                caseLevel = caseLevel,
-                caseCharging = caseCharging == true
-            )
+            mergeBleBattery(device)
             updateBattery()
         }
 
@@ -288,21 +285,7 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
                     getSharedPreferences("settings", MODE_PRIVATE).getString("name", "AirPods Pro") ?: "AirPods"
                 )
                 if (isConnectedLocally) return
-                val leftLevel = bleManager.getMostRecentStatus()?.leftBattery?: 0
-                val rightLevel = bleManager.getMostRecentStatus()?.rightBattery?: 0
-                val caseLevel = bleManager.getMostRecentStatus()?.caseBattery?: 0
-                val leftCharging = bleManager.getMostRecentStatus()?.isLeftCharging
-                val rightCharging = bleManager.getMostRecentStatus()?.isRightCharging
-                val caseCharging = bleManager.getMostRecentStatus()?.isCaseCharging
-
-                batteryNotification.setBatteryDirect(
-                    leftLevel = leftLevel,
-                    leftCharging = leftCharging == true,
-                    rightLevel = rightLevel,
-                    rightCharging = rightCharging == true,
-                    caseLevel = caseLevel,
-                    caseCharging = caseCharging == true
-                )
+                bleManager.getMostRecentStatus()?.let { mergeBleBattery(it) }
                 sendBatteryBroadcast()
             } else {
                 Log.d(TAG, "Lid closed")
@@ -324,21 +307,7 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
 
         override fun onBatteryChanged(device: BLEManager.AirPodsStatus) {
             if (isConnectedLocally) return
-            val leftLevel = bleManager.getMostRecentStatus()?.leftBattery?: 0
-            val rightLevel = bleManager.getMostRecentStatus()?.rightBattery?: 0
-            val caseLevel = bleManager.getMostRecentStatus()?.caseBattery?: 0
-            val leftCharging = bleManager.getMostRecentStatus()?.isLeftCharging
-            val rightCharging = bleManager.getMostRecentStatus()?.isRightCharging
-            val caseCharging = bleManager.getMostRecentStatus()?.isCaseCharging
-
-            batteryNotification.setBatteryDirect(
-                leftLevel = leftLevel,
-                leftCharging = leftCharging == true,
-                rightLevel = rightLevel,
-                rightCharging = rightCharging == true,
-                caseLevel = caseLevel,
-                caseCharging = caseCharging == true
-            )
+            mergeBleBattery(device)
             updateBattery()
             Log.d(TAG, "Battery changed")
         }
@@ -668,7 +637,7 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
          val showIslandReceiver = object: BroadcastReceiver() {
             override fun onReceive(context: Context?, intent: Intent?) {
                 if (intent?.action == "me.kavishdevar.librepods.cross_device_island") {
-                    showIsland(this@AirPodsService, batteryNotification.getBattery().find { it.component == BatteryComponent.LEFT}?.level!!.coerceAtMost(batteryNotification.getBattery().find { it.component == BatteryComponent.RIGHT}?.level!!))
+                    showIslandWithKnownBattery()
                 } else if (intent?.action == AirPodsNotifications.DISCONNECT_RECEIVERS) {
                     try {
                         context?.unregisterReceiver(this)
@@ -829,7 +798,11 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
                     )
                 }
 
-                if (batteryNotification.getBattery()[0].status == BatteryStatus.CHARGING && batteryNotification.getBattery()[1].status == BatteryStatus.CHARGING) {
+                val batteryByComponent = batteryNotification.getBattery().associateBy { it.component }
+                val bothPodsCharging = listOf(BatteryComponent.LEFT, BatteryComponent.RIGHT).all {
+                    batteryByComponent[it]?.status == BatteryStatus.CHARGING
+                }
+                if (bothPodsCharging) {
                     disconnectAudio(this@AirPodsService, device)
                 } else {
                     connectAudio(this@AirPodsService, device)
@@ -914,21 +887,17 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
                     Log.d(TAG, "reverse tapped, disconnecting audio")
                     disconnectedBecauseReversed = true
                     disconnectAudio(this@AirPodsService, device)
-                    showIsland(
-                        this@AirPodsService,
-                        (batteryNotification.getBattery().find { it.component == BatteryComponent.LEFT}?.level?: 0).coerceAtMost(batteryNotification.getBattery().find { it.component == BatteryComponent.RIGHT}?.level?: 0),
+                    showIslandWithKnownBattery(
                         IslandType.MOVED_TO_OTHER_DEVICE,
                         reversed = true,
-                        otherDeviceName = senderName
+                        otherDeviceName = senderName,
                     )
                 }
                 if (!aacpManager.owns) {
-                    showIsland(
-                        this@AirPodsService,
-                        (batteryNotification.getBattery().find { it.component == BatteryComponent.LEFT}?.level?: 0).coerceAtMost(batteryNotification.getBattery().find { it.component == BatteryComponent.RIGHT}?.level?: 0),
+                    showIslandWithKnownBattery(
                         IslandType.MOVED_TO_OTHER_DEVICE,
                         reversed = reasonReverseTapped,
-                        otherDeviceName = senderName
+                        otherDeviceName = senderName,
                     )
                 }
                 MediaController.sendPause()
@@ -936,12 +905,10 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
 
             override fun onShowNearbyUI(sender: String) {
                 val senderName = aacpManager.connectedDevices.find { it.mac == sender }?.type ?: "Other device"
-                showIsland(
-                    this@AirPodsService,
-                    (batteryNotification.getBattery().find { it.component == BatteryComponent.LEFT}?.level?: 0).coerceAtMost(batteryNotification.getBattery().find { it.component == BatteryComponent.RIGHT}?.level?: 0),
+                showIslandWithKnownBattery(
                     IslandType.MOVED_TO_OTHER_DEVICE,
                     reversed = false,
-                    otherDeviceName = senderName
+                    otherDeviceName = senderName,
                 )
             }
 
@@ -1113,9 +1080,7 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
             )
 
             if (inEarData.sorted() == listOf(false, false) && newInEarData.sorted() != listOf(false, false) && islandWindow?.isVisible != true) {
-                showIsland(
-                    this@AirPodsService,
-                    (batteryNotification.getBattery().find { it.component == BatteryComponent.LEFT}?.level?: 0).coerceAtMost(batteryNotification.getBattery().find { it.component == BatteryComponent.RIGHT}?.level?: 0))
+                showIslandWithKnownBattery()
             }
 
             if (newInEarData == listOf(false, false) && islandWindow?.isVisible == true) {
@@ -1417,6 +1382,19 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
 
     var islandOpen = false
     var islandWindow: IslandWindow? = null
+
+    private fun showIslandWithKnownBattery(
+        type: IslandType = IslandType.CONNECTED,
+        reversed: Boolean = false,
+        otherDeviceName: String? = null,
+    ) {
+        val level = batteryNotification.getBattery()
+            .filter { it.component == BatteryComponent.LEFT || it.component == BatteryComponent.RIGHT }
+            .minOfOrNull { it.level }
+            ?: return
+        showIsland(this, level, type, reversed, otherDeviceName)
+    }
+
     @SuppressLint("MissingPermission")
     fun showIsland(service: Service, batteryPercentage: Int, type: IslandType = IslandType.CONNECTED, reversed: Boolean = false, otherDeviceName: String? = null) {
         Log.d(TAG, "Showing island window")
@@ -2240,8 +2218,7 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
                 )
                 otherDeviceTookOver = false
                 connectAudio(this, device)
-                showIsland(this, batteryNotification.getBattery().find { it.component == BatteryComponent.LEFT}?.level!!.coerceAtMost(batteryNotification.getBattery().find { it.component == BatteryComponent.RIGHT}?.level!!),
-                    IslandType.CONNECTED)
+                showIslandWithKnownBattery(IslandType.CONNECTED)
 
                 CoroutineScope(Dispatchers.IO).launch {
                     delay(500) // a2dp takes time, and so does taking control + AirPods pause it for no reason after connecting
@@ -2337,8 +2314,7 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
                 isConnectedLocally = true
             }
         }
-        showIsland(this, batteryNotification.getBattery().find { it.component == BatteryComponent.LEFT}?.level!!.coerceAtMost(batteryNotification.getBattery().find { it.component == BatteryComponent.RIGHT}?.level!!),
-            IslandType.TAKING_OVER)
+        showIslandWithKnownBattery(IslandType.TAKING_OVER)
 
         CrossDevice.isAvailable = false
     }
@@ -2549,8 +2525,7 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
         socket.close()
         MediaController.pausedWhileTakingOver = false
         Log.d(TAG, "Disconnected from AirPods, showing island.")
-        showIsland(this, batteryNotification.getBattery().find { it.component == BatteryComponent.LEFT}?.level!!.coerceAtMost(batteryNotification.getBattery().find { it.component == BatteryComponent.RIGHT}?.level!!),
-            IslandType.MOVED_TO_REMOTE)
+        showIslandWithKnownBattery(IslandType.MOVED_TO_REMOTE)
         val bluetoothAdapter = getSystemService(BluetoothManager::class.java).adapter
         bluetoothAdapter.getProfileProxy(this, object : BluetoothProfile.ServiceListener {
             override fun onServiceConnected(profile: Int, proxy: BluetoothProfile) {

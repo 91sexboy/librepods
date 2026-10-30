@@ -44,7 +44,7 @@ internal fun decodeEncryptedBattery(
 ): DecodedBattery {
     val charging = (byteVal and 0x80) != 0
     val level = byteVal and 0x7F
-    return if (level > 100) fallback else DecodedBattery(charging, level)
+    return if (level > 100) lastKnown ?: fallback else DecodedBattery(charging, level)
 }
 
 /**
@@ -94,7 +94,6 @@ class BLEManager(private val context: Context) {
     private var lastBroadcastTime: Long = 0
     private val processedAddresses = mutableSetOf<String>()
 
-    private val lastValidCaseBatteryMap = mutableMapOf<String, Int>()
     private val modelNames = mapOf(
         0x0E20 to "AirPods Pro",
         0x1420 to "AirPods Pro 2",
@@ -253,12 +252,6 @@ class BLEManager(private val context: Context) {
         }
     }
 
-    private fun formatBattery(byteVal: Int): Pair<Boolean, Int> {
-        val charging = (byteVal and 0x80) != 0
-        val level = byteVal and 0x7F
-        return Pair(charging, level)
-    }
-
     private fun processScanResult(result: ScanResult) {
         try {
             val scanRecord = result.scanRecord ?: return
@@ -375,15 +368,14 @@ class BLEManager(private val context: Context) {
             DecodedBattery(publicStatus.isRightCharging, publicStatus.rightBattery),
         )
 
-        val rawCaseBatteryByte = decrypted[3].toInt() and 0xFF
-        val (isCaseCharging, rawCaseBattery) = formatBattery(rawCaseBatteryByte)
-
-        val caseBattery = if (rawCaseBatteryByte == 0xFF || (isCaseCharging && rawCaseBattery == 127)) {
-            lastValidCaseBatteryMap[address]
-        } else {
-            lastValidCaseBatteryMap[address] = rawCaseBattery
-            rawCaseBattery
-        }
+        val previousStatus = deviceStatusMap[address]
+        val caseReading = decodeEncryptedBattery(
+            decrypted[3].toInt() and 0xFF,
+            DecodedBattery(publicStatus.isCaseCharging, publicStatus.caseBattery),
+            previousStatus?.caseBattery?.let { level ->
+                DecodedBattery(previousStatus.isCaseCharging, level)
+            },
+        )
 
         val lidOpen = ((lid shr 3) and 0x01) == 0
 
@@ -394,12 +386,12 @@ class BLEManager(private val context: Context) {
             model = model,
             leftBattery = leftReading.level,
             rightBattery = rightReading.level,
-            caseBattery = caseBattery,
+            caseBattery = caseReading.level,
             isLeftInEar = isLeftInEar,
             isRightInEar = isRightInEar,
             isLeftCharging = leftReading.charging,
             isRightCharging = rightReading.charging,
-            isCaseCharging = isCaseCharging,
+            isCaseCharging = caseReading.charging,
             lidOpen = lidOpen,
             color = color,
             connectionState = conn
