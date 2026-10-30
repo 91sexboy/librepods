@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-tokio = {version = "1.50.0", features = ["full", "test-util"]}
+tokio = {version = "1.50.0", features = ["full"]}
 bluer = { version = "0.17.4", features = ["full"] }
 env_logger = {version = "0.11.10", features = ["auto-color"]}
 uuid = "1.23.0"
@@ -23,6 +23,9 @@ serde_json = "1.0"
 aes = "0.9.0-rc.4"
 futures = "0.3.32"
 tempfile = "3.27.0"
+
+[dev-dependencies]
+tokio = { version = "1.50.0", features = ["test-util"] }
 
 [profile.release]
 opt-level = "s"
