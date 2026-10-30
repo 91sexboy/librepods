@@ -49,6 +49,7 @@ pub enum ProfileOperationError {
     A2dpProfileUnavailable,
     NoPreferredA2dpProfile,
     ProfileWorkerStopped,
+    ListenerReplaced,
     ProfileSwitchFailed(String),
 }
 
@@ -394,6 +395,12 @@ struct PlaybackListenerEntry {
     abort_handle: AbortHandle,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct PlaybackListenerGeneration {
+    device_mac: String,
+    generation: u64,
+}
+
 #[derive(Default)]
 struct PlaybackListenerRegistryState {
     next_generation: u64,
@@ -487,6 +494,15 @@ impl PlaybackListenerRegistry {
             .get(&device_mac)
             .cloned()
     }
+}
+
+fn run_blocking_profile_action<Output>(
+    registry: &PlaybackListenerRegistry,
+    listener_generation: Option<&PlaybackListenerGeneration>,
+    action: impl FnOnce() -> Output,
+) -> Result<Output, ProfileOperationError> {
+    let _ = (registry, listener_generation);
+    Ok(action())
 }
 
 // MediaController instances are recreated on reconnect, so listener ownership
@@ -1172,7 +1188,18 @@ impl MediaController {
             controller: self,
             expected_mac: &mac,
         };
-        activate_a2dp_profile_with_operations(&mut operations).await
+        self.run_a2dp_activation(activate_a2dp_profile_with_operations(&mut operations))
+            .await
+    }
+
+    async fn run_a2dp_activation<Activation>(
+        &self,
+        activation: Activation,
+    ) -> ProfileOperationResult
+    where
+        Activation: std::future::Future<Output = ProfileOperationResult> + Send,
+    {
+        activation.await
     }
 
     async fn request_a2dp_connection_once_with<Request>(
@@ -1919,6 +1946,11 @@ fn set_card_profile_sync(card_index: u32, profile_name: &str) -> bool {
         mainloop.iterate(false);
     }
     mainloop.quit(Retval(0));
+    profile_switch_succeeded(None)
+}
+
+fn profile_switch_succeeded(callback_result: Option<bool>) -> bool {
+    let _ = callback_result;
     true
 }
 
@@ -2076,7 +2108,7 @@ mod tests {
         ActiveProfile(u32),
         ProfileAvailable,
         CurrentDeviceIndex,
-        PreferredProfile,
+        PreferredProfile(u32),
         Probe,
         Restart,
         Sleep(Duration),
@@ -2088,6 +2120,7 @@ mod tests {
         profile_available_results: VecDeque<bool>,
         active_profile: Option<String>,
         preferred_profile: String,
+        preferred_profiles_by_index: HashMap<u32, String>,
         current_device_index: Option<u32>,
         restart_result: bool,
         request_result: Result<(), String>,
@@ -2106,6 +2139,7 @@ mod tests {
                 profile_available_results: profile_available_results.into_iter().collect(),
                 active_profile: active_profile.map(str::to_owned),
                 preferred_profile: "a2dp-sink".into(),
+                preferred_profiles_by_index: HashMap::new(),
                 current_device_index: None,
                 restart_result,
                 request_result: Ok(()),
@@ -2201,8 +2235,16 @@ mod tests {
         }
 
         fn get_preferred_a2dp_profile(&mut self) -> A2dpRecoveryFuture<'_, String> {
-            self.actions.push(ActivationAction::PreferredProfile);
-            let profile = self.preferred_profile.clone();
+            let card_index = self
+                .current_device_index
+                .expect("preferred profile requested without a current audio card");
+            self.actions
+                .push(ActivationAction::PreferredProfile(card_index));
+            let profile = self
+                .preferred_profiles_by_index
+                .get(&card_index)
+                .cloned()
+                .unwrap_or_else(|| self.preferred_profile.clone());
             Box::pin(async move { profile })
         }
 
@@ -2270,6 +2312,116 @@ mod tests {
             ear_profile_action_for_transition(&[false, false], &[true, false]),
             Some(EarProfileAction::ActivateA2dp)
         );
+    }
+
+    #[test]
+    fn card_profile_callback_false_or_missing_is_failure() {
+        assert!(profile_switch_succeeded(Some(true)));
+        assert!(!profile_switch_succeeded(Some(false)));
+        assert!(!profile_switch_succeeded(None));
+    }
+
+    #[tokio::test]
+    async fn concurrent_a2dp_activations_run_one_pipeline_at_a_time() {
+        let controller = controller();
+        let (first_started_tx, first_started_rx) = oneshot::channel();
+        let (release_first_tx, release_first_rx) = oneshot::channel();
+        let first_controller = controller.clone();
+        let first = tokio::spawn(async move {
+            first_controller
+                .run_a2dp_activation(async move {
+                    first_started_tx
+                        .send(())
+                        .expect("first activation start receiver dropped");
+                    release_first_rx
+                        .await
+                        .expect("first activation release sender dropped");
+                    Ok(())
+                })
+                .await
+        });
+
+        timeout(Duration::from_secs(1), first_started_rx)
+            .await
+            .expect("first activation did not start")
+            .expect("first activation start sender dropped");
+
+        let (second_started_tx, mut second_started_rx) = oneshot::channel();
+        let (second_polled_tx, second_polled_rx) = oneshot::channel();
+        let second = tokio::spawn(async move {
+            let mut activation = Box::pin(async move {
+                controller
+                    .run_a2dp_activation(async move {
+                        let _ = second_started_tx.send(());
+                        Ok(())
+                    })
+                    .await
+            });
+            let mut second_polled_tx = Some(second_polled_tx);
+            std::future::poll_fn(move |context| {
+                let result = std::future::Future::poll(activation.as_mut(), context);
+                if let Some(second_polled_tx) = second_polled_tx.take() {
+                    let _ = second_polled_tx.send(());
+                }
+                result
+            })
+            .await
+        });
+        timeout(Duration::from_secs(1), second_polled_rx)
+            .await
+            .expect("second activation was not polled")
+            .expect("second activation poll sender dropped");
+        let second_started_before_release = match second_started_rx.try_recv() {
+            Ok(()) => true,
+            Err(oneshot::error::TryRecvError::Empty) => false,
+            Err(oneshot::error::TryRecvError::Closed) => {
+                panic!("second activation start sender dropped")
+            }
+        };
+
+        release_first_tx
+            .send(())
+            .expect("first activation release receiver dropped");
+        let (first_result, second_result) = timeout(Duration::from_secs(1), async {
+            tokio::join!(first, second)
+        })
+        .await
+        .expect("serialized activations did not finish");
+        assert_eq!(first_result.expect("first activation task failed"), Ok(()));
+        assert_eq!(
+            second_result.expect("second activation task failed"),
+            Ok(())
+        );
+        assert!(
+            !second_started_before_release,
+            "second activation entered while the first pipeline was active"
+        );
+    }
+
+    #[tokio::test]
+    async fn stale_listener_generation_skips_blocking_profile_action() {
+        let playback_listeners = PlaybackListenerRegistry::default();
+        let first_listener = tokio::spawn(std::future::pending::<()>());
+        let first_generation =
+            playback_listeners.replace(CONNECTED_MAC, first_listener.abort_handle());
+        let replacement_listener = tokio::spawn(std::future::pending::<()>());
+        let replacement_generation =
+            playback_listeners.replace(CONNECTED_MAC, replacement_listener.abort_handle());
+        let stale_generation = PlaybackListenerGeneration {
+            device_mac: CONNECTED_MAC.into(),
+            generation: first_generation,
+        };
+        let mut action_ran = false;
+
+        let result =
+            run_blocking_profile_action(&playback_listeners, Some(&stale_generation), || {
+                action_ran = true
+            });
+
+        assert!(playback_listeners.remove_if_current(CONNECTED_MAC, replacement_generation));
+        replacement_listener.abort();
+        assert_eq!(result, Err(ProfileOperationError::ListenerReplaced));
+        assert!(!action_ran);
     }
 
     #[tokio::test]
@@ -2703,7 +2855,7 @@ mod tests {
                 ActivationAction::Probe,
                 ActivationAction::CurrentDeviceIndex,
                 ActivationAction::ActiveProfile(42),
-                ActivationAction::PreferredProfile,
+                ActivationAction::PreferredProfile(42),
                 ActivationAction::ResolveDeviceIndex,
                 ActivationAction::SwitchProfile {
                     card_index: 42,
@@ -2760,7 +2912,7 @@ mod tests {
                 ActivationAction::Probe,
                 ActivationAction::CurrentDeviceIndex,
                 ActivationAction::ActiveProfile(42),
-                ActivationAction::PreferredProfile,
+                ActivationAction::PreferredProfile(42),
                 ActivationAction::ResolveDeviceIndex,
                 ActivationAction::SwitchProfile {
                     card_index: 42,
@@ -2952,7 +3104,7 @@ mod tests {
                 ActivationAction::ResolveDeviceIndex,
                 ActivationAction::ActiveProfile(21),
                 ActivationAction::ProfileAvailable,
-                ActivationAction::PreferredProfile,
+                ActivationAction::PreferredProfile(21),
                 ActivationAction::ResolveDeviceIndex,
                 ActivationAction::ActiveProfile(42),
                 ActivationAction::SwitchProfile {
@@ -2960,6 +3112,51 @@ mod tests {
                     profile: "a2dp-sink".into(),
                 },
             ]
+        );
+    }
+
+    #[tokio::test]
+    async fn recreated_final_card_recovers_and_selects_its_own_profile() {
+        let mut operations = RecordingActivationOperations::new(
+            [Some(21), Some(42), Some(42), Some(42)],
+            [true, false, true],
+            Some("off"),
+            false,
+        );
+        operations
+            .preferred_profiles_by_index
+            .insert(21, "a2dp-sink-sbc-xq".into());
+        operations
+            .preferred_profiles_by_index
+            .insert(42, "a2dp-sink-aac".into());
+
+        let result = activate_a2dp_profile_with_operations(&mut operations).await;
+
+        assert_eq!(result, Ok(()));
+        assert!(operations.actions.contains(&ActivationAction::Probe));
+        assert!(
+            !operations
+                .actions
+                .contains(&ActivationAction::PreferredProfile(21)),
+            "the replaced card's profile must not be selected"
+        );
+        let final_resolution = operations
+            .actions
+            .iter()
+            .rposition(|action| matches!(action, ActivationAction::ResolveDeviceIndex))
+            .expect("activation did not perform a final card lookup");
+        let final_selection = operations
+            .actions
+            .iter()
+            .position(|action| *action == ActivationAction::PreferredProfile(42))
+            .expect("activation did not select the recreated card's profile");
+        assert!(final_selection > final_resolution);
+        assert_eq!(
+            operations.actions.last(),
+            Some(&ActivationAction::SwitchProfile {
+                card_index: 42,
+                profile: "a2dp-sink-aac".into(),
+            })
         );
     }
 
