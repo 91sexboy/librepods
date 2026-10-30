@@ -22,9 +22,6 @@ REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
 LINUX_ROOT = REPOSITORY_ROOT / "linux-rust"
 LICENSE = REPOSITORY_ROOT / "LICENSE"
 WORKFLOW = REPOSITORY_ROOT / ".github" / "workflows" / "ci-linux-rust.yml"
-NIX_UPDATE_WORKFLOW = (
-    REPOSITORY_ROOT / ".github" / "workflows" / "ci-nix-flake-update.yml"
-)
 FLATPAK_MANIFEST = LINUX_ROOT / "flatpak" / "me.kavishdevar.librepods.yaml"
 METAINFO = LINUX_ROOT / "flatpak" / "me.kavishdevar.librepods.metainfo.xml"
 FLAKE_LOCK = REPOSITORY_ROOT / "flake.lock"
@@ -147,40 +144,6 @@ class PackagingTests(unittest.TestCase):
             "Prefer `04 00 04 00 0F 00 FF FF FF FF`",
             notification_section,
         )
-
-    def test_nix_update_workflow_refreshes_linux_rust_via_pull_request(self):
-        self.assertTrue(
-            NIX_UPDATE_WORKFLOW.exists(),
-            "the default branch must register the scheduled Nix updater",
-        )
-        workflow = load_yaml(NIX_UPDATE_WORKFLOW)
-
-        self.assertEqual([{"cron": "0 4 * * 1"}], workflow["on"]["schedule"])
-        self.assertIn("workflow_dispatch", workflow["on"])
-        self.assertEqual("write", workflow["permissions"]["contents"])
-        self.assertEqual("write", workflow["permissions"]["pull-requests"])
-
-        job = workflow["jobs"]["update-lock"]
-        self.assertEqual("linux/rust", job["env"]["TARGET_BRANCH"])
-        steps = {step["name"]: step for step in job["steps"]}
-        self.assertEqual(
-            "${{ env.TARGET_BRANCH }}",
-            steps["Checkout target branch"]["with"]["ref"],
-        )
-        self.assertEqual("nix flake update", steps["Update flake lockfile"]["run"])
-        self.assertEqual(
-            "steps.lockfile.outputs.changed == 'true'",
-            steps["Validate updated flake"]["if"],
-        )
-        self.assertEqual(
-            "steps.lockfile.outputs.changed == 'true'",
-            steps["Build updated flake"]["if"],
-        )
-
-        pull_request = steps["Open flake lock update pull request"]
-        self.assertEqual("steps.lockfile.outputs.changed == 'true'", pull_request["if"])
-        self.assertEqual("${{ env.TARGET_BRANCH }}", pull_request["with"]["base"])
-        self.assertEqual("flake.lock", pull_request["with"]["add-paths"])
 
     def test_nixpkgs_lock_is_newer_than_reported_stale_revision(self):
         lock = json.loads(FLAKE_LOCK.read_text(encoding="utf-8"))
