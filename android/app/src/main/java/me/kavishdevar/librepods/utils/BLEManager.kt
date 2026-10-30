@@ -35,6 +35,14 @@ import javax.crypto.spec.SecretKeySpec
 import kotlin.io.encoding.Base64
 import kotlin.io.encoding.ExperimentalEncodingApi
 
+internal data class DecodedBattery(val charging: Boolean, val level: Int?)
+
+internal fun decodeEncryptedBattery(byteVal: Int, fallback: DecodedBattery): DecodedBattery {
+    val charging = (byteVal and 0x80) != 0
+    val level = byteVal and 0x7F
+    return DecodedBattery(charging, level)
+}
+
 /**
  * Manager for Bluetooth Low Energy scanning operations specifically for AirPods
  */
@@ -352,9 +360,16 @@ class BLEManager(private val context: Context) {
 
         val leftByteIndex = if (isFlipped) 2 else 1
         val rightByteIndex = if (isFlipped) 1 else 2
+        val publicStatus = parseProximityMessage(address, data)
 
-        val (isLeftCharging, leftBattery) = formatBattery(decrypted[leftByteIndex].toInt() and 0xFF)
-        val (isRightCharging, rightBattery) = formatBattery(decrypted[rightByteIndex].toInt() and 0xFF)
+        val leftReading = decodeEncryptedBattery(
+            decrypted[leftByteIndex].toInt() and 0xFF,
+            DecodedBattery(publicStatus.isLeftCharging, publicStatus.leftBattery),
+        )
+        val rightReading = decodeEncryptedBattery(
+            decrypted[rightByteIndex].toInt() and 0xFF,
+            DecodedBattery(publicStatus.isRightCharging, publicStatus.rightBattery),
+        )
 
         val rawCaseBatteryByte = decrypted[3].toInt() and 0xFF
         val (isCaseCharging, rawCaseBattery) = formatBattery(rawCaseBatteryByte)
@@ -373,13 +388,13 @@ class BLEManager(private val context: Context) {
             lastSeen = System.currentTimeMillis(),
             paired = paired,
             model = model,
-            leftBattery = leftBattery,
-            rightBattery = rightBattery,
+            leftBattery = leftReading.level,
+            rightBattery = rightReading.level,
             caseBattery = caseBattery,
             isLeftInEar = isLeftInEar,
             isRightInEar = isRightInEar,
-            isLeftCharging = isLeftCharging,
-            isRightCharging = isRightCharging,
+            isLeftCharging = leftReading.charging,
+            isRightCharging = rightReading.charging,
             isCaseCharging = isCaseCharging,
             lidOpen = lidOpen,
             color = color,
