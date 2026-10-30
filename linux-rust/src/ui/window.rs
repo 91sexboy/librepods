@@ -65,6 +65,11 @@ fn save_setting_update(path: &Path, update: AppSettingUpdate) -> std::io::Result
     save_app_settings(path, &update.into_patch())
 }
 
+#[cfg(target_os = "linux")]
+fn window_application_id(_flatpak_id: Option<&str>) -> String {
+    "librepods".to_owned()
+}
+
 fn main_window_settings() -> window::Settings {
     let mut settings = window::Settings::default();
     settings.min_size = Some(Size::new(400.0, 300.0));
@@ -72,7 +77,7 @@ fn main_window_settings() -> window::Settings {
     settings.icon = window_icon();
     #[cfg(target_os = "linux")]
     {
-        settings.platform_specific.application_id = "librepods".to_owned();
+        settings.platform_specific.application_id = window_application_id(None);
     }
     settings
 }
@@ -1466,6 +1471,15 @@ mod tests {
                 .platform_specific
                 .application_id,
             "librepods"
+        );
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn main_window_uses_flatpak_application_id_when_available() {
+        assert_eq!(
+            super::window_application_id(Some("me.kavishdevar.librepods")),
+            "me.kavishdevar.librepods"
         );
     }
 
