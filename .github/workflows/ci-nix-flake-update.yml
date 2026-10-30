@@ -1,0 +1,67 @@
+name: Update flake.lock
+
+on:
+  schedule:
+    - cron: '0 4 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+
+concurrency:
+  group: update-linux-rust-flake-lock
+  cancel-in-progress: false
+
+jobs:
+  update-lock:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    env:
+      TARGET_BRANCH: linux/rust
+
+    steps:
+      - name: Checkout target branch
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ env.TARGET_BRANCH }}
+
+      - name: Install Nix
+        uses: DeterminateSystems/nix-installer-action@v23
+
+      - name: Update flake lockfile
+        run: nix flake update
+
+      - name: Detect lockfile changes
+        id: lockfile
+        run: |
+          if git diff --quiet -- flake.lock; then
+            echo 'changed=false' >> "$GITHUB_OUTPUT"
+          else
+            echo 'changed=true' >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Validate updated flake
+        if: steps.lockfile.outputs.changed == 'true'
+        run: nix flake check --no-build
+
+      - name: Build updated flake
+        if: steps.lockfile.outputs.changed == 'true'
+        run: nix build .#default
+
+      - name: Open flake lock update pull request
+        if: steps.lockfile.outputs.changed == 'true'
+        uses: peter-evans/create-pull-request@v8.1.1
+        with:
+          base: ${{ env.TARGET_BRANCH }}
+          branch: ci/weekly-flake-lock
+          delete-branch: true
+          add-paths: flake.lock
+          commit-message: 'chore(nix): update flake.lock'
+          title: 'chore(nix): update flake.lock'
+          body: |
+            Automated weekly flake input update.
+
+            Validation completed:
+            - `nix flake check --no-build`
+            - `nix build .#default`
