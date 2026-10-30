@@ -3,7 +3,8 @@
 use ab_glyph::{Font, ScaleFont};
 use ksni::{Icon, ToolTip};
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
-use tokio::time::{Duration, sleep};
+use tokio::sync::watch;
+use tokio::time::{Duration, Instant, sleep_until};
 
 use crate::bluetooth::aacp::{BatteryStatus, ControlCommandIdentifiers};
 use crate::ui::messages::BluetoothUIMessage;
@@ -25,41 +26,60 @@ pub(crate) struct TrayRequestKey {
     pub(crate) request_id: u64,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) struct PendingListeningModeRequest {
+#[derive(Debug)]
+pub(crate) struct PendingTrayRequest<T> {
     pub(crate) request_id: u64,
-    pub(crate) mode: u8,
+    pub(crate) value: T,
+    deadline: Instant,
+    cancellation: watch::Sender<()>,
 }
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug)]
+struct TrayCommandRequest {
+    key: TrayRequestKey,
+    deadline: Instant,
+    cancellation: watch::Receiver<()>,
+}
+
+#[derive(Debug)]
 pub(crate) struct TrayCommand {
     pub(crate) identifier: ControlCommandIdentifiers,
     pub(crate) value: Vec<u8>,
-    pub(crate) pending_request_key: Option<TrayRequestKey>,
+    pending_request: TrayCommandRequest,
 }
 
 impl TrayCommand {
-    pub(crate) fn control(identifier: ControlCommandIdentifiers, value: Vec<u8>) -> Self {
-        Self {
-            identifier,
-            value,
-            pending_request_key: None,
-        }
+    fn pending<T: Copy>(
+        identifier: ControlCommandIdentifiers,
+        value: Vec<u8>,
+        request_key: TrayRequestKey,
+        requested_value: T,
+    ) -> (PendingTrayRequest<T>, Self) {
+        let deadline = Instant::now() + TRAY_REQUEST_CONFIRMATION_TIMEOUT;
+        let (cancellation, cancelled) = watch::channel(());
+        let request = PendingTrayRequest {
+            request_id: request_key.request_id,
+            value: requested_value,
+            deadline,
+            cancellation,
+        };
+        let request_deadline = request.deadline;
+        (
+            request,
+            Self {
+                identifier,
+                value,
+                pending_request: TrayCommandRequest {
+                    key: request_key,
+                    deadline: request_deadline,
+                    cancellation: cancelled,
+                },
+            },
+        )
     }
 
-    fn listening_mode(request: PendingListeningModeRequest) -> Self {
-        Self {
-            identifier: ControlCommandIdentifiers::ListeningMode,
-            value: vec![request.mode],
-            pending_request_key: Some(TrayRequestKey {
-                setting: TraySetting::ListeningMode,
-                request_id: request.request_id,
-            }),
-        }
-    }
-
-    fn into_parts(self) -> (ControlCommandIdentifiers, Vec<u8>, Option<TrayRequestKey>) {
-        (self.identifier, self.value, self.pending_request_key)
+    fn into_parts(self) -> (ControlCommandIdentifiers, Vec<u8>, TrayCommandRequest) {
+        (self.identifier, self.value, self.pending_request)
     }
 }
 
@@ -74,27 +94,97 @@ pub(crate) async fn run_tray_command_worker<
     send_command: SendCommand,
     clear_pending: ClearPending,
 ) where
-    SendCommand: Fn(ControlCommandIdentifiers, Vec<u8>) -> SendFuture,
-    SendFuture: std::future::Future<Output = Result<(), Error>>,
-    ClearPending: Fn(TrayRequestKey) -> ClearFuture + Clone + Send + 'static,
+    SendCommand: Fn(ControlCommandIdentifiers, Vec<u8>) -> SendFuture + Send + Sync + 'static,
+    SendFuture: std::future::Future<Output = Result<(), Error>> + Send + 'static,
+    ClearPending: Fn(TrayRequestKey) -> ClearFuture + Clone + Send + Sync + 'static,
     ClearFuture: std::future::Future<Output = ()> + Send + 'static,
-    Error: std::fmt::Display,
+    Error: std::fmt::Display + Send + 'static,
 {
     while let Some(command) = command_rx.recv().await {
-        let (identifier, value, pending_request_key) = command.into_parts();
-        if let Some(request_key) = pending_request_key {
-            let clear_pending = clear_pending.clone();
-            tokio::spawn(async move {
-                sleep(TRAY_REQUEST_CONFIRMATION_TIMEOUT).await;
-                clear_pending(request_key).await;
-            });
+        let (identifier, value, pending_request) = command.into_parts();
+        let TrayCommandRequest {
+            key: request_key,
+            deadline,
+            mut cancellation,
+        } = pending_request;
+        if deadline <= Instant::now() {
+            clear_pending(request_key).await;
+            continue;
         }
-        if let Err(error) = send_command(identifier, value).await {
-            log::error!("Failed to send control command: {}", error);
-            if let Some(request_key) = pending_request_key {
+        if cancellation.has_changed().is_err() {
+            continue;
+        }
+        let mut send_cancellation = cancellation.clone();
+        let send = send_command(identifier, value);
+        tokio::pin!(send);
+
+        tokio::select! {
+            biased;
+            _ = sleep_until(deadline) => {
                 clear_pending(request_key).await;
             }
+            _ = send_cancellation.changed() => {}
+            result = &mut send => match result {
+                Ok(()) => {
+                    let clear_pending = clear_pending.clone();
+                    tokio::spawn(async move {
+                        tokio::select! {
+                            biased;
+                            _ = sleep_until(deadline) => {
+                                clear_pending(request_key).await;
+                            }
+                            _ = cancellation.changed() => {}
+                        }
+                    });
+                }
+                Err(error) => {
+                    log::error!("Failed to send control command: {}", error);
+                    clear_pending(request_key).await;
+                }
+            }
         }
+    }
+}
+
+fn clear_matching_pending_request<T>(pending: &mut Option<PendingTrayRequest<T>>, request_id: u64) {
+    if pending
+        .as_ref()
+        .is_some_and(|request| request.request_id == request_id)
+        && let Some(request) = pending.take()
+    {
+        drop(request.cancellation);
+    }
+}
+
+fn displayed_setting<T: Copy>(
+    confirmed: Option<T>,
+    pending: &Option<PendingTrayRequest<T>>,
+) -> Option<T> {
+    pending.as_ref().map(|request| request.value).or(confirmed)
+}
+
+fn queue_pending_request<T: Copy>(
+    command_tx: Option<&UnboundedSender<TrayCommand>>,
+    next_request_id: &mut u64,
+    pending: &mut Option<PendingTrayRequest<T>>,
+    setting: TraySetting,
+    identifier: ControlCommandIdentifiers,
+    requested_value: T,
+    command_value: Vec<u8>,
+) {
+    let Some(command_tx) = command_tx else {
+        return;
+    };
+    let request_key = TrayRequestKey {
+        setting,
+        request_id: *next_request_id,
+    };
+    *next_request_id = (*next_request_id).wrapping_add(1);
+    let (request, command) =
+        TrayCommand::pending(identifier, command_value, request_key, requested_value);
+    *pending = Some(request);
+    if command_tx.send(command).is_err() {
+        clear_matching_pending_request(pending, request_key.request_id);
     }
 }
 
@@ -111,8 +201,9 @@ pub struct MyTray {
     pub battery_c_status: Option<BatteryStatus>,
     pub connected: bool,
     pub listening_mode: Option<u8>,
-    pub(crate) pending_listening_mode: Option<PendingListeningModeRequest>,
-    pub(crate) next_listening_mode_request_id: u64,
+    pub(crate) pending_listening_mode: Option<PendingTrayRequest<u8>>,
+    pub(crate) pending_conversation_detection: Option<PendingTrayRequest<bool>>,
+    pub(crate) next_tray_request_id: u64,
     pub allow_off_option: Option<u8>,
     pub(crate) command_tx: Option<UnboundedSender<TrayCommand>>,
     pub ui_tx: Option<UnboundedSender<BluetoothUIMessage>>,
@@ -120,9 +211,14 @@ pub struct MyTray {
 
 impl MyTray {
     fn displayed_listening_mode(&self) -> Option<u8> {
-        self.pending_listening_mode
-            .map(|request| request.mode)
-            .or(self.listening_mode)
+        displayed_setting(self.listening_mode, &self.pending_listening_mode)
+    }
+
+    fn displayed_conversation_detection(&self) -> Option<bool> {
+        displayed_setting(
+            self.conversation_detect_enabled,
+            &self.pending_conversation_detection,
+        )
     }
 
     pub(crate) fn apply_listening_mode_report(&mut self, mode: u8) {
@@ -132,42 +228,52 @@ impl MyTray {
 
     pub(crate) fn apply_conversation_detection_report(&mut self, enabled: bool) {
         self.conversation_detect_enabled = Some(enabled);
+        self.pending_conversation_detection = None;
     }
 
     pub(crate) fn clear_pending_listening_mode_request(&mut self, request_id: u64) {
-        if self
-            .pending_listening_mode
-            .is_some_and(|request| request.request_id == request_id)
-        {
-            self.pending_listening_mode = None;
-        }
+        clear_matching_pending_request(&mut self.pending_listening_mode, request_id);
     }
 
     pub(crate) fn clear_pending_request(&mut self, request_key: TrayRequestKey) {
         match request_key.setting {
             TraySetting::ListeningMode => {
-                self.clear_pending_listening_mode_request(request_key.request_id);
+                clear_matching_pending_request(
+                    &mut self.pending_listening_mode,
+                    request_key.request_id,
+                );
             }
-            TraySetting::ConversationDetection => {}
+            TraySetting::ConversationDetection => {
+                clear_matching_pending_request(
+                    &mut self.pending_conversation_detection,
+                    request_key.request_id,
+                );
+            }
         }
     }
 
     fn queue_listening_mode_request(&mut self, mode: u8) {
-        let Some(command_tx) = self.command_tx.clone() else {
-            return;
-        };
-        let request = PendingListeningModeRequest {
-            request_id: self.next_listening_mode_request_id,
+        queue_pending_request(
+            self.command_tx.as_ref(),
+            &mut self.next_tray_request_id,
+            &mut self.pending_listening_mode,
+            TraySetting::ListeningMode,
+            ControlCommandIdentifiers::ListeningMode,
             mode,
-        };
-        self.next_listening_mode_request_id = self.next_listening_mode_request_id.wrapping_add(1);
-        let previous_request = self.pending_listening_mode.replace(request);
-        if command_tx
-            .send(TrayCommand::listening_mode(request))
-            .is_err()
-        {
-            self.pending_listening_mode = previous_request;
-        }
+            vec![mode],
+        );
+    }
+
+    fn queue_conversation_detection_request(&mut self, enabled: bool) {
+        queue_pending_request(
+            self.command_tx.as_ref(),
+            &mut self.next_tray_request_id,
+            &mut self.pending_conversation_detection,
+            TraySetting::ConversationDetection,
+            ControlCommandIdentifiers::ConversationDetectConfig,
+            enabled,
+            vec![if enabled { 0x01 } else { 0x02 }],
+        );
     }
 }
 
@@ -312,19 +418,11 @@ impl ksni::Tray for MyTray {
             MenuItem::Separator,
             CheckmarkItem {
                 label: "Conversation Detection".into(),
-                checked: self.conversation_detect_enabled.unwrap_or(false),
+                checked: self.displayed_conversation_detection().unwrap_or(false),
                 enabled: self.conversation_detect_enabled.is_some(),
                 activate: Box::new(|this: &mut Self| {
-                    if let Some(tx) = &this.command_tx
-                        && let Some(is_enabled) = this.conversation_detect_enabled
-                    {
-                        let new_state = !is_enabled;
-                        let value = if !new_state { 0x02 } else { 0x01 };
-                        let _ = tx.send(TrayCommand::control(
-                            ControlCommandIdentifiers::ConversationDetectConfig,
-                            vec![value],
-                        ));
-                        this.conversation_detect_enabled = Some(new_state);
+                    if let Some(is_enabled) = this.displayed_conversation_detection() {
+                        this.queue_conversation_detection_request(!is_enabled);
                     }
                 }),
                 ..Default::default()
@@ -495,7 +593,8 @@ mod tests {
             connected: false,
             listening_mode: None,
             pending_listening_mode: None,
-            next_listening_mode_request_id: 0,
+            pending_conversation_detection: None,
+            next_tray_request_id: 0,
             allow_off_option: None,
             command_tx: None,
             ui_tx: None,
@@ -560,30 +659,32 @@ mod tests {
         let (command_tx, mut command_rx) = tokio::sync::mpsc::unbounded_channel();
         let mut tray = empty_tray();
         tray.listening_mode = Some(0x02);
-        tray.next_listening_mode_request_id = u64::MAX;
+        tray.next_tray_request_id = u64::MAX;
         tray.command_tx = Some(command_tx);
 
         let group = listening_mode_group(&tray);
         (group.select)(&mut tray, 1);
 
         assert_eq!(tray.listening_mode, Some(0x02));
+        let first_pending = tray.pending_listening_mode.as_ref().unwrap();
+        assert_eq!(first_pending.request_id, u64::MAX);
+        assert_eq!(first_pending.value, 0x03);
+        let first_command = command_rx.try_recv().unwrap();
         assert_eq!(
-            tray.pending_listening_mode,
-            Some(PendingListeningModeRequest {
+            first_command.identifier,
+            ControlCommandIdentifiers::ListeningMode
+        );
+        assert_eq!(first_command.value, vec![0x03]);
+        assert_eq!(
+            first_command.pending_request.key,
+            TrayRequestKey {
+                setting: TraySetting::ListeningMode,
                 request_id: u64::MAX,
-                mode: 0x03,
-            })
+            }
         );
         assert_eq!(
-            command_rx.try_recv().unwrap(),
-            TrayCommand {
-                identifier: ControlCommandIdentifiers::ListeningMode,
-                value: vec![0x03],
-                pending_request_key: Some(TrayRequestKey {
-                    setting: TraySetting::ListeningMode,
-                    request_id: u64::MAX,
-                }),
-            }
+            first_command.pending_request.deadline,
+            first_pending.deadline
         );
         assert_eq!(listening_mode_group(&tray).selected, 1);
 
@@ -591,23 +692,25 @@ mod tests {
         (group.select)(&mut tray, 2);
 
         assert_eq!(tray.listening_mode, Some(0x02));
+        let latest_pending = tray.pending_listening_mode.as_ref().unwrap();
+        assert_eq!(latest_pending.request_id, 0);
+        assert_eq!(latest_pending.value, 0x04);
+        let latest_command = command_rx.try_recv().unwrap();
         assert_eq!(
-            tray.pending_listening_mode,
-            Some(PendingListeningModeRequest {
+            latest_command.identifier,
+            ControlCommandIdentifiers::ListeningMode
+        );
+        assert_eq!(latest_command.value, vec![0x04]);
+        assert_eq!(
+            latest_command.pending_request.key,
+            TrayRequestKey {
+                setting: TraySetting::ListeningMode,
                 request_id: 0,
-                mode: 0x04,
-            })
+            }
         );
         assert_eq!(
-            command_rx.try_recv().unwrap(),
-            TrayCommand {
-                identifier: ControlCommandIdentifiers::ListeningMode,
-                value: vec![0x04],
-                pending_request_key: Some(TrayRequestKey {
-                    setting: TraySetting::ListeningMode,
-                    request_id: 0,
-                }),
-            }
+            latest_command.pending_request.deadline,
+            latest_pending.deadline
         );
         assert_eq!(listening_mode_group(&tray).selected, 2);
     }
@@ -625,7 +728,7 @@ mod tests {
         tray.apply_listening_mode_report(0x04);
 
         assert_eq!(tray.listening_mode, Some(0x04));
-        assert_eq!(tray.pending_listening_mode, None);
+        assert!(tray.pending_listening_mode.is_none());
         assert_eq!(listening_mode_group(&tray).selected, 2);
     }
 
@@ -641,13 +744,13 @@ mod tests {
         let request_id = command_rx
             .try_recv()
             .unwrap()
-            .pending_request_key
-            .unwrap()
+            .pending_request
+            .key
             .request_id;
         tray.clear_pending_listening_mode_request(request_id);
 
         assert_eq!(tray.listening_mode, Some(0x02));
-        assert_eq!(tray.pending_listening_mode, None);
+        assert!(tray.pending_listening_mode.is_none());
         assert_eq!(listening_mode_group(&tray).selected, 0);
     }
 
@@ -663,28 +766,24 @@ mod tests {
         let stale_request_id = command_rx
             .try_recv()
             .unwrap()
-            .pending_request_key
-            .unwrap()
+            .pending_request
+            .key
             .request_id;
         let group = listening_mode_group(&tray);
         (group.select)(&mut tray, 2);
         let current_request_id = command_rx
             .try_recv()
             .unwrap()
-            .pending_request_key
-            .unwrap()
+            .pending_request
+            .key
             .request_id;
 
         tray.clear_pending_listening_mode_request(stale_request_id);
 
         assert_eq!(tray.listening_mode, Some(0x02));
-        assert_eq!(
-            tray.pending_listening_mode,
-            Some(PendingListeningModeRequest {
-                request_id: current_request_id,
-                mode: 0x04,
-            })
-        );
+        let pending = tray.pending_listening_mode.as_ref().unwrap();
+        assert_eq!(pending.request_id, current_request_id);
+        assert_eq!(pending.value, 0x04);
         assert_eq!(listening_mode_group(&tray).selected, 2);
     }
 
@@ -759,7 +858,7 @@ mod tests {
 
         let tray = tray.lock().await;
         assert_eq!(tray.conversation_detect_enabled, Some(false));
-        assert_eq!(tray.pending_listening_mode, None);
+        assert!(tray.pending_listening_mode.is_none());
         assert_eq!(attempts.lock().unwrap().len(), 1);
         assert!(send_dropped.load(Ordering::SeqCst));
         worker.abort();
@@ -883,7 +982,7 @@ mod tests {
         assert_eq!(tray.conversation_detect_enabled, Some(false));
         assert!(!conversation_detection_item(&tray).checked);
         assert_eq!(tray.listening_mode, Some(0x02));
-        assert_eq!(tray.pending_listening_mode, None);
+        assert!(tray.pending_listening_mode.is_none());
 
         tray.apply_conversation_detection_report(true);
         tray.apply_listening_mode_report(0x04);
