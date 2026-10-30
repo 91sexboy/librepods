@@ -904,11 +904,11 @@ class AACPManager {
             )
         )
         buffer.put(byteArrayOf(0x01, 0xE5.toByte(), 0x4A)) // unknown, constant
-        buffer.put("PlayingApp".toByteArray())
+        buffer.put("playingApp".toByteArray())
         buffer.put(byteArrayOf(0x56)) // 'V', seems like a identifier or a separator
         buffer.put("com.google.ios.youtube".toByteArray()) // package name, hardcoding for now, aforementioned reason
         buffer.put(byteArrayOf(0x52)) // 'R'
-        buffer.put("HostStreamingState".toByteArray())
+        buffer.put("hostStreamingState".toByteArray())
         buffer.put(byteArrayOf(0x42)) // 'B'
         buffer.put((if (streamingState) "YES" else "NO").toByteArray()) // streaming state
         buffer.put(0x49) // 'I'
