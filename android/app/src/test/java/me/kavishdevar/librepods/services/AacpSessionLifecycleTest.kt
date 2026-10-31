@@ -1,5 +1,6 @@
 package me.kavishdevar.librepods.services
 
+import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
@@ -121,6 +122,36 @@ class AacpSessionLifecycleTest {
         assertFalse(lifecycle.endSession(oldAttempt, oldSocket))
         assertTrue(lifecycle.isActive(newAttempt, newSocket))
         assertSame(newSocket, lifecycle.activeSocket())
+    }
+
+    @Test
+    fun staleDelayedHeadTrackingRestartCannotRunAgainstReplacementSession() {
+        val lifecycle = AacpSessionLifecycle<FakeSocket>()
+        val oldAttempt = lifecycle.beginAttempt()!!
+        val oldSocket = FakeSocket()
+        assertTrue(lifecycle.attachSocket(oldAttempt, oldSocket))
+        assertTrue(lifecycle.promote(oldAttempt, oldSocket))
+        val oldSession = lifecycle.activeSession()!!
+        var restartCount = 0
+        val delayedRestart = {
+            lifecycle.runIfActive(oldSession) {
+                restartCount++
+            }
+        }
+
+        val disconnected = lifecycle.disconnect()
+        assertTrue(lifecycle.completeCleanup(disconnected.cleanupToken))
+        val replacementAttempt = lifecycle.beginAttempt()!!
+        val replacementSocket = FakeSocket()
+        assertTrue(lifecycle.attachSocket(replacementAttempt, replacementSocket))
+        assertTrue(lifecycle.promote(replacementAttempt, replacementSocket))
+
+        assertFalse(delayedRestart())
+        assertEquals(0, restartCount)
+        assertTrue(lifecycle.runIfActive(lifecycle.activeSession()!!) {
+            restartCount++
+        })
+        assertEquals(1, restartCount)
     }
 
     @Test
