@@ -28,12 +28,24 @@ object BluetoothConnectionManager {
     private var currentSocket: BluetoothSocket? = null
     private var currentDevice: BluetoothDevice? = null
 
+    @Synchronized
     fun setCurrentConnection(socket: BluetoothSocket, device: BluetoothDevice) {
         currentSocket = socket
         currentDevice = device
         Log.d(TAG, "Current connection set to device: ${device.address}")
     }
 
+    @Synchronized
+    fun clearCurrentConnection(expectedSocket: BluetoothSocket): Boolean {
+        if (currentSocket !== expectedSocket) return false
+
+        currentSocket = null
+        currentDevice = null
+        Log.d(TAG, "Current connection cleared")
+        return true
+    }
+
+    @Synchronized
     fun getCurrentSocket(): BluetoothSocket? {
         return currentSocket
     }

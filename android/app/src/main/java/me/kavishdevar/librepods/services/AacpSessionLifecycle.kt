@@ -26,7 +26,9 @@ internal class AacpSessionLifecycle<Socket : Any> {
     private var active: Active<Socket>? = null
 
     @Synchronized
-    fun beginAttempt(): AacpConnectionAttempt {
+    fun beginAttempt(): AacpConnectionAttempt? {
+        if (pending != null || active != null) return null
+
         val attempt = AacpConnectionAttempt(++generation)
         pending = Pending(attempt)
         return attempt
@@ -34,12 +36,18 @@ internal class AacpSessionLifecycle<Socket : Any> {
 
     @Synchronized
     fun attachSocket(attempt: AacpConnectionAttempt, socket: Socket): Boolean {
-        pending?.socket = socket
+        val current = pending ?: return false
+        if (current.attempt != attempt || current.socket != null) return false
+
+        current.socket = socket
         return true
     }
 
     @Synchronized
     fun promote(attempt: AacpConnectionAttempt, socket: Socket): Boolean {
+        val current = pending ?: return false
+        if (current.attempt != attempt || current.socket !== socket || active != null) return false
+
         active = Active(attempt, socket)
         pending = null
         return true
@@ -47,13 +55,18 @@ internal class AacpSessionLifecycle<Socket : Any> {
 
     @Synchronized
     fun failAttempt(attempt: AacpConnectionAttempt, socket: Socket? = null): Boolean {
+        val current = pending ?: return false
+        if (current.attempt != attempt || current.socket !== socket) return false
+
         pending = null
-        active = null
         return true
     }
 
     @Synchronized
     fun endSession(attempt: AacpConnectionAttempt, socket: Socket): Boolean {
+        val current = active ?: return false
+        if (current.attempt != attempt || current.socket !== socket) return false
+
         active = null
         return true
     }
@@ -72,7 +85,7 @@ internal class AacpSessionLifecycle<Socket : Any> {
 
     @Synchronized
     fun isActive(attempt: AacpConnectionAttempt, socket: Socket): Boolean =
-        active?.socket === socket
+        active?.let { it.attempt == attempt && it.socket === socket } == true
 
     @Synchronized
     fun activeSocket(): Socket? = active?.socket
@@ -82,5 +95,5 @@ internal class AacpSessionLifecycle<Socket : Any> {
 
     @get:Synchronized
     val isConnected: Boolean
-        get() = pending?.socket != null || active != null
+        get() = active != null
 }
