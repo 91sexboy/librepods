@@ -2310,9 +2310,11 @@ mod tests {
             assert!(matches!(futures::poll!(send.as_mut()), Poll::Pending));
         }
         assert_eq!(sender.capacity(), 3, "tray packet was not enqueued");
-        let transport = Arc::new(FakePacketTransport::new(
-            std::iter::empty::<FakeSendOutcome>(),
-        ));
+        sender
+            .send(QueuedAacpPacket::fire_and_forget(vec![0xDD]))
+            .await
+            .unwrap();
+        let transport = Arc::new(FakePacketTransport::new([FakeSendOutcome::Ready(Ok(1))]));
         let send_loop = tokio::spawn(send_thread(
             manager.clone(),
             packet_rx,
@@ -2320,20 +2322,23 @@ mod tests {
             connection_generation,
         ));
 
-        timeout(Duration::from_millis(250), async {
-            while sender.capacity() != 4 {
-                tokio::task::yield_now().await;
-            }
-        })
-        .await
-        .expect("send loop did not consume the abandoned packet");
-        assert!(
-            transport.attempts().is_empty(),
+        wait_for_attempts(&transport, 1).await;
+        assert_eq!(
+            transport.attempts(),
+            [vec![0xDD]],
             "abandoned packet reached the socket transport"
         );
 
-        send_loop.abort();
-        let _ = send_loop.await;
+        drop(sender);
+        assert!(
+            manager
+                .clear_connection_if_current(connection_generation)
+                .await
+        );
+        timeout(Duration::from_millis(250), send_loop)
+            .await
+            .expect("send loop did not stop after abandoned packet test")
+            .expect("send loop task failed");
     }
 
     #[tokio::test(start_paused = true)]
