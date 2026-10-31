@@ -227,7 +227,9 @@ class AirPodsNotifications {
             }
         }
 
-        fun clear() = Unit
+        fun clear() {
+            batteries.clear()
+        }
 
         fun getBattery(): List<Battery> = componentOrder.mapNotNull(batteries::get)
 
