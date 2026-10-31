@@ -31,6 +31,15 @@ CREATE_PULL_REQUEST_ACTION = (
     "peter-evans/create-pull-request@"
     "5f6978faf089d4d20b00c7766989d076bb2fc7f1"  # v8.1.1
 )
+RUST_TOOLCHAIN_ACTION = (
+    "dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8"  # master
+)
+CACHE_ACTION = (
+    "actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830"  # v4
+)
+GH_RELEASE_ACTION = (
+    "softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65"  # v2
+)
 IMMUTABLE_ACTION_REFERENCE = re.compile(
     r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+@[0-9a-f]{40}$"
 )
@@ -89,6 +98,180 @@ class WorkflowTests(unittest.TestCase):
         self.assertRegex(
             steps["Install Nix"]["uses"],
             IMMUTABLE_ACTION_REFERENCE,
+        )
+
+    def test_linux_ci_uses_reviewed_immutable_action_commits(self):
+        workflow = load_yaml(LINUX_WORKFLOW)
+        action_references = [
+            step["uses"]
+            for job in workflow["jobs"].values()
+            for step in job["steps"]
+            if "uses" in step
+        ]
+
+        self.assertEqual(
+            [
+                CHECKOUT_ACTION,
+                NIX_INSTALLER_ACTION,
+                RUST_TOOLCHAIN_ACTION,
+                CACHE_ACTION,
+                UPLOAD_ARTIFACT_ACTION,
+                UPLOAD_ARTIFACT_ACTION,
+                UPLOAD_ARTIFACT_ACTION,
+                DOWNLOAD_ARTIFACT_ACTION,
+                DOWNLOAD_ARTIFACT_ACTION,
+                DOWNLOAD_ARTIFACT_ACTION,
+                GH_RELEASE_ACTION,
+            ],
+            action_references,
+        )
+        for action_reference in action_references:
+            with self.subTest(action=action_reference):
+                self.assertRegex(action_reference, IMMUTABLE_ACTION_REFERENCE)
+
+    def test_linux_ci_build_has_only_read_permission(self):
+        workflow = load_yaml(LINUX_WORKFLOW)
+
+        self.assertIn("permissions", workflow)
+        self.assertEqual({}, workflow["permissions"])
+        self.assertEqual(
+            {"contents": "read"},
+            workflow["jobs"]["build"]["permissions"],
+        )
+
+    def test_linux_ci_pinned_rust_action_selects_stable_toolchain(self):
+        workflow = load_yaml(LINUX_WORKFLOW)
+        install_rust = named_steps(workflow["jobs"]["build"])["Install Rust"]
+
+        self.assertEqual(RUST_TOOLCHAIN_ACTION, install_rust["uses"])
+        self.assertEqual("stable", install_rust["with"]["toolchain"])
+
+    def test_linux_ci_checkout_never_persists_credentials(self):
+        workflow = load_yaml(LINUX_WORKFLOW)
+        checkout_steps = [
+            step
+            for job in workflow["jobs"].values()
+            for step in job["steps"]
+            if step.get("uses", "").startswith("actions/checkout@")
+        ]
+
+        self.assertEqual(1, len(checkout_steps))
+        self.assertEqual(CHECKOUT_ACTION, checkout_steps[0]["uses"])
+        self.assertEqual(
+            "false",
+            checkout_steps[0].get("with", {}).get("persist-credentials"),
+        )
+
+    def test_linux_ci_pull_requests_cannot_reach_release(self):
+        workflow = load_yaml(LINUX_WORKFLOW)
+        jobs = workflow["jobs"]
+
+        self.assertIn("release", jobs)
+        release_job = jobs["release"]
+        self.assertEqual("build", release_job["needs"])
+        self.assertEqual(
+            "github.event_name == 'push' && "
+            "startsWith(github.ref, 'refs/tags/linux-v')",
+            release_job["if"],
+        )
+        self.assertNotIn(GH_RELEASE_ACTION, str(jobs["build"]))
+        self.assertNotIn("secrets.GITHUB_TOKEN", str(jobs["build"]))
+
+    def test_linux_ci_release_is_tag_only_with_write_permission(self):
+        workflow = load_yaml(LINUX_WORKFLOW)
+        jobs = workflow["jobs"]
+
+        self.assertIn("release", jobs)
+        release_job = jobs["release"]
+        self.assertEqual(
+            "github.event_name == 'push' && "
+            "startsWith(github.ref, 'refs/tags/linux-v')",
+            release_job["if"],
+        )
+        self.assertEqual({"contents": "write"}, release_job["permissions"])
+        self.assertEqual(
+            [
+                "Download AppImage artifact",
+                "Download binary artifact",
+                "Download source tarball artifact",
+                "Publish GitHub release",
+            ],
+            [step["name"] for step in release_job["steps"]],
+        )
+        self.assertFalse(any("run" in step for step in release_job["steps"]))
+        release_steps = named_steps(release_job)
+        publish = release_steps["Publish GitHub release"]
+        self.assertEqual(GH_RELEASE_ACTION, publish["uses"])
+        self.assertEqual("${{ github.ref_name }}", publish["with"]["tag_name"])
+        self.assertEqual(
+            "${{ secrets.GITHUB_TOKEN }}",
+            publish["env"]["GITHUB_TOKEN"],
+        )
+
+    def test_linux_ci_hands_exact_build_artifacts_to_release(self):
+        workflow = load_yaml(LINUX_WORKFLOW)
+        jobs = workflow["jobs"]
+
+        self.assertIn("release", jobs)
+        build_job = jobs["build"]
+        release_job = jobs["release"]
+        build_steps = named_steps(build_job)
+        release_steps = named_steps(release_job)
+
+        self.assertEqual(
+            "${{ steps.release-version.outputs.version }}",
+            build_job["outputs"]["version"],
+        )
+        self.assertEqual(
+            "release-version",
+            build_steps["Get release version"]["id"],
+        )
+
+        artifact_steps = [
+            (
+                build_steps["Upload AppImage artifact"],
+                release_steps["Download AppImage artifact"],
+                "librepods-x86_64.AppImage",
+                "linux-rust/dist/librepods-x86_64.AppImage",
+            ),
+            (
+                build_steps["Upload binary artifact"],
+                release_steps["Download binary artifact"],
+                "librepods",
+                "linux-rust/dist/librepods",
+            ),
+            (
+                build_steps["Upload source tarball artifact"],
+                release_steps["Download source tarball artifact"],
+                "librepods-source",
+                "linux-rust/dist/librepods-v"
+                "${{ steps.release-version.outputs.version }}-source.tar.gz",
+            ),
+        ]
+        for upload, download, artifact_name, artifact_path in artifact_steps:
+            with self.subTest(artifact=artifact_name):
+                self.assertEqual(UPLOAD_ARTIFACT_ACTION, upload["uses"])
+                self.assertEqual(artifact_name, upload["with"]["name"])
+                self.assertEqual(artifact_path, upload["with"]["path"])
+                self.assertEqual("error", upload["with"]["if-no-files-found"])
+                self.assertEqual(DOWNLOAD_ARTIFACT_ACTION, download["uses"])
+                self.assertEqual(artifact_name, download["with"]["name"])
+                self.assertEqual("release-assets", download["with"]["path"])
+
+        self.assertNotIn("if", build_steps["Upload AppImage artifact"])
+        self.assertNotIn("if", build_steps["Upload binary artifact"])
+        self.assertEqual(
+            "startsWith(github.ref, 'refs/tags/linux-v')",
+            build_steps["Upload source tarball artifact"]["if"],
+        )
+        self.assertEqual(
+            [
+                "release-assets/librepods-v"
+                "${{ needs.build.outputs.version }}-source.tar.gz",
+                "release-assets/librepods-x86_64.AppImage",
+                "release-assets/librepods",
+            ],
+            release_steps["Publish GitHub release"]["with"]["files"].splitlines(),
         )
 
     def test_nix_updater_checkouts_do_not_persist_credentials(self):
