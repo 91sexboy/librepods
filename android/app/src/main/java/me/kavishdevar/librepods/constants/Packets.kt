@@ -227,6 +227,8 @@ class AirPodsNotifications {
             }
         }
 
+        fun clear() = Unit
+
         fun getBattery(): List<Battery> = componentOrder.mapNotNull(batteries::get)
 
         private companion object {
