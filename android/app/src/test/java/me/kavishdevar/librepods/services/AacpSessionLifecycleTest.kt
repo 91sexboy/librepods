@@ -167,6 +167,22 @@ class AacpSessionLifecycleTest {
     }
 
     @Test
+    fun overlappingDisconnectStopsWaitingAtDeadlineWithoutOpeningCleanupGate() {
+        val lifecycle = AacpSessionLifecycle<FakeSocket>()
+        val attempt = lifecycle.beginAttempt()!!
+        val socket = FakeSocket()
+        assertTrue(lifecycle.attachSocket(attempt, socket))
+
+        val cleanupOwner = lifecycle.disconnect()
+        val overlappingDisconnect = lifecycle.disconnect()
+
+        assertFalse(overlappingDisconnect.awaitExistingCleanup(25))
+        assertNull(lifecycle.beginAttempt())
+        assertTrue(lifecycle.completeCleanup(cleanupOwner.cleanupToken))
+        assertNotNull(lifecycle.beginAttempt())
+    }
+
+    @Test
     fun disconnectReturnsOnlyTheOwnedActiveSocket() {
         val lifecycle = AacpSessionLifecycle<FakeSocket>()
         val attempt = lifecycle.beginAttempt()!!
