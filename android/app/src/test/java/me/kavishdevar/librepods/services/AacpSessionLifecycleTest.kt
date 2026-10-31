@@ -47,6 +47,8 @@ class AacpSessionLifecycleTest {
         assertFalse(disconnected.endedActiveSession)
         assertFalse(lifecycle.promote(attempt, socket))
         assertFalse(lifecycle.isConnected)
+        assertNull(lifecycle.beginAttempt())
+        assertTrue(lifecycle.completeCleanup(disconnected.cleanupToken))
         assertNotNull(lifecycle.beginAttempt())
     }
 
@@ -54,7 +56,8 @@ class AacpSessionLifecycleTest {
     fun oldCreateFailureCannotCancelNewAttempt() {
         val lifecycle = AacpSessionLifecycle<FakeSocket>()
         val oldAttempt = lifecycle.beginAttempt()!!
-        lifecycle.disconnect()
+        val disconnected = lifecycle.disconnect()
+        assertTrue(lifecycle.completeCleanup(disconnected.cleanupToken))
         val newAttempt = lifecycle.beginAttempt()!!
         val newSocket = FakeSocket()
 
@@ -70,7 +73,8 @@ class AacpSessionLifecycleTest {
         val oldAttempt = lifecycle.beginAttempt()!!
         val oldSocket = FakeSocket()
         assertTrue(lifecycle.attachSocket(oldAttempt, oldSocket))
-        lifecycle.disconnect()
+        val disconnected = lifecycle.disconnect()
+        assertTrue(lifecycle.completeCleanup(disconnected.cleanupToken))
 
         val newAttempt = lifecycle.beginAttempt()!!
         val newSocket = FakeSocket()
@@ -90,7 +94,9 @@ class AacpSessionLifecycleTest {
         val oldSocket = FakeSocket()
         assertTrue(lifecycle.attachSocket(oldAttempt, oldSocket))
         assertTrue(lifecycle.promote(oldAttempt, oldSocket))
-        assertSame(oldSocket, lifecycle.disconnect().activeSocket)
+        val disconnected = lifecycle.disconnect()
+        assertSame(oldSocket, disconnected.activeSocket)
+        assertTrue(lifecycle.completeCleanup(disconnected.cleanupToken))
 
         val newAttempt = lifecycle.beginAttempt()!!
         val newSocket = FakeSocket()
@@ -118,6 +124,27 @@ class AacpSessionLifecycleTest {
         assertTrue(lifecycle.isActive(attempt, socket))
         assertTrue(lifecycle.endSession(attempt, socket))
         assertFalse(lifecycle.isConnected)
+        assertNull(lifecycle.beginAttempt())
+        assertTrue(lifecycle.completeCleanup(attempt.generation))
+        assertNotNull(lifecycle.beginAttempt())
+    }
+
+    @Test
+    fun overlappingDisconnectCannotCompleteCleanupOwnedByFirstCaller() {
+        val lifecycle = AacpSessionLifecycle<FakeSocket>()
+        val attempt = lifecycle.beginAttempt()!!
+        val socket = FakeSocket()
+        assertTrue(lifecycle.attachSocket(attempt, socket))
+
+        val firstDisconnect = lifecycle.disconnect()
+        val overlappingDisconnect = lifecycle.disconnect()
+
+        assertNotNull(firstDisconnect.cleanupToken)
+        assertNull(overlappingDisconnect.cleanupToken)
+        assertFalse(lifecycle.completeCleanup(overlappingDisconnect.cleanupToken))
+        assertNull(lifecycle.beginAttempt())
+        assertTrue(lifecycle.completeCleanup(firstDisconnect.cleanupToken))
+        assertNotNull(lifecycle.beginAttempt())
     }
 
     @Test
