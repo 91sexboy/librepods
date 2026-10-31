@@ -44,7 +44,13 @@ internal fun decodeEncryptedBattery(
 ): DecodedBattery {
     val charging = (byteVal and 0x80) != 0
     val level = byteVal and 0x7F
-    return if (level > 100) lastKnown ?: fallback else DecodedBattery(charging, level)
+    if (level <= 100) return DecodedBattery(charging, level)
+
+    return when {
+        fallback.level != null -> fallback
+        lastKnown != null -> lastKnown
+        else -> fallback
+    }
 }
 
 /**
@@ -358,17 +364,23 @@ class BLEManager(private val context: Context) {
         val leftByteIndex = if (isFlipped) 2 else 1
         val rightByteIndex = if (isFlipped) 1 else 2
         val publicStatus = parseProximityMessage(address, data)
+        val previousStatus = deviceStatusMap[address]
 
         val leftReading = decodeEncryptedBattery(
             decrypted[leftByteIndex].toInt() and 0xFF,
             DecodedBattery(publicStatus.isLeftCharging, publicStatus.leftBattery),
+            previousStatus?.leftBattery?.let { level ->
+                DecodedBattery(previousStatus.isLeftCharging, level)
+            },
         )
         val rightReading = decodeEncryptedBattery(
             decrypted[rightByteIndex].toInt() and 0xFF,
             DecodedBattery(publicStatus.isRightCharging, publicStatus.rightBattery),
+            previousStatus?.rightBattery?.let { level ->
+                DecodedBattery(previousStatus.isRightCharging, level)
+            },
         )
 
-        val previousStatus = deviceStatusMap[address]
         val caseReading = decodeEncryptedBattery(
             decrypted[3].toInt() and 0xFF,
             DecodedBattery(publicStatus.isCaseCharging, publicStatus.caseBattery),
