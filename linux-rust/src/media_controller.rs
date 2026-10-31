@@ -2390,7 +2390,7 @@ async fn get_sink_name_by_mac(mac: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::bluetooth::aacp::{ConnectedDevice, opcodes};
+    use crate::bluetooth::aacp::{ConnectedDevice, QueuedAacpPacket, opcodes};
     use std::collections::VecDeque;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use tokio::sync::{mpsc, oneshot};
@@ -3943,7 +3943,7 @@ mod tests {
         );
     }
 
-    async fn takeover_manager(capacity: usize) -> (AACPManager, mpsc::Receiver<Vec<u8>>) {
+    async fn takeover_manager(capacity: usize) -> (AACPManager, mpsc::Receiver<QueuedAacpPacket>) {
         let manager = AACPManager::new();
         let (packet_tx, packet_rx) = mpsc::channel(capacity);
         {
@@ -4262,7 +4262,8 @@ mod tests {
         let ownership = timeout(Duration::from_millis(250), packet_rx.recv())
             .await
             .expect("timed out waiting for ownership packet")
-            .expect("ownership packet channel closed");
+            .expect("ownership packet channel closed")
+            .into_fire_and_forget_data();
         assert_eq!(ownership[4], opcodes::CONTROL_COMMAND);
         drop(packet_rx);
 
@@ -4301,7 +4302,8 @@ mod tests {
                 timeout(Duration::from_millis(250), packet_rx.recv())
                     .await
                     .expect("timed out waiting for takeover packet")
-                    .expect("takeover packet channel closed"),
+                    .expect("takeover packet channel closed")
+                    .into_fire_and_forget_data(),
             );
         }
 

@@ -8,11 +8,13 @@ use bluer::{
 use log::{debug, error, info};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::future::Future;
 use std::io;
 use std::path::PathBuf;
+use std::pin::Pin;
 use std::sync::Arc;
 use std::time::Duration;
-use tokio::sync::{Mutex, mpsc};
+use tokio::sync::{Mutex, mpsc, oneshot};
 use tokio::task::JoinSet;
 use tokio::time::{Instant, sleep};
 
@@ -463,8 +465,62 @@ where
         .map_err(|error| io::Error::other(format!("device persistence worker failed: {error}")))?
 }
 
+#[derive(Debug)]
+pub(crate) struct QueuedAacpPacket {
+    data: Vec<u8>,
+    deadline: Option<Instant>,
+    completion: Option<oneshot::Sender<io::Result<()>>>,
+}
+
+impl QueuedAacpPacket {
+    fn fire_and_forget(data: Vec<u8>) -> Self {
+        Self {
+            data,
+            deadline: None,
+            completion: None,
+        }
+    }
+
+    fn tracked(data: Vec<u8>, deadline: Instant) -> (Self, oneshot::Receiver<io::Result<()>>) {
+        let (completion, completed) = oneshot::channel();
+        (
+            Self {
+                data,
+                deadline: Some(deadline),
+                completion: Some(completion),
+            },
+            completed,
+        )
+    }
+
+    #[cfg(test)]
+    pub(crate) fn into_fire_and_forget_data(self) -> Vec<u8> {
+        assert!(
+            self.deadline.is_none(),
+            "packet unexpectedly had a deadline"
+        );
+        assert!(
+            self.completion.is_none(),
+            "packet unexpectedly had a completion waiter"
+        );
+        self.data
+    }
+}
+
+type TransportSendFuture<'a> = Pin<Box<dyn Future<Output = io::Result<usize>> + Send + 'a>>;
+
+trait AacpPacketTransport: Send + Sync + 'static {
+    fn send_packet<'a>(&'a self, data: &'a [u8]) -> TransportSendFuture<'a>;
+}
+
+impl AacpPacketTransport for SeqPacket {
+    fn send_packet<'a>(&'a self, data: &'a [u8]) -> TransportSendFuture<'a> {
+        Box::pin(SeqPacket::send(self, data))
+    }
+}
+
 pub struct AACPManagerState {
-    pub sender: Option<mpsc::Sender<Vec<u8>>>,
+    pub(crate) sender: Option<mpsc::Sender<QueuedAacpPacket>>,
     // Bumped whenever the active packet channel is installed or invalidated.
     pub(crate) connection_generation: u64,
     pub control_command_status_list: Vec<ControlCommandStatus>,
@@ -612,6 +668,18 @@ impl AACPManager {
         data: &[u8],
         expected_generation: Option<u64>,
     ) -> Result<()> {
+        self.enqueue_packet(
+            QueuedAacpPacket::fire_and_forget(data.to_vec()),
+            expected_generation,
+        )
+        .await
+    }
+
+    async fn enqueue_packet(
+        &self,
+        packet: QueuedAacpPacket,
+        expected_generation: Option<u64>,
+    ) -> Result<()> {
         let (sender, connection_generation) = {
             let state = self.state.lock().await;
             if expected_generation.is_some_and(|expected| {
@@ -660,13 +728,30 @@ impl AACPManager {
             )));
         }
 
-        permit.send(data.to_vec());
+        permit.send(packet);
         Ok(())
+    }
+
+    async fn send_packet_for_transport_completion(
+        &self,
+        data: &[u8],
+        deadline: Instant,
+    ) -> Result<()> {
+        let (packet, completion) = QueuedAacpPacket::tracked(data.to_vec(), deadline);
+        self.enqueue_packet(packet, None).await?;
+        match completion.await {
+            Ok(Ok(())) => Ok(()),
+            Ok(Err(error)) => Err(Error::from(error)),
+            Err(_) => Err(Error::from(io::Error::new(
+                io::ErrorKind::NotConnected,
+                "AACP transport completion channel closed",
+            ))),
+        }
     }
 
     async fn install_connection(
         &self,
-        sender: mpsc::Sender<Vec<u8>>,
+        sender: mpsc::Sender<QueuedAacpPacket>,
         airpods_mac: Option<Address>,
     ) -> u64 {
         let _transition = self.connection_transition_gate.lock().await;
@@ -1304,6 +1389,22 @@ impl AACPManager {
             .await
     }
 
+    pub(crate) async fn send_tray_control_command(
+        &self,
+        identifier: ControlCommandIdentifiers,
+        value: &[u8],
+        deadline: Instant,
+    ) -> Result<()> {
+        let opcode = [opcodes::CONTROL_COMMAND, 0x00];
+        let mut data = vec![identifier as u8];
+        for i in 0..4 {
+            data.push(value.get(i).copied().unwrap_or(0));
+        }
+        let packet = [HEADER_BYTES.as_slice(), opcode.as_slice(), data.as_slice()].concat();
+        self.send_packet_for_transport_completion(&packet, deadline)
+            .await
+    }
+
     pub(crate) async fn send_control_command_for_generation(
         &self,
         identifier: ControlCommandIdentifiers,
@@ -1644,18 +1745,22 @@ async fn recv_thread(manager: AACPManager, sp: Arc<SeqPacket>, connection_genera
     }
 }
 
-async fn send_thread(
+async fn send_thread<Transport: AacpPacketTransport>(
     manager: AACPManager,
-    mut rx: mpsc::Receiver<Vec<u8>>,
-    sp: Arc<SeqPacket>,
+    mut rx: mpsc::Receiver<QueuedAacpPacket>,
+    transport: Arc<Transport>,
     connection_generation: u64,
 ) {
-    while let Some(data) = rx.recv().await {
+    while let Some(packet) = rx.recv().await {
         let mut attempts = 0;
         loop {
-            match sp.send(&data).await {
+            match transport.send_packet(&packet.data).await {
                 Ok(_) => {
-                    debug!("Sent {} bytes: {}", data.len(), hex::encode(&data));
+                    debug!(
+                        "Sent {} bytes: {}",
+                        packet.data.len(),
+                        hex::encode(&packet.data)
+                    );
                     break;
                 }
                 Err(e) if e.raw_os_error() == Some(107) && attempts < 10 => {
@@ -1679,7 +1784,65 @@ async fn send_thread(
 mod tests {
     use super::*;
     use crate::utils::{load_devices, save_devices};
+    use std::collections::VecDeque;
+    use std::sync::Mutex as StdMutex;
     use tempfile::tempdir;
+
+    enum FakeSendOutcome {
+        Ready(io::Result<usize>),
+        Wait(oneshot::Receiver<io::Result<usize>>),
+    }
+
+    struct FakePacketTransport {
+        outcomes: StdMutex<VecDeque<FakeSendOutcome>>,
+        attempts: StdMutex<Vec<Vec<u8>>>,
+    }
+
+    impl FakePacketTransport {
+        fn new(outcomes: impl IntoIterator<Item = FakeSendOutcome>) -> Self {
+            Self {
+                outcomes: StdMutex::new(outcomes.into_iter().collect()),
+                attempts: StdMutex::new(Vec::new()),
+            }
+        }
+
+        fn attempts(&self) -> Vec<Vec<u8>> {
+            self.attempts.lock().unwrap().clone()
+        }
+    }
+
+    impl AacpPacketTransport for FakePacketTransport {
+        fn send_packet<'a>(&'a self, data: &'a [u8]) -> TransportSendFuture<'a> {
+            self.attempts.lock().unwrap().push(data.to_vec());
+            let outcome = self
+                .outcomes
+                .lock()
+                .unwrap()
+                .pop_front()
+                .expect("fake transport received an unexpected send attempt");
+            Box::pin(async move {
+                match outcome {
+                    FakeSendOutcome::Ready(result) => result,
+                    FakeSendOutcome::Wait(result) => result.await.unwrap_or_else(|_| {
+                        Err(io::Error::new(
+                            io::ErrorKind::BrokenPipe,
+                            "fake transport release channel closed",
+                        ))
+                    }),
+                }
+            })
+        }
+    }
+
+    async fn wait_for_attempts(transport: &FakePacketTransport, expected: usize) {
+        timeout(Duration::from_millis(250), async {
+            while transport.attempts().len() < expected {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("fake transport did not receive the expected send attempt");
+    }
 
     fn protocol_packet(opcode: u8, body: &[u8]) -> Vec<u8> {
         let mut packet = Vec::with_capacity(HEADER_BYTES.len() + 2 + body.len());
@@ -1745,20 +1908,135 @@ mod tests {
         }
     }
 
-    async fn manager_with_packet_capture() -> (AACPManager, mpsc::Receiver<Vec<u8>>) {
+    async fn manager_with_packet_capture() -> (AACPManager, mpsc::Receiver<QueuedAacpPacket>) {
         let manager = AACPManager::new();
         let (sender, receiver) = mpsc::channel(1);
         manager.state.lock().await.sender = Some(sender);
         (manager, receiver)
     }
 
-    async fn assert_captured_packet(receiver: &mut mpsc::Receiver<Vec<u8>>, expected_hex: &str) {
+    async fn assert_captured_packet(
+        receiver: &mut mpsc::Receiver<QueuedAacpPacket>,
+        expected_hex: &str,
+    ) {
         let actual = receiver
             .recv()
             .await
-            .expect("builder did not send a packet");
+            .expect("builder did not send a packet")
+            .into_fire_and_forget_data();
         let expected = hex::decode(expected_hex).expect("captured packet must be valid hex");
         assert_eq!(actual, expected);
+    }
+
+    #[tokio::test]
+    async fn tray_send_waits_for_real_socket_success() {
+        let manager = AACPManager::new();
+        let (packet_tx, packet_rx) = mpsc::channel(4);
+        let connection_generation = manager.install_connection(packet_tx, None).await;
+        let (release_tx, release_rx) = oneshot::channel();
+        let transport = Arc::new(FakePacketTransport::new([FakeSendOutcome::Wait(
+            release_rx,
+        )]));
+        let send_loop = tokio::spawn(send_thread(
+            manager.clone(),
+            packet_rx,
+            Arc::clone(&transport),
+            connection_generation,
+        ));
+        let send_manager = manager.clone();
+        let send = tokio::spawn(async move {
+            send_manager
+                .send_tray_control_command(
+                    ControlCommandIdentifiers::ListeningMode,
+                    &[0x03],
+                    Instant::now() + Duration::from_secs(1),
+                )
+                .await
+        });
+
+        wait_for_attempts(&transport, 1).await;
+        assert!(
+            !send.is_finished(),
+            "channel enqueue must not complete the tray send"
+        );
+        assert_eq!(
+            transport.attempts(),
+            [vec![
+                0x04,
+                0x00,
+                0x04,
+                0x00,
+                opcodes::CONTROL_COMMAND,
+                0x00,
+                ControlCommandIdentifiers::ListeningMode as u8,
+                0x03,
+                0x00,
+                0x00,
+                0x00,
+            ]]
+        );
+
+        release_tx
+            .send(Ok(11))
+            .expect("fake socket send was dropped before completion");
+        let result = timeout(Duration::from_millis(250), send)
+            .await
+            .expect("tray send did not resolve after socket success")
+            .expect("tray send task failed");
+        assert!(
+            result.is_ok(),
+            "socket success was not reported: {result:?}"
+        );
+
+        assert!(
+            manager
+                .clear_connection_if_current(connection_generation)
+                .await
+        );
+        timeout(Duration::from_millis(250), send_loop)
+            .await
+            .expect("send loop did not stop after channel closure")
+            .expect("send loop task failed");
+    }
+
+    #[tokio::test]
+    async fn tray_send_reports_the_socket_failure() {
+        let manager = AACPManager::new();
+        let (packet_tx, packet_rx) = mpsc::channel(4);
+        let connection_generation = manager.install_connection(packet_tx, None).await;
+        let transport = Arc::new(FakePacketTransport::new([FakeSendOutcome::Ready(Err(
+            io::Error::new(io::ErrorKind::ConnectionReset, "fake socket failure"),
+        ))]));
+        let send_loop = tokio::spawn(send_thread(
+            manager.clone(),
+            packet_rx,
+            transport,
+            connection_generation,
+        ));
+
+        let error = timeout(
+            Duration::from_millis(250),
+            manager.send_tray_control_command(
+                ControlCommandIdentifiers::ConversationDetectConfig,
+                &[0x01],
+                Instant::now() + Duration::from_secs(1),
+            ),
+        )
+        .await
+        .expect("tray send hung after socket failure")
+        .expect_err("socket failure was reported as success");
+
+        assert!(
+            error.to_string().contains("fake socket failure"),
+            "wrong transport error: {error}"
+        );
+        timeout(Duration::from_millis(250), send_loop)
+            .await
+            .expect("send loop did not stop after socket failure")
+            .expect("send loop task failed");
+        let state = manager.state.lock().await;
+        assert!(state.sender.is_none());
+        assert_ne!(state.connection_generation, connection_generation);
     }
 
     #[tokio::test]
@@ -2432,7 +2710,8 @@ mod tests {
         let packet = receiver
             .recv()
             .await
-            .expect("builder did not send a packet");
+            .expect("builder did not send a packet")
+            .into_fire_and_forget_data();
 
         assert_eq!(&packet[17..27], b"playingApp");
         assert_eq!(&packet[51..69], b"hostStreamingState");
@@ -2534,7 +2813,10 @@ mod tests {
     async fn pending_send_releases_state_lock() {
         let manager = AACPManager::new();
         let (sender, mut receiver) = mpsc::channel(1);
-        sender.send(vec![0xAA]).await.unwrap();
+        sender
+            .send(QueuedAacpPacket::fire_and_forget(vec![0xAA]))
+            .await
+            .unwrap();
         manager.install_connection(sender, None).await;
 
         let send = manager.send_handshake();
@@ -2546,7 +2828,13 @@ mod tests {
             .expect("AACP state lock stayed held while the bounded channel was full");
         drop(state);
 
-        assert_eq!(receiver.recv().await, Some(vec![0xAA]));
+        assert_eq!(
+            receiver
+                .recv()
+                .await
+                .map(QueuedAacpPacket::into_fire_and_forget_data),
+            Some(vec![0xAA])
+        );
         send.await.unwrap();
         assert!(receiver.recv().await.is_some());
     }
@@ -2555,7 +2843,10 @@ mod tests {
     async fn disconnect_invalidates_pending_send_and_connection_state() {
         let manager = AACPManager::new();
         let (sender, receiver) = mpsc::channel(1);
-        sender.send(vec![0xAA]).await.unwrap();
+        sender
+            .send(QueuedAacpPacket::fire_and_forget(vec![0xAA]))
+            .await
+            .unwrap();
         let generation = manager.install_connection(sender, None).await;
         {
             let mut state = manager.state.lock().await;
