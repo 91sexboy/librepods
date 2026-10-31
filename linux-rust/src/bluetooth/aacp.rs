@@ -2006,6 +2006,7 @@ mod tests {
     struct FakePacketTransport {
         outcomes: StdMutex<VecDeque<FakeSendOutcome>>,
         attempts: StdMutex<Vec<Vec<u8>>>,
+        attempted: tokio::sync::Notify,
     }
 
     impl FakePacketTransport {
@@ -2013,6 +2014,7 @@ mod tests {
             Self {
                 outcomes: StdMutex::new(outcomes.into_iter().collect()),
                 attempts: StdMutex::new(Vec::new()),
+                attempted: tokio::sync::Notify::new(),
             }
         }
 
@@ -2024,6 +2026,7 @@ mod tests {
     impl AacpPacketTransport for FakePacketTransport {
         fn send_packet<'a>(&'a self, data: &'a [u8]) -> TransportSendFuture<'a> {
             self.attempts.lock().unwrap().push(data.to_vec());
+            self.attempted.notify_one();
             let outcome = self
                 .outcomes
                 .lock()
@@ -2046,8 +2049,12 @@ mod tests {
 
     async fn wait_for_attempts(transport: &FakePacketTransport, expected: usize) {
         timeout(Duration::from_millis(250), async {
-            while transport.attempts().len() < expected {
-                tokio::task::yield_now().await;
+            loop {
+                let attempted = transport.attempted.notified();
+                if transport.attempts().len() >= expected {
+                    break;
+                }
+                attempted.await;
             }
         })
         .await
