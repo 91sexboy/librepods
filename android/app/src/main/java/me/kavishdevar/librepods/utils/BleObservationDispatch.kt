@@ -21,7 +21,7 @@ internal fun planBleObservationDispatch(
     }
 
     return BleObservationDispatch(
-        deliverStatusObservation = !isNewAddress && statusChanged,
+        deliverStatusObservation = isNewAddress || statusChanged,
         notifyNewAddress = isNewAddress,
         lidStateChange = lidStateChange,
     )
