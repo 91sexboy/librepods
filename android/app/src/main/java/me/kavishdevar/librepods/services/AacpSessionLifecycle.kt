@@ -79,6 +79,7 @@ internal class AacpSessionLifecycle<Socket : Any> {
         if (current.attempt != attempt || current.socket !== socket) return false
 
         pending = null
+        cleanupGeneration = attempt.generation
         return true
     }
 

@@ -74,6 +74,7 @@ import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.async
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -339,6 +340,17 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
         attempt: AacpConnectionAttempt,
         candidateSocket: BluetoothSocket? = null,
     ): Boolean = aacpLifecycle.failAttempt(attempt, candidateSocket)
+
+    private fun finishAacpAttemptFailure(
+        attempt: AacpConnectionAttempt,
+        onFailure: () -> Unit,
+    ) {
+        try {
+            onFailure()
+        } finally {
+            aacpLifecycle.completeCleanup(attempt.generation)
+        }
+    }
 
     private fun endAacpSession(
         attempt: AacpConnectionAttempt,
@@ -2506,7 +2518,9 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
             createBluetoothSocket(device, uuid)
         } catch (e: Exception) {
             if (failAacpAttempt(attempt)) {
-                reportFailure("Failed to create Bluetooth socket: ${e.localizedMessage}")
+                finishAacpAttemptFailure(attempt) {
+                    reportFailure("Failed to create Bluetooth socket: ${e.localizedMessage}")
+                }
             }
             return
         }
@@ -2530,7 +2544,10 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
             val ownedFailure = failAacpAttempt(attempt, candidateSocket)
             closeSocket(candidateSocket)
             if (ownedFailure) {
-                reportFailure("Couldn't connect to socket: ${e.localizedMessage}")
+                runBlocking { connectJob.cancelAndJoin() }
+                finishAacpAttemptFailure(attempt) {
+                    reportFailure("Couldn't connect to socket: ${e.localizedMessage}")
+                }
             }
             return
         }
@@ -2539,7 +2556,9 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
             val ownedFailure = failAacpAttempt(attempt, candidateSocket)
             closeSocket(candidateSocket)
             if (ownedFailure) {
-                reportFailure("Couldn't connect to socket: Timeout")
+                finishAacpAttemptFailure(attempt) {
+                    reportFailure("Couldn't connect to socket: Timeout")
+                }
             }
             return
         }

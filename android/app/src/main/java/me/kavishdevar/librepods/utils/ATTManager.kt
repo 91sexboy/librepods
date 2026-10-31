@@ -58,6 +58,7 @@ class ATTManager(private val device: BluetoothDevice) {
         private const val OPCODE_HANDLE_VALUE_NTF: Byte = 0x1B
     }
 
+    @Volatile
     var socket: BluetoothSocket? = null
     @Volatile
     private var disconnectRequested = false
