@@ -59,6 +59,8 @@ class ATTManager(private val device: BluetoothDevice) {
     }
 
     var socket: BluetoothSocket? = null
+    @Volatile
+    private var disconnectRequested = false
     private var input: InputStream? = null
     private var output: OutputStream? = null
     private val listeners = mutableMapOf<Int, MutableList<(ByteArray) -> Unit>>()
@@ -69,13 +71,25 @@ class ATTManager(private val device: BluetoothDevice) {
 
     @SuppressLint("MissingPermission")
     fun connect() {
+        check(!disconnectRequested) { "ATT connection was cancelled" }
         HiddenApiBypass.addHiddenApiExemptions("Landroid/bluetooth/BluetoothSocket;")
         val uuid = ParcelUuid.fromString("00000000-0000-0000-0000-000000000000")
 
-        socket = createBluetoothSocket(device, uuid)
-        socket!!.connect()
-        input = socket!!.inputStream
-        output = socket!!.outputStream
+        val candidateSocket = createBluetoothSocket(device, uuid)
+        socket = candidateSocket
+        if (disconnectRequested) {
+            candidateSocket.close()
+            error("ATT connection was cancelled")
+        }
+
+        candidateSocket.connect()
+        if (disconnectRequested) {
+            candidateSocket.close()
+            error("ATT connection was cancelled")
+        }
+
+        input = candidateSocket.inputStream
+        output = candidateSocket.outputStream
         Log.d(TAG, "Connected to ATT")
 
         notificationJob = CoroutineScope(Dispatchers.IO).launch {
@@ -107,6 +121,7 @@ class ATTManager(private val device: BluetoothDevice) {
     }
 
     fun disconnect() {
+        disconnectRequested = true
         try {
             notificationJob?.cancel()
             socket?.close()
