@@ -477,7 +477,11 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
         return try {
             synchronized(this) {
                 endedAttManagers = detachAttManagers(connectedSocket)
+                endedAttManagers.forEach { it.manager.invalidate() }
                 BluetoothConnectionManager.clearCurrentConnection(connectedSocket)
+            }
+            unfinishedJobs += disconnectAttManagers(endedAttManagers)
+            synchronized(this) {
                 aacpManager.disconnected()
                 resetBatterySession()
                 onEnded()
@@ -485,9 +489,8 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
             true
         } finally {
             try {
-                unfinishedJobs += disconnectAttManagers(endedAttManagers)
-            } finally {
                 closeOwnedResources()
+            } finally {
                 completeCleanupWhenJobsFinish(attempt.generation, unfinishedJobs)
             }
         }
@@ -545,9 +548,8 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
             synchronized(this) {
                 val activeSocket = requireNotNull(disconnected.activeSocket)
                 endedAttManagers = detachAttManagers(activeSocket)
+                endedAttManagers.forEach { it.manager.invalidate() }
                 BluetoothConnectionManager.clearCurrentConnection(activeSocket)
-                aacpManager.disconnected()
-                resetBatterySession()
                 if (detachUi) detachAacpSessionUi()
             }
         }
@@ -569,6 +571,12 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
             ?.let(::closeSocket)
         cancelAndAwaitConnectJob(cleanup.connectJob)?.let(unfinishedJobs::add)
         unfinishedJobs += disconnectAttManagers(cleanup.attManagers)
+        if (disconnected.endedActiveSession) {
+            synchronized(this) {
+                aacpManager.disconnected()
+                resetBatterySession()
+            }
+        }
         completeCleanupWhenJobsFinish(cleanupToken, unfinishedJobs)
     }
 
@@ -3187,7 +3195,10 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
         cleanupScope.launch {
             finishAacpSessionCleanup(cleanup)
         }
-        resetBatterySession()
+        if (cleanup.disconnected.cleanupToken != null &&
+            !cleanup.disconnected.endedActiveSession) {
+            resetBatterySession()
+        }
         CrossDevice.isAvailable = true
         super.onDestroy()
     }
