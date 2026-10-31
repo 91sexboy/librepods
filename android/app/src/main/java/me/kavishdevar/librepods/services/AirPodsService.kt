@@ -286,6 +286,7 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
     private fun endAacpSession(
         attempt: AacpConnectionAttempt,
         connectedSocket: BluetoothSocket,
+        closeOwnedResources: () -> Unit,
         onEnded: () -> Unit = {},
     ): Boolean {
         if (!aacpLifecycle.endSession(attempt, connectedSocket)) return false
@@ -297,6 +298,7 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
                 resetBatterySession()
                 onEnded()
             }
+            closeOwnedResources()
             true
         } finally {
             aacpLifecycle.completeCleanup(attempt.generation)
@@ -2485,14 +2487,22 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
         try {
             candidateAttManager.connect()
         } catch (e: Exception) {
-            val ended = endAacpSession(attempt, candidateSocket) {
-                this@AirPodsService.device = null
-                reportFailure("Failed to establish connection: ${e.localizedMessage}")
-                updateNotificationContent(false)
-            }
-            candidateAttManager.disconnect()
-            closeSocket(candidateSocket)
+            val ended = endAacpSession(
+                attempt,
+                candidateSocket,
+                closeOwnedResources = {
+                    disconnectAttManager(candidateAttManager)
+                    closeSocket(candidateSocket)
+                },
+                onEnded = {
+                    this@AirPodsService.device = null
+                    reportFailure("Failed to establish connection: ${e.localizedMessage}")
+                    updateNotificationContent(false)
+                },
+            )
             if (!ended) {
+                disconnectAttManager(candidateAttManager)
+                closeSocket(candidateSocket)
                 Log.d(TAG, "Ignoring stale ATT connection failure for generation ${attempt.generation}")
             }
             return
@@ -2529,13 +2539,21 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
                 Log.d(TAG, "<LogCollector:Complete:Success> Socket connected")
             }
         } catch (e: Exception) {
-            val ended = endAacpSession(attempt, candidateSocket) {
-                detachAacpSessionUi()
-                reportFailure("Failed to initialize connection: ${e.localizedMessage}")
-            }
-            closeSocket(candidateSocket)
-            disconnectAttManager(candidateAttManager)
+            val ended = endAacpSession(
+                attempt,
+                candidateSocket,
+                closeOwnedResources = {
+                    closeSocket(candidateSocket)
+                    disconnectAttManager(candidateAttManager)
+                },
+                onEnded = {
+                    detachAacpSessionUi()
+                    reportFailure("Failed to initialize connection: ${e.localizedMessage}")
+                },
+            )
             if (!ended) {
+                closeSocket(candidateSocket)
+                disconnectAttManager(candidateAttManager)
                 Log.d(TAG, "Ignoring stale AACP initialization failure for generation ${attempt.generation}")
             }
             return
@@ -2642,14 +2660,22 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
                 Log.d(TAG, "Socket reader stopped: ${e.message}")
             } finally {
                 var endedAttManager: ATTManager? = null
-                val ended = endAacpSession(attempt, candidateSocket) {
-                    endedAttManager = detachAacpSessionUi()
-                }
-                closeSocket(candidateSocket)
-                disconnectAttManager(endedAttManager)
+                val ended = endAacpSession(
+                    attempt,
+                    candidateSocket,
+                    closeOwnedResources = {
+                        closeSocket(candidateSocket)
+                        disconnectAttManager(endedAttManager)
+                    },
+                    onEnded = {
+                        endedAttManager = detachAacpSessionUi()
+                    },
+                )
                 if (ended) {
                     Log.d("AirPods Service", "Socket closed")
                 } else {
+                    closeSocket(candidateSocket)
+                    disconnectAttManager(candidateAttManager)
                     Log.d(TAG, "Ignoring stale AACP reader cleanup for generation ${attempt.generation}")
                 }
             }
