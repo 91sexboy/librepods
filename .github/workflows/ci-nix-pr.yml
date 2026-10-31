@@ -1,0 +1,34 @@
+name: Nix PR validation
+
+on:
+  pull_request:
+    branches:
+      - linux/rust
+    paths:
+      - 'flake.nix'
+      - 'flake.lock'
+      - 'linux-rust/**'
+      - '.github/workflows/ci-nix-pr.yml'
+
+permissions: {}
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout pull request merge
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - name: Install Nix
+        uses: DeterminateSystems/nix-installer-action@3138316df39ed29be04236d7ffc686fa525866aa # v23
+
+      - name: Validate flake
+        run: nix flake check --no-build
+
+      - name: Build package
+        run: nix build .#packages.x86_64-linux.default --no-link
