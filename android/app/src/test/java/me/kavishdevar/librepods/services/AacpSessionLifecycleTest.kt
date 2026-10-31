@@ -53,6 +53,20 @@ class AacpSessionLifecycleTest {
     }
 
     @Test
+    fun failedAttemptBlocksReplacementUntilOwnedSocketIsClosed() {
+        val lifecycle = AacpSessionLifecycle<FakeSocket>()
+        val attempt = lifecycle.beginAttempt()!!
+        val socket = FakeSocket()
+        assertTrue(lifecycle.attachSocket(attempt, socket))
+
+        assertTrue(lifecycle.failAttempt(attempt, socket))
+
+        assertNull(lifecycle.beginAttempt())
+        assertTrue(lifecycle.completeCleanup(attempt.generation))
+        assertNotNull(lifecycle.beginAttempt())
+    }
+
+    @Test
     fun oldCreateFailureCannotCancelNewAttempt() {
         val lifecycle = AacpSessionLifecycle<FakeSocket>()
         val oldAttempt = lifecycle.beginAttempt()!!
