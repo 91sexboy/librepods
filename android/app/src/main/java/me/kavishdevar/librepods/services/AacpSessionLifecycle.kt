@@ -19,6 +19,7 @@
 package me.kavishdevar.librepods.services
 
 import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
 
 internal data class AacpConnectionAttempt(val generation: Long)
 
@@ -31,18 +32,14 @@ internal data class DisconnectedAacpLifecycle<Socket : Any>(
     val endedActiveSession: Boolean
         get() = activeSocket != null
 
-    fun awaitExistingCleanup() {
-        val signal = cleanupSignal ?: return
-        var interrupted = false
-        while (true) {
-            try {
-                signal.await()
-                break
-            } catch (_: InterruptedException) {
-                interrupted = true
-            }
+    fun awaitExistingCleanup(timeoutMillis: Long): Boolean {
+        val signal = cleanupSignal ?: return true
+        return try {
+            signal.await(timeoutMillis, TimeUnit.MILLISECONDS)
+        } catch (_: InterruptedException) {
+            Thread.currentThread().interrupt()
+            false
         }
-        if (interrupted) Thread.currentThread().interrupt()
     }
 }
 

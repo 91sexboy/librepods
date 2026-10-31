@@ -161,7 +161,7 @@ class AacpSessionLifecycleTest {
         assertNotNull(lifecycle.beginAttempt())
         val laterDisconnect = lifecycle.disconnect()
 
-        overlappingDisconnect.awaitExistingCleanup()
+        assertTrue(overlappingDisconnect.awaitExistingCleanup(25))
 
         assertTrue(lifecycle.completeCleanup(laterDisconnect.cleanupToken))
     }
