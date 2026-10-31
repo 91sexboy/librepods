@@ -39,7 +39,10 @@ class NixPullRequestWorkflowTests(unittest.TestCase):
     def test_trigger_is_limited_to_relevant_linux_rust_pull_requests(self):
         workflow = load_workflow()
 
-        self.assertEqual(["pull_request"], list(workflow["on"]))
+        self.assertEqual(
+            ["pull_request", "workflow_dispatch"],
+            list(workflow["on"]),
+        )
         self.assertEqual(
             {
                 "branches": ["linux/rust"],
@@ -51,6 +54,27 @@ class NixPullRequestWorkflowTests(unittest.TestCase):
                 ],
             },
             workflow["on"]["pull_request"],
+        )
+        self.assertEqual({}, workflow["on"]["workflow_dispatch"])
+
+    def test_dispatched_validation_merges_the_current_target_branch(self):
+        workflow = load_workflow()
+        merge_step = next(
+            step
+            for step in validation_job(workflow)["steps"]
+            if step.get("name") == "Merge current target branch"
+        )
+
+        self.assertEqual({"BASE_REF": "linux/rust"}, merge_step["env"])
+        command = merge_step["run"]
+        self.assertIn(
+            'git fetch --no-tags origin "+refs/heads/${BASE_REF}:'
+            'refs/remotes/origin/${BASE_REF}"',
+            command,
+        )
+        self.assertIn(
+            'git merge --no-commit --no-ff "origin/${BASE_REF}"',
+            command,
         )
 
     def test_validation_job_has_only_read_access(self):
@@ -96,7 +120,11 @@ class NixPullRequestWorkflowTests(unittest.TestCase):
     def test_validation_runs_only_fixed_nix_commands(self):
         workflow = load_workflow()
         job = validation_job(workflow)
-        run_steps = [step for step in job["steps"] if "run" in step]
+        run_steps = [
+            step
+            for step in job["steps"]
+            if step.get("name") in {"Validate flake", "Build package"}
+        ]
 
         self.assertEqual(
             [

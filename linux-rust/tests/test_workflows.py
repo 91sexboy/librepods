@@ -31,6 +31,9 @@ CREATE_PULL_REQUEST_ACTION = (
     "peter-evans/create-pull-request@"
     "5f6978faf089d4d20b00c7766989d076bb2fc7f1"  # v8.1.1
 )
+GITHUB_SCRIPT_ACTION = (
+    "actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3"  # v9.0.0
+)
 RUST_TOOLCHAIN_ACTION = (
     "dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8"  # master
 )
@@ -83,6 +86,7 @@ class WorkflowTests(unittest.TestCase):
                 CHECKOUT_ACTION,
                 DOWNLOAD_ARTIFACT_ACTION,
                 CREATE_PULL_REQUEST_ACTION,
+                GITHUB_SCRIPT_ACTION,
             ],
             action_references,
         )
@@ -329,6 +333,38 @@ class WorkflowTests(unittest.TestCase):
             [step["name"] for step in pull_request_job["steps"]],
         )
         self.assertFalse(any("run" in step for step in pull_request_job["steps"]))
+
+    def test_nix_updater_dispatches_validation_for_token_created_pull_request(self):
+        workflow = load_yaml(NIX_UPDATE_WORKFLOW)
+        pull_request_job = workflow["jobs"]["create-pull-request"]
+        dispatch_job = workflow["jobs"]["dispatch-pr-validation"]
+        create_pull_request = named_steps(pull_request_job)[
+            "Open flake lock update pull request"
+        ]
+        dispatch = named_steps(dispatch_job)["Dispatch Nix PR validation"]
+
+        self.assertEqual("create-pull-request", dispatch_job["needs"])
+        self.assertEqual(
+            "needs.create-pull-request.outputs.operation == 'created' || "
+            "needs.create-pull-request.outputs.operation == 'updated'",
+            dispatch_job["if"],
+        )
+        self.assertEqual(
+            {"actions": "write", "contents": "read"},
+            dispatch_job["permissions"],
+        )
+        self.assertEqual("create-pr", create_pull_request["id"])
+        self.assertEqual(
+            "${{ steps.create-pr.outputs.pull-request-operation }}",
+            pull_request_job["outputs"]["operation"],
+        )
+        self.assertEqual(GITHUB_SCRIPT_ACTION, dispatch["uses"])
+        script = dispatch["with"]["script"]
+        self.assertIn("github.rest.actions.createWorkflowDispatch", script)
+        self.assertIn("workflow_id: 'ci-nix-pr.yml'", script)
+        self.assertIn("ref: 'ci/weekly-flake-lock'", script)
+        self.assertNotIn("checkout", str(dispatch_job).lower())
+        self.assertFalse(any("run" in step for step in dispatch_job["steps"]))
 
     def test_nix_updater_binds_lockfile_to_validated_source_revision(self):
         workflow = load_yaml(NIX_UPDATE_WORKFLOW)
