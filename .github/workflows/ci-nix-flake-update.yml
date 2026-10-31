@@ -72,6 +72,8 @@ jobs:
     permissions:
       contents: write
       pull-requests: write
+    outputs:
+      operation: ${{ steps.create-pr.outputs.pull-request-operation }}
 
     steps:
       - name: Checkout target branch
@@ -87,6 +89,7 @@ jobs:
           path: .
 
       - name: Open flake lock update pull request
+        id: create-pr
         uses: peter-evans/create-pull-request@5f6978faf089d4d20b00c7766989d076bb2fc7f1 # v8.1.1
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
@@ -102,3 +105,26 @@ jobs:
             Validation completed:
             - `nix flake check --no-build`
             - `nix build .#default`
+
+  dispatch-pr-validation:
+    needs: create-pull-request
+    if: >-
+      needs.create-pull-request.outputs.operation == 'created' ||
+      needs.create-pull-request.outputs.operation == 'updated'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      actions: write
+      contents: read
+
+    steps:
+      - name: Dispatch Nix PR validation
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        with:
+          script: |
+            await github.rest.actions.createWorkflowDispatch({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              workflow_id: 'ci-nix-pr.yml',
+              ref: 'ci/weekly-flake-lock',
+            });

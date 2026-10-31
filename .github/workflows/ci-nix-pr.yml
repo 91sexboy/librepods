@@ -9,6 +9,7 @@ on:
       - 'flake.lock'
       - 'linux-rust/**'
       - '.github/workflows/ci-nix-pr.yml'
+  workflow_dispatch: {}
 
 permissions: {}
 
@@ -19,10 +20,17 @@ jobs:
       contents: read
 
     steps:
-      - name: Checkout pull request merge
+      - name: Checkout pull request or update branch
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           persist-credentials: false
+
+      - name: Merge current target branch
+        env:
+          BASE_REF: linux/rust
+        run: |
+          git fetch --no-tags origin "+refs/heads/${BASE_REF}:refs/remotes/origin/${BASE_REF}"
+          git merge --no-commit --no-ff "origin/${BASE_REF}"
 
       - name: Install Nix
         uses: DeterminateSystems/nix-installer-action@3138316df39ed29be04236d7ffc686fa525866aa # v23
