@@ -1,0 +1,124 @@
+#!/usr/bin/env python3
+"""Static contract tests for pull-request Nix validation."""
+
+from pathlib import Path
+import re
+import unittest
+
+import yaml
+
+
+REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
+WORKFLOW_PATH = REPOSITORY_ROOT / ".github" / "workflows" / "ci-nix-pr.yml"
+
+CHECKOUT_ACTION = (
+    "actions/checkout@11d5960a326750d5838078e36cf38b85af677262"  # v4
+)
+NIX_INSTALLER_ACTION = (
+    "DeterminateSystems/nix-installer-action@"
+    "3138316df39ed29be04236d7ffc686fa525866aa"  # v23
+)
+IMMUTABLE_ACTION_REFERENCE = re.compile(
+    r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+@[0-9a-f]{40}$"
+)
+
+
+def load_workflow():
+    """Load YAML without YAML 1.1 coercing the GitHub `on` key."""
+    if not WORKFLOW_PATH.exists():
+        raise AssertionError("the dedicated Nix PR validation workflow is missing")
+    return yaml.load(WORKFLOW_PATH.read_text(encoding="utf-8"), Loader=yaml.BaseLoader)
+
+
+def validation_job(workflow):
+    """Return the workflow's only job."""
+    return workflow["jobs"]["validate"]
+
+
+class NixPullRequestWorkflowTests(unittest.TestCase):
+    def test_trigger_is_limited_to_relevant_linux_rust_pull_requests(self):
+        workflow = load_workflow()
+
+        self.assertEqual(["pull_request"], list(workflow["on"]))
+        self.assertEqual(
+            {
+                "branches": ["linux/rust"],
+                "paths": [
+                    "flake.nix",
+                    "flake.lock",
+                    "linux-rust/**",
+                    ".github/workflows/ci-nix-pr.yml",
+                ],
+            },
+            workflow["on"]["pull_request"],
+        )
+
+    def test_validation_job_has_only_read_access(self):
+        workflow = load_workflow()
+
+        self.assertEqual({}, workflow["permissions"])
+        self.assertEqual(["validate"], list(workflow["jobs"]))
+        self.assertEqual(
+            {"contents": "read"},
+            validation_job(workflow)["permissions"],
+        )
+
+    def test_actions_use_reviewed_immutable_commits(self):
+        workflow = load_workflow()
+        action_references = [
+            step["uses"]
+            for step in validation_job(workflow)["steps"]
+            if "uses" in step
+        ]
+
+        self.assertEqual(
+            [CHECKOUT_ACTION, NIX_INSTALLER_ACTION],
+            action_references,
+        )
+        for action_reference in action_references:
+            with self.subTest(action=action_reference):
+                self.assertRegex(action_reference, IMMUTABLE_ACTION_REFERENCE)
+
+    def test_checkout_does_not_persist_credentials(self):
+        workflow = load_workflow()
+        checkout_steps = [
+            step
+            for step in validation_job(workflow)["steps"]
+            if step.get("uses", "").startswith("actions/checkout@")
+        ]
+
+        self.assertEqual(1, len(checkout_steps))
+        self.assertEqual(
+            {"persist-credentials": "false"},
+            checkout_steps[0]["with"],
+        )
+
+    def test_validation_runs_only_fixed_nix_commands(self):
+        workflow = load_workflow()
+        job = validation_job(workflow)
+        run_steps = [step for step in job["steps"] if "run" in step]
+
+        self.assertEqual(
+            [
+                "nix flake check --no-build",
+                "nix build .#packages.x86_64-linux.default --no-link",
+            ],
+            [step["run"].strip() for step in run_steps],
+        )
+        self.assertNotIn("env", job)
+        for step in run_steps:
+            with self.subTest(step=step["name"]):
+                self.assertNotIn("env", step)
+                self.assertNotIn("${{", step["run"])
+
+    def test_validation_has_no_secret_or_release_behavior(self):
+        workflow = load_workflow()
+        serialized_workflow = WORKFLOW_PATH.read_text(encoding="utf-8")
+
+        self.assertNotIn("secrets.", serialized_workflow)
+        self.assertNotIn("GITHUB_TOKEN", serialized_workflow)
+        self.assertNotIn("release", str(workflow).lower())
+
+
+if __name__ == "__main__":
+    unittest.main()
