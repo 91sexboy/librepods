@@ -33,15 +33,30 @@ class BLEBatteryDecoderTest {
     }
 
     @Test
-    fun invalidEncryptedCaseUsesLastKnownFallback() {
+    fun invalidEncryptedLevelPrefersAvailablePublicReading() {
         val publicFallback = DecodedBattery(charging = false, level = 80)
+        val lastKnown = DecodedBattery(charging = true, level = 67)
+
+        assertEquals(
+            publicFallback,
+            decodeEncryptedBattery(
+                byteVal = 0xFF,
+                fallback = publicFallback,
+                lastKnown = lastKnown,
+            ),
+        )
+    }
+
+    @Test
+    fun invalidEncryptedLevelUsesLastKnownWhenPublicReadingIsAbsent() {
+        val unavailablePublicReading = DecodedBattery(charging = false, level = null)
         val lastKnown = DecodedBattery(charging = true, level = 67)
 
         assertEquals(
             lastKnown,
             decodeEncryptedBattery(
                 byteVal = 0x7F,
-                fallback = publicFallback,
+                fallback = unavailablePublicReading,
                 lastKnown = lastKnown,
             ),
         )

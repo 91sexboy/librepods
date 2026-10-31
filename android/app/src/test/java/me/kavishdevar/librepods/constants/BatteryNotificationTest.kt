@@ -95,6 +95,28 @@ class BatteryNotificationTest {
     }
 
     @Test
+    fun sessionResetPreventsPreviousComponentsFromLeakingIntoPartialReconnect() {
+        val notification = AirPodsNotifications.BatteryNotification()
+        notification.setBattery(
+            packet(
+                Battery(BatteryComponent.LEFT, 58, BatteryStatus.NOT_CHARGING),
+                Battery(BatteryComponent.RIGHT, 77, BatteryStatus.NOT_CHARGING),
+                Battery(BatteryComponent.CASE, 86, BatteryStatus.NOT_CHARGING),
+            )
+        )
+
+        notification.clear()
+        notification.setBattery(
+            packet(Battery(BatteryComponent.LEFT, 57, BatteryStatus.NOT_CHARGING))
+        )
+
+        assertEquals(
+            listOf(Battery(BatteryComponent.LEFT, 57, BatteryStatus.NOT_CHARGING)),
+            notification.getBattery(),
+        )
+    }
+
+    @Test
     fun nonzeroDisconnectedReadingIsRetained() {
         val notification = AirPodsNotifications.BatteryNotification()
         notification.setBattery(
