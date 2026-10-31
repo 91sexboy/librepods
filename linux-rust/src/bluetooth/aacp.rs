@@ -493,6 +493,12 @@ impl QueuedAacpPacket {
         )
     }
 
+    fn complete(&mut self, result: io::Result<()>) {
+        if let Some(completion) = self.completion.take() {
+            let _ = completion.send(result);
+        }
+    }
+
     #[cfg(test)]
     pub(crate) fn into_fire_and_forget_data(self) -> Vec<u8> {
         assert!(
@@ -1751,7 +1757,7 @@ async fn send_thread<Transport: AacpPacketTransport>(
     transport: Arc<Transport>,
     connection_generation: u64,
 ) {
-    while let Some(packet) = rx.recv().await {
+    while let Some(mut packet) = rx.recv().await {
         let mut attempts = 0;
         loop {
             match transport.send_packet(&packet.data).await {
@@ -1761,6 +1767,7 @@ async fn send_thread<Transport: AacpPacketTransport>(
                         packet.data.len(),
                         hex::encode(&packet.data)
                     );
+                    packet.complete(Ok(()));
                     break;
                 }
                 Err(e) if e.raw_os_error() == Some(107) && attempts < 10 => {
@@ -1769,6 +1776,7 @@ async fn send_thread<Transport: AacpPacketTransport>(
                 }
                 Err(e) => {
                     error!("Failed to send data: {}", e);
+                    packet.complete(Err(e));
                     manager
                         .clear_connection_if_current(connection_generation)
                         .await;
