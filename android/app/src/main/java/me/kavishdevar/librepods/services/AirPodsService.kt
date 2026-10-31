@@ -302,8 +302,25 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
         if (!aacpLifecycle.isActive(attempt, connectedSocket)) {
             false
         } else {
-            action()
+            BluetoothConnectionManager.withExpectedSocket(connectedSocket, action)
             true
+        }
+    }
+
+    private fun sendIfCurrentAacpSession(
+        attempt: AacpConnectionAttempt,
+        connectedSocket: BluetoothSocket,
+        action: () -> Unit,
+    ): Boolean {
+        if (!aacpLifecycle.isActive(attempt, connectedSocket)) return false
+
+        return BluetoothConnectionManager.withExpectedSocket(connectedSocket) {
+            if (!aacpLifecycle.isActive(attempt, connectedSocket)) {
+                false
+            } else {
+                action()
+                true
+            }
         }
     }
 
@@ -329,11 +346,32 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
         }
     }
 
-    private fun closeAacpSession(onEnded: () -> Unit = {}): Boolean {
-        val disconnected = invalidateAacpLifecycle(onEnded)
+    private fun closeAacpSession(detachUi: Boolean = false) {
+        var endedAttManager: ATTManager? = null
+        val disconnected = invalidateAacpLifecycle {
+            if (detachUi) endedAttManager = detachAacpSessionUi()
+        }
         disconnected.pendingSocket?.let(::closeSocket)
         disconnected.activeSocket?.takeIf { it !== disconnected.pendingSocket }?.let(::closeSocket)
-        return disconnected.endedActiveSession
+        disconnectAttManager(endedAttManager)
+    }
+
+    private fun detachAacpSessionUi(): ATTManager? {
+        val endedAttManager = attManager
+        attManager = null
+        device = null
+        popupShown = false
+        updateNotificationContent(false)
+        sendBroadcast(Intent(AirPodsNotifications.AIRPODS_DISCONNECTED))
+        return endedAttManager
+    }
+
+    private fun disconnectAttManager(endedAttManager: ATTManager?) {
+        try {
+            endedAttManager?.disconnect()
+        } catch (e: Exception) {
+            Log.w(TAG, "Error disconnecting ATT: ${e.message}")
+        }
     }
 
     private val bleStatusListener = object : BLEManager.AirPodsStatusListener {
@@ -2429,60 +2467,59 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
             return
         }
 
-        var candidateAttManager: ATTManager? = null
+        val candidateAttManager = ATTManager(device)
         try {
-            val initialized = runIfCurrentAacpSession(attempt, candidateSocket) {
-                this@AirPodsService.device = device
-
-                val newAttManager = ATTManager(device)
-                candidateAttManager = newAttManager
-                newAttManager.connect()
-                attManager = newAttManager
-
-                if (airpodsInstance == null && config.airpodsModelNumber.isNotEmpty()) {
-                    AirPodsModels.getModelByModelNumber(config.airpodsModelNumber)?.let { model ->
-                        airpodsInstance = AirPodsInstance(
-                            name = config.airpodsName,
-                            model = model,
-                            actualModelNumber = config.airpodsModelNumber,
-                            serialNumber = config.airpodsSerialNumber,
-                            leftSerialNumber = config.airpodsLeftSerialNumber,
-                            rightSerialNumber = config.airpodsRightSerialNumber,
-                            version1 = config.airpodsVersion1,
-                            version2 = config.airpodsVersion2,
-                            version3 = config.airpodsVersion3,
-                            aacpManager = aacpManager,
-                            attManager = newAttManager,
-                        )
-                    }
-                }
-
-                updateNotificationContent(
-                    true,
-                    config.deviceName,
-                    batteryNotification.getBattery(),
-                )
-                Log.d(TAG, "<LogCollector:Complete:Success> Socket connected")
-            }
-            if (!initialized) {
-                candidateAttManager?.disconnect()
-                closeSocket(candidateSocket)
-                return
-            }
+            candidateAttManager.connect()
         } catch (e: Exception) {
             val ended = endAacpSession(attempt, candidateSocket) {
-                candidateAttManager?.disconnect()
-                if (attManager === candidateAttManager) attManager = null
                 this@AirPodsService.device = null
                 reportFailure("Failed to establish connection: ${e.localizedMessage}")
                 updateNotificationContent(false)
             }
-            if (!ended) candidateAttManager?.disconnect()
+            candidateAttManager.disconnect()
+            closeSocket(candidateSocket)
+            if (!ended) {
+                Log.d(TAG, "Ignoring stale ATT connection failure for generation ${attempt.generation}")
+            }
+            return
+        }
+
+        val initialized = runIfCurrentAacpSession(attempt, candidateSocket) {
+            this@AirPodsService.device = device
+            attManager = candidateAttManager
+
+            if (airpodsInstance == null && config.airpodsModelNumber.isNotEmpty()) {
+                AirPodsModels.getModelByModelNumber(config.airpodsModelNumber)?.let { model ->
+                    airpodsInstance = AirPodsInstance(
+                        name = config.airpodsName,
+                        model = model,
+                        actualModelNumber = config.airpodsModelNumber,
+                        serialNumber = config.airpodsSerialNumber,
+                        leftSerialNumber = config.airpodsLeftSerialNumber,
+                        rightSerialNumber = config.airpodsRightSerialNumber,
+                        version1 = config.airpodsVersion1,
+                        version2 = config.airpodsVersion2,
+                        version3 = config.airpodsVersion3,
+                        aacpManager = aacpManager,
+                        attManager = candidateAttManager,
+                    )
+                }
+            }
+
+            updateNotificationContent(
+                true,
+                config.deviceName,
+                batteryNotification.getBattery(),
+            )
+            Log.d(TAG, "<LogCollector:Complete:Success> Socket connected")
+        }
+        if (!initialized) {
+            candidateAttManager.disconnect()
             closeSocket(candidateSocket)
             return
         }
 
-        val sentInitialPackets = runIfCurrentAacpSession(attempt, candidateSocket) {
+        val sentInitialPackets = sendIfCurrentAacpSession(attempt, candidateSocket) {
             aacpManager.sendPacket(aacpManager.createHandshakePacket())
             aacpManager.sendSetFeatureFlagsPacket()
             aacpManager.sendNotificationRequest()
@@ -2499,37 +2536,43 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
 
         CoroutineScope(Dispatchers.IO).launch {
             try {
-                if (!runIfCurrentAacpSession(attempt, candidateSocket) {
+                if (!sendIfCurrentAacpSession(attempt, candidateSocket) {
                         aacpManager.sendPacket(aacpManager.createHandshakePacket())
                     }) return@launch
                 delay(200)
-                if (!runIfCurrentAacpSession(attempt, candidateSocket) {
+                if (!sendIfCurrentAacpSession(attempt, candidateSocket) {
                         aacpManager.sendSetFeatureFlagsPacket()
                     }) return@launch
                 delay(200)
-                if (!runIfCurrentAacpSession(attempt, candidateSocket) {
+                if (!sendIfCurrentAacpSession(attempt, candidateSocket) {
                         aacpManager.sendNotificationRequest()
                     }) return@launch
                 delay(200)
-                if (!runIfCurrentAacpSession(attempt, candidateSocket) {
+                if (!sendIfCurrentAacpSession(attempt, candidateSocket) {
                         aacpManager.sendSomePacketIDontKnowWhatItIs()
                     }) return@launch
                 delay(200)
-                if (!runIfCurrentAacpSession(attempt, candidateSocket) {
+                if (!sendIfCurrentAacpSession(attempt, candidateSocket) {
                         aacpManager.sendRequestProximityKeys(
                             (AACPManager.Companion.ProximityKeyType.IRK.value +
                                 AACPManager.Companion.ProximityKeyType.ENC_KEY.value).toByte()
                         )
+                    }) return@launch
+                if (!runIfCurrentAacpSession(attempt, candidateSocket) {
                         if (!handleIncomingCallOnceConnected) startHeadTracking() else handleIncomingCall()
                     }) return@launch
 
                 Handler(Looper.getMainLooper()).postDelayed({
-                    runIfCurrentAacpSession(attempt, candidateSocket) {
+                    val sent = sendIfCurrentAacpSession(attempt, candidateSocket) {
                         aacpManager.sendPacket(aacpManager.createHandshakePacket())
                         aacpManager.sendSetFeatureFlagsPacket()
                         aacpManager.sendNotificationRequest()
                         aacpManager.sendRequestProximityKeys(AACPManager.Companion.ProximityKeyType.IRK.value)
-                        if (!handleIncomingCallOnceConnected) stopHeadTracking()
+                    }
+                    if (sent && !handleIncomingCallOnceConnected) {
+                        runIfCurrentAacpSession(attempt, candidateSocket) {
+                            stopHeadTracking()
+                        }
                     }
                 }, 5000)
 
@@ -2538,6 +2581,8 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
                             Intent(AirPodsNotifications.AIRPODS_CONNECTED)
                                 .putExtra("device", device)
                         )
+                    }) return@launch
+                if (!sendIfCurrentAacpSession(attempt, candidateSocket) {
                         setupStemActions()
                     }) return@launch
 
@@ -2573,21 +2618,15 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
             } catch (e: Exception) {
                 Log.d(TAG, "Socket reader stopped: ${e.message}")
             } finally {
+                var endedAttManager: ATTManager? = null
                 val ended = endAacpSession(attempt, candidateSocket) {
-                    Log.d("AirPods Service", "Socket closed")
-                    try {
-                        attManager?.disconnect()
-                    } catch (e: Exception) {
-                        Log.w(TAG, "Error disconnecting ATT: ${e.message}")
-                    }
-                    attManager = null
-                    this@AirPodsService.device = null
-                    popupShown = false
-                    updateNotificationContent(false)
-                    sendBroadcast(Intent(AirPodsNotifications.AIRPODS_DISCONNECTED))
+                    endedAttManager = detachAacpSessionUi()
                 }
                 closeSocket(candidateSocket)
-                if (!ended) {
+                disconnectAttManager(endedAttManager)
+                if (ended) {
+                    Log.d("AirPods Service", "Socket closed")
+                } else {
                     Log.d(TAG, "Ignoring stale AACP reader cleanup for generation ${attempt.generation}")
                 }
             }
@@ -2597,18 +2636,7 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
     fun disconnectForCD() {
         Log.d(TAG, "Disconnected from AirPods, showing island.")
         showIslandWithKnownBattery(IslandType.MOVED_TO_REMOTE)
-        closeAacpSession {
-            try {
-                attManager?.disconnect()
-            } catch (e: Exception) {
-                Log.w(TAG, "Error disconnecting ATT: ${e.message}")
-            }
-            attManager = null
-            device = null
-            popupShown = false
-            updateNotificationContent(false)
-            sendBroadcast(Intent(AirPodsNotifications.AIRPODS_DISCONNECTED))
-        }
+        closeAacpSession(detachUi = true)
         MediaController.pausedWhileTakingOver = false
         val bluetoothAdapter = getSystemService(BluetoothManager::class.java).adapter
         bluetoothAdapter.getProfileProxy(this, object : BluetoothProfile.ServiceListener {
@@ -2628,18 +2656,7 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
     }
 
     fun disconnectAirPods() {
-        closeAacpSession {
-            try {
-                attManager?.disconnect()
-            } catch (e: Exception) {
-                Log.w(TAG, "Error disconnecting ATT: ${e.message}")
-            }
-            attManager = null
-            device = null
-            popupShown = false
-            updateNotificationContent(false)
-            sendBroadcast(Intent(AirPodsNotifications.AIRPODS_DISCONNECTED))
-        }
+        closeAacpSession(detachUi = true)
 
         val bluetoothAdapter = getSystemService(BluetoothManager::class.java).adapter
         bluetoothAdapter.getProfileProxy(this, object : BluetoothProfile.ServiceListener {
@@ -2824,6 +2841,9 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
         }
         telephonyManager.listen(phoneStateListener, PhoneStateListener.LISTEN_NONE)
         closeAacpSession()
+        val endedAttManager = attManager
+        attManager = null
+        disconnectAttManager(endedAttManager)
         resetBatterySession()
         CrossDevice.isAvailable = true
         super.onDestroy()

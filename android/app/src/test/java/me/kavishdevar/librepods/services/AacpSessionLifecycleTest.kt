@@ -84,7 +84,7 @@ class AacpSessionLifecycleTest {
     }
 
     @Test
-    fun oldReaderFinallyCannotEndReplacementSession() {
+    fun oldReaderFinallyAndDelayedCallbackCannotReachReplacementSession() {
         val lifecycle = AacpSessionLifecycle<FakeSocket>()
         val oldAttempt = lifecycle.beginAttempt()!!
         val oldSocket = FakeSocket()
@@ -97,6 +97,7 @@ class AacpSessionLifecycleTest {
         assertTrue(lifecycle.attachSocket(newAttempt, newSocket))
         assertTrue(lifecycle.promote(newAttempt, newSocket))
 
+        assertFalse(lifecycle.isActive(oldAttempt, oldSocket))
         assertFalse(lifecycle.endSession(oldAttempt, oldSocket))
         assertTrue(lifecycle.isActive(newAttempt, newSocket))
         assertSame(newSocket, lifecycle.activeSocket())
