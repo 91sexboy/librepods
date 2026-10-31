@@ -280,8 +280,7 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
 
     private data class AacpSessionCleanup(
         val disconnected: DisconnectedAacpLifecycle<BluetoothSocket>,
-        val connectJob: Deferred<Unit>? = null,
-        val attManagers: List<DetachedAttManager> = emptyList(),
+        val detachUi: Boolean = false,
     )
 
     private val aacpLifecycle = AacpSessionLifecycle<BluetoothSocket>()
@@ -497,27 +496,25 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
     }
 
     private fun runIfCurrentAacpSession(
-        attempt: AacpConnectionAttempt,
-        connectedSocket: BluetoothSocket,
+        session: AacpSession<BluetoothSocket>,
         action: () -> Unit,
     ): Boolean = synchronized(this) {
-        if (!aacpLifecycle.isActive(attempt, connectedSocket)) {
+        if (!aacpLifecycle.isActive(session)) {
             false
         } else {
-            BluetoothConnectionManager.withExpectedSocket(connectedSocket, action)
+            BluetoothConnectionManager.withExpectedSocket(session.socket, action)
             true
         }
     }
 
     private fun sendIfCurrentAacpSession(
-        attempt: AacpConnectionAttempt,
-        connectedSocket: BluetoothSocket,
+        session: AacpSession<BluetoothSocket>,
         action: () -> Unit,
     ): Boolean {
-        if (!aacpLifecycle.isActive(attempt, connectedSocket)) return false
+        if (!aacpLifecycle.isActive(session)) return false
 
-        return BluetoothConnectionManager.withExpectedSocket(connectedSocket) {
-            if (!aacpLifecycle.isActive(attempt, connectedSocket)) {
+        return BluetoothConnectionManager.withExpectedSocket(session.socket) {
+            if (!aacpLifecycle.isActive(session)) {
                 false
             } else {
                 action()
@@ -535,25 +532,7 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
     }
 
     private fun beginAacpSessionCleanup(detachUi: Boolean = false): AacpSessionCleanup {
-        val disconnected = aacpLifecycle.disconnect()
-        if (disconnected.cleanupToken == null) {
-            return AacpSessionCleanup(disconnected)
-        }
-
-        val endedConnectJob = detachConnectingAacpJob(
-            disconnected.pendingSocket ?: disconnected.activeSocket
-        )
-        var endedAttManagers = emptyList<DetachedAttManager>()
-        if (disconnected.endedActiveSession) {
-            synchronized(this) {
-                val activeSocket = requireNotNull(disconnected.activeSocket)
-                endedAttManagers = detachAttManagers(activeSocket)
-                endedAttManagers.forEach { it.manager.invalidate() }
-                BluetoothConnectionManager.clearCurrentConnection(activeSocket)
-                if (detachUi) detachAacpSessionUi()
-            }
-        }
-        return AacpSessionCleanup(disconnected, endedConnectJob, endedAttManagers)
+        return AacpSessionCleanup(aacpLifecycle.disconnect(), detachUi)
     }
 
     private suspend fun finishAacpSessionCleanup(cleanup: AacpSessionCleanup) {
@@ -569,8 +548,23 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
         disconnected.activeSocket
             ?.takeIf { it !== disconnected.pendingSocket }
             ?.let(::closeSocket)
-        cancelAndAwaitConnectJob(cleanup.connectJob)?.let(unfinishedJobs::add)
-        unfinishedJobs += disconnectAttManagers(cleanup.attManagers)
+
+        val endedConnectJob = detachConnectingAacpJob(
+            disconnected.pendingSocket ?: disconnected.activeSocket
+        )
+        var endedAttManagers = emptyList<DetachedAttManager>()
+        if (disconnected.endedActiveSession) {
+            synchronized(this) {
+                val activeSocket = requireNotNull(disconnected.activeSocket)
+                endedAttManagers = detachAttManagers(activeSocket)
+                endedAttManagers.forEach { it.manager.invalidate() }
+                BluetoothConnectionManager.clearCurrentConnection(activeSocket)
+                if (cleanup.detachUi) detachAacpSessionUi()
+            }
+        }
+
+        cancelAndAwaitConnectJob(endedConnectJob)?.let(unfinishedJobs::add)
+        unfinishedJobs += disconnectAttManagers(endedAttManagers)
         if (disconnected.endedActiveSession) {
             synchronized(this) {
                 aacpManager.disconnected()
@@ -915,7 +909,7 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
                 when (state) {
                     TelephonyManager.CALL_STATE_RINGING -> {
                         val leAvailableForAudio = bleManager.getMostRecentStatus()?.isLeftInEar == true || bleManager.getMostRecentStatus()?.isRightInEar == true
-                        if ((CrossDevice.isAvailable && !isConnectedLocally && earDetectionNotification.status.contains(0x00)) || leAvailableForAudio) serviceScope.launch {
+                        if ((CrossDevice.isAvailable && !isConnectedLocally && earDetectionNotification.status.contains(0x00)) || leAvailableForAudio) {
                             takeOver("call")
                         }
                         if (config.headGestures) {
@@ -925,9 +919,8 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
                     }
                     TelephonyManager.CALL_STATE_OFFHOOK -> {
                         val leAvailableForAudio = bleManager.getMostRecentStatus()?.isLeftInEar == true || bleManager.getMostRecentStatus()?.isRightInEar == true
-                        if ((CrossDevice.isAvailable && !isConnectedLocally && earDetectionNotification.status.contains(0x00)) || leAvailableForAudio) CoroutineScope(
-                            Dispatchers.IO).launch {
-                                takeOver("call")
+                        if ((CrossDevice.isAvailable && !isConnectedLocally && earDetectionNotification.status.contains(0x00)) || leAvailableForAudio) {
+                            takeOver("call")
                         }
                         isInCall = true
                     }
@@ -2130,10 +2123,23 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
     }
 
     fun handleIncomingCall() {
+        val session = aacpLifecycle.activeSession()
+        serviceScope.launch {
+            if (session == null) {
+                handleIncomingCall(null)
+            } else {
+                runIfCurrentAacpSession(session) {
+                    handleIncomingCall(session)
+                }
+            }
+        }
+    }
+
+    private fun handleIncomingCall(session: AacpSession<BluetoothSocket>?) {
         if (isInCall) return
         if (config.headGestures) {
             initGestureDetector()
-            startHeadTracking()
+            session?.let(::startHeadTracking)
             gestureDetector?.startDetection { accepted ->
                 if (accepted) {
                     answerCall()
@@ -2465,11 +2471,13 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
         manualTakeOverAfterReversed: Boolean = false,
         startHeadTrackingAgain: Boolean = false,
     ) {
+        val session = aacpLifecycle.activeSession()
         serviceScope.launch {
             takeOverInServiceScope(
                 takingOverFor,
                 manualTakeOverAfterReversed,
                 startHeadTrackingAgain,
+                session,
             )
         }
     }
@@ -2480,27 +2488,38 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
         takingOverFor: String,
         manualTakeOverAfterReversed: Boolean = false,
         startHeadTrackingAgain: Boolean = false,
+        session: AacpSession<BluetoothSocket>?,
     ) {
-        if (takingOverFor == "reverse") {
-            aacpManager.sendControlCommand(
-                AACPManager.Companion.ControlCommandIdentifiers.OWNS_CONNECTION.value,
-                1
-            )
-            aacpManager.sendMediaInformataion(
-                localMac
-            )
-            aacpManager.sendHijackReversed(
-                localMac
-            )
-            connectAudio(
-                this@AirPodsService,
-                device
-            )
-            otherDeviceTookOver = false
-        }
-        Log.d(TAG, "owns connection: ${aacpManager.getControlCommandStatus(AACPManager.Companion.ControlCommandIdentifiers.OWNS_CONNECTION)?.value?.get(0)?.toInt()}")
-        if (isConnectedLocally) {
-            if (aacpManager.getControlCommandStatus(AACPManager.Companion.ControlCommandIdentifiers.OWNS_CONNECTION)?.value[0]?.toInt() != 1 || (aacpManager.audioSource?.mac != localMac && aacpManager.audioSource?.type != AACPManager.Companion.AudioSourceType.NONE)) {
+        if (session != null) {
+            if (!aacpLifecycle.isActive(session)) return
+
+            if (takingOverFor == "reverse") {
+                if (!sendIfCurrentAacpSession(session) {
+                        aacpManager.sendControlCommand(
+                            AACPManager.Companion.ControlCommandIdentifiers.OWNS_CONNECTION.value,
+                            1,
+                        )
+                        aacpManager.sendMediaInformataion(localMac)
+                        aacpManager.sendHijackReversed(localMac)
+                    }) return
+                if (!runIfCurrentAacpSession(session) {
+                        connectAudio(this@AirPodsService, device)
+                        otherDeviceTookOver = false
+                    }) return
+            }
+
+            var shouldHijack = false
+            if (!runIfCurrentAacpSession(session) {
+                    val ownsConnection = aacpManager.getControlCommandStatus(
+                        AACPManager.Companion.ControlCommandIdentifiers.OWNS_CONNECTION
+                    )?.value?.get(0)?.toInt()
+                    Log.d(TAG, "owns connection: $ownsConnection")
+                    shouldHijack = ownsConnection != 1 ||
+                        (aacpManager.audioSource?.mac != localMac &&
+                            aacpManager.audioSource?.type != AACPManager.Companion.AudioSourceType.NONE)
+                }) return
+
+            if (shouldHijack) {
                 if (disconnectedBecauseReversed) {
                     if (manualTakeOverAfterReversed) {
                         Log.d(TAG, "forcefully taking over despite reverse as user requested")
@@ -2512,43 +2531,48 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
                 }
 
                 Log.d(TAG, "already connected locally, hijacking connection by asking AirPods")
-                aacpManager.sendControlCommand(
-                    AACPManager.Companion.ControlCommandIdentifiers.OWNS_CONNECTION.value,
-                    1
-                )
-                aacpManager.sendMediaInformataion(
-                    localMac
-                )
-                aacpManager.sendSmartRoutingShowUI(
-                    localMac
-                )
-                aacpManager.sendHijackRequest(
-                    localMac
-                )
-                otherDeviceTookOver = false
-                connectAudio(this, device)
-                showIslandWithKnownBattery(IslandType.CONNECTED)
+                if (!sendIfCurrentAacpSession(session) {
+                        aacpManager.sendControlCommand(
+                            AACPManager.Companion.ControlCommandIdentifiers.OWNS_CONNECTION.value,
+                            1,
+                        )
+                        aacpManager.sendMediaInformataion(localMac)
+                        aacpManager.sendSmartRoutingShowUI(localMac)
+                        aacpManager.sendHijackRequest(localMac)
+                    }) return
+                if (!runIfCurrentAacpSession(session) {
+                        otherDeviceTookOver = false
+                        connectAudio(this@AirPodsService, device)
+                        showIslandWithKnownBattery(IslandType.CONNECTED)
+                    }) return
 
                 serviceScope.launch {
                     delay(500) // a2dp takes time, and so does taking control + AirPods pause it for no reason after connecting
                     if (takingOverFor == "music") {
-                        Log.d(TAG, "Resuming music after taking control")
-                        MediaController.sendPlay(replayWhenPaused = true)
+                        if (!runIfCurrentAacpSession(session) {
+                                Log.d(TAG, "Resuming music after taking control")
+                                MediaController.sendPlay(replayWhenPaused = true)
+                            }) return@launch
+                        delay(1000) // should ideally have a callback when it's taken over because for some reason android doesn't dispatch when it's paused
+                        runIfCurrentAacpSession(session) {
+                            Log.d(TAG, "resuming again just in case")
+                            MediaController.sendPlay(force = true)
+                        }
                     } else if (startHeadTrackingAgain) {
+                        if (!aacpLifecycle.isActive(session)) return@launch
                         Log.d(TAG, "Starting head tracking again after taking control")
-                        Handler(Looper.getMainLooper()).postDelayed({
-                            startHeadTracking()
-                        }, 500)
-                    }
-                    delay(1000) // should ideally have a callback when it's taken over because for some reason android doesn't dispatch when it's paused
-                    if (takingOverFor == "music") {
-                        Log.d(TAG, "resuming again just in case")
-                        MediaController.sendPlay(force = true)
+                        delay(500)
+                        startHeadTracking(session)
                     }
                 }
             } else {
                 Log.d(TAG, "Already connected locally and already own connection, skipping takeover")
             }
+            return
+        }
+
+        if (isConnectedLocally || takingOverFor == "reverse") {
+            Log.d(TAG, "Skipping takeover without its original AACP session")
             return
         }
 
@@ -2746,6 +2770,7 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
             closeSocket(candidateSocket)
             return
         }
+        val session = AacpSession(attempt, candidateSocket)
 
         val candidateAttManager = ATTManager(device)
         val attConnectJob = serviceScope.async(start = CoroutineStart.LAZY) {
@@ -2808,7 +2833,7 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
         }
 
         val initialized = try {
-            runIfCurrentAacpSession(attempt, candidateSocket) {
+            runIfCurrentAacpSession(session) {
                 this@AirPodsService.device = device
 
                 if (airpodsInstance == null && config.airpodsModelNumber.isNotEmpty()) {
@@ -2863,7 +2888,7 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
 
         serviceScope.launch {
             try {
-                if (!sendIfCurrentAacpSession(attempt, candidateSocket) {
+                if (!sendIfCurrentAacpSession(session) {
                         aacpManager.sendPacket(aacpManager.createHandshakePacket())
                         aacpManager.sendSetFeatureFlagsPacket()
                         aacpManager.sendNotificationRequest()
@@ -2874,53 +2899,54 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
                         )
                     }) return@launch
 
-                if (!sendIfCurrentAacpSession(attempt, candidateSocket) {
+                if (!sendIfCurrentAacpSession(session) {
                         aacpManager.sendPacket(aacpManager.createHandshakePacket())
                     }) return@launch
                 delay(200)
-                if (!sendIfCurrentAacpSession(attempt, candidateSocket) {
+                if (!sendIfCurrentAacpSession(session) {
                         aacpManager.sendSetFeatureFlagsPacket()
                     }) return@launch
                 delay(200)
-                if (!sendIfCurrentAacpSession(attempt, candidateSocket) {
+                if (!sendIfCurrentAacpSession(session) {
                         aacpManager.sendNotificationRequest()
                     }) return@launch
                 delay(200)
-                if (!sendIfCurrentAacpSession(attempt, candidateSocket) {
+                if (!sendIfCurrentAacpSession(session) {
                         aacpManager.sendSomePacketIDontKnowWhatItIs()
                     }) return@launch
                 delay(200)
-                if (!sendIfCurrentAacpSession(attempt, candidateSocket) {
+                if (!sendIfCurrentAacpSession(session) {
                         aacpManager.sendRequestProximityKeys(
                             (AACPManager.Companion.ProximityKeyType.IRK.value +
                                 AACPManager.Companion.ProximityKeyType.ENC_KEY.value).toByte()
                         )
                     }) return@launch
-                if (!runIfCurrentAacpSession(attempt, candidateSocket) {
-                        if (!handleIncomingCallOnceConnected) startHeadTracking() else handleIncomingCall()
+                if (!handleIncomingCallOnceConnected) {
+                    startHeadTracking(session)
+                } else if (!runIfCurrentAacpSession(session) {
+                        handleIncomingCall(session)
                     }) return@launch
 
-                Handler(Looper.getMainLooper()).postDelayed({
-                    val sent = sendIfCurrentAacpSession(attempt, candidateSocket) {
+                serviceScope.launch {
+                    delay(5000)
+                    val sent = sendIfCurrentAacpSession(session) {
                         aacpManager.sendPacket(aacpManager.createHandshakePacket())
                         aacpManager.sendSetFeatureFlagsPacket()
                         aacpManager.sendNotificationRequest()
                         aacpManager.sendRequestProximityKeys(AACPManager.Companion.ProximityKeyType.IRK.value)
                     }
                     if (sent && !handleIncomingCallOnceConnected) {
-                        runIfCurrentAacpSession(attempt, candidateSocket) {
-                            stopHeadTracking()
-                        }
+                        stopHeadTracking(session)
                     }
-                }, 5000)
+                }
 
-                if (!runIfCurrentAacpSession(attempt, candidateSocket) {
+                if (!runIfCurrentAacpSession(session) {
                         sendBroadcast(
                             Intent(AirPodsNotifications.AIRPODS_CONNECTED)
                                 .putExtra("device", device)
                         )
                     }) return@launch
-                if (!runIfCurrentAacpSession(attempt, candidateSocket) {
+                if (!runIfCurrentAacpSession(session) {
                         setupStemActions()
                     }) return@launch
 
@@ -2929,7 +2955,7 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
                     val bytesRead = candidateSocket.inputStream.read(buffer)
                     if (bytesRead > 0) {
                         val data = buffer.copyOfRange(0, bytesRead)
-                        val handled = runIfCurrentAacpSession(attempt, candidateSocket) {
+                        val handled = runIfCurrentAacpSession(session) {
                             sendBroadcast(Intent(AirPodsNotifications.AIRPODS_DATA).apply {
                                 putExtra("data", data)
                             })
@@ -3203,33 +3229,75 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
         super.onDestroy()
     }
 
+    @Volatile
     var isHeadTrackingActive = false
 
     fun startHeadTracking() {
-        isHeadTrackingActive = true
-        val useAlternatePackets = sharedPreferences.getBoolean("use_alternate_head_tracking_packets", false)
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R && aacpManager.getControlCommandStatus(AACPManager.Companion.ControlCommandIdentifiers.OWNS_CONNECTION)?.value?.get(0)?.toInt() != 1) {
-            takeOver("call", startHeadTrackingAgain = true)
+        val session = aacpLifecycle.activeSession() ?: return
+        serviceScope.launch {
+            startHeadTracking(session)
+        }
+    }
+
+    private fun startHeadTracking(session: AacpSession<BluetoothSocket>) {
+        var shouldTakeOver = false
+        val started = sendIfCurrentAacpSession(session) {
+            isHeadTrackingActive = true
+            val useAlternatePackets = sharedPreferences.getBoolean(
+                "use_alternate_head_tracking_packets",
+                false,
+            )
+            shouldTakeOver = Build.VERSION.SDK_INT >= Build.VERSION_CODES.R &&
+                aacpManager.getControlCommandStatus(
+                    AACPManager.Companion.ControlCommandIdentifiers.OWNS_CONNECTION
+                )?.value?.get(0)?.toInt() != 1
+            if (useAlternatePackets) {
+                aacpManager.sendDataPacket(aacpManager.createAlternateStartHeadTrackingPacket())
+            } else {
+                aacpManager.sendStartHeadTracking()
+            }
+            HeadTracking.reset()
+        }
+        if (!started) return
+
+        if (shouldTakeOver) {
+            serviceScope.launch {
+                takeOverInServiceScope(
+                    takingOverFor = "call",
+                    startHeadTrackingAgain = true,
+                    session = session,
+                )
+            }
             Log.d(TAG, "Taking over for head tracking")
         } else {
             Log.w(TAG, "Will not be taking over for head tracking, might not work.")
         }
-        if (useAlternatePackets) {
-            aacpManager.sendDataPacket(aacpManager.createAlternateStartHeadTrackingPacket())
-        } else {
-            aacpManager.sendStartHeadTracking()
-        }
-        HeadTracking.reset()
     }
 
     fun stopHeadTracking() {
-        val useAlternatePackets = sharedPreferences.getBoolean("use_alternate_head_tracking_packets", false)
-        if (useAlternatePackets) {
-            aacpManager.sendDataPacket(aacpManager.createAlternateStopHeadTrackingPacket())
-        } else {
-            aacpManager.sendStopHeadTracking()
+        val session = aacpLifecycle.activeSession()
+        if (session == null) {
+            isHeadTrackingActive = false
+            return
         }
-        isHeadTrackingActive = false
+        serviceScope.launch {
+            stopHeadTracking(session)
+        }
+    }
+
+    private fun stopHeadTracking(session: AacpSession<BluetoothSocket>) {
+        sendIfCurrentAacpSession(session) {
+            val useAlternatePackets = sharedPreferences.getBoolean(
+                "use_alternate_head_tracking_packets",
+                false,
+            )
+            if (useAlternatePackets) {
+                aacpManager.sendDataPacket(aacpManager.createAlternateStopHeadTrackingPacket())
+            } else {
+                aacpManager.sendStopHeadTracking()
+            }
+            isHeadTrackingActive = false
+        }
     }
 
     @SuppressLint("MissingPermission")

@@ -23,6 +23,11 @@ import java.util.concurrent.TimeUnit
 
 internal data class AacpConnectionAttempt(val generation: Long)
 
+internal data class AacpSession<Socket : Any>(
+    val attempt: AacpConnectionAttempt,
+    val socket: Socket,
+)
+
 internal data class DisconnectedAacpLifecycle<Socket : Any>(
     val pendingSocket: Socket?,
     val activeSocket: Socket?,
@@ -155,6 +160,27 @@ internal class AacpSessionLifecycle<Socket : Any> {
     @Synchronized
     fun isActive(attempt: AacpConnectionAttempt, socket: Socket): Boolean =
         active?.let { it.attempt == attempt && it.socket === socket } == true
+
+    @Synchronized
+    fun isActive(session: AacpSession<Socket>): Boolean =
+        active?.let { it.attempt == session.attempt && it.socket === session.socket } == true
+
+    @Synchronized
+    fun runIfActive(session: AacpSession<Socket>, action: () -> Unit): Boolean {
+        if (active?.let {
+                it.attempt == session.attempt && it.socket === session.socket
+            } != true) {
+            return false
+        }
+
+        action()
+        return true
+    }
+
+    @Synchronized
+    fun activeSession(): AacpSession<Socket>? = active?.let {
+        AacpSession(it.attempt, it.socket)
+    }
 
     @Synchronized
     fun activeSocket(): Socket? = active?.socket
