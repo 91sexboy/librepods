@@ -14,9 +14,9 @@ use std::path::PathBuf;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::time::Duration;
-use tokio::sync::{Mutex, mpsc, oneshot};
+use tokio::sync::{Mutex, mpsc, oneshot, watch};
 use tokio::task::JoinSet;
-use tokio::time::{Instant, sleep};
+use tokio::time::{Instant, sleep, sleep_until, timeout_at};
 
 const PSM: u16 = 0x1001;
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
@@ -499,6 +499,17 @@ impl QueuedAacpPacket {
         }
     }
 
+    fn is_expired(&self) -> bool {
+        self.deadline
+            .is_some_and(|deadline| deadline <= Instant::now())
+    }
+
+    fn is_abandoned(&self) -> bool {
+        self.completion
+            .as_ref()
+            .is_some_and(oneshot::Sender::is_closed)
+    }
+
     #[cfg(test)]
     pub(crate) fn into_fire_and_forget_data(self) -> Vec<u8> {
         assert!(
@@ -523,6 +534,20 @@ impl AacpPacketTransport for SeqPacket {
     fn send_packet<'a>(&'a self, data: &'a [u8]) -> TransportSendFuture<'a> {
         Box::pin(SeqPacket::send(self, data))
     }
+}
+
+fn transport_timeout_error() -> io::Error {
+    io::Error::new(
+        io::ErrorKind::TimedOut,
+        "AACP packet transport deadline expired",
+    )
+}
+
+fn transport_generation_error() -> io::Error {
+    io::Error::new(
+        io::ErrorKind::NotConnected,
+        "AACP connection generation changed during transport",
+    )
 }
 
 pub struct AACPManagerState {
@@ -573,6 +598,7 @@ pub struct AACPManager {
     tasks: Arc<Mutex<JoinSet<()>>>,
     devices_path: PathBuf,
     connection_transition_gate: Arc<Mutex<()>>,
+    connection_generation_tx: watch::Sender<u64>,
 }
 
 impl AACPManager {
@@ -581,11 +607,13 @@ impl AACPManager {
     }
 
     fn with_devices_path(devices_path: PathBuf) -> Self {
+        let (connection_generation_tx, _) = watch::channel(0);
         AACPManager {
             state: Arc::new(Mutex::new(AACPManagerState::new())),
             tasks: Arc::new(Mutex::new(JoinSet::new())),
             devices_path,
             connection_transition_gate: Arc::new(Mutex::new(())),
+            connection_generation_tx,
         }
     }
 
@@ -686,6 +714,9 @@ impl AACPManager {
         packet: QueuedAacpPacket,
         expected_generation: Option<u64>,
     ) -> Result<()> {
+        if packet.is_expired() {
+            return Err(Error::from(transport_timeout_error()));
+        }
         let (sender, connection_generation) = {
             let state = self.state.lock().await;
             if expected_generation.is_some_and(|expected| {
@@ -706,7 +737,15 @@ impl AACPManager {
             )));
         };
 
-        let permit = match sender.clone().reserve_owned().await {
+        let permit_result = if let Some(deadline) = packet.deadline {
+            match timeout_at(deadline, sender.clone().reserve_owned()).await {
+                Ok(result) => result,
+                Err(_) => return Err(Error::from(transport_timeout_error())),
+            }
+        } else {
+            sender.clone().reserve_owned().await
+        };
+        let permit = match permit_result {
             Ok(permit) => permit,
             Err(e) => {
                 error!("Failed to reserve packet channel capacity: {}", e);
@@ -719,6 +758,9 @@ impl AACPManager {
             }
         };
 
+        if packet.is_expired() {
+            return Err(Error::from(transport_timeout_error()));
+        }
         let state = self.state.lock().await;
         let sender_is_current = state.connection_generation == connection_generation
             && expected_generation.is_none_or(|expected| expected == connection_generation)
@@ -733,6 +775,9 @@ impl AACPManager {
                 "L2CAP connection changed while sending",
             )));
         }
+        if packet.is_expired() {
+            return Err(Error::from(transport_timeout_error()));
+        }
 
         permit.send(packet);
         Ok(())
@@ -745,13 +790,14 @@ impl AACPManager {
     ) -> Result<()> {
         let (packet, completion) = QueuedAacpPacket::tracked(data.to_vec(), deadline);
         self.enqueue_packet(packet, None).await?;
-        match completion.await {
-            Ok(Ok(())) => Ok(()),
-            Ok(Err(error)) => Err(Error::from(error)),
-            Err(_) => Err(Error::from(io::Error::new(
+        match timeout_at(deadline, completion).await {
+            Ok(Ok(Ok(()))) => Ok(()),
+            Ok(Ok(Err(error))) => Err(Error::from(error)),
+            Ok(Err(_)) => Err(Error::from(io::Error::new(
                 io::ErrorKind::NotConnected,
                 "AACP transport completion channel closed",
             ))),
+            Err(_) => Err(Error::from(transport_timeout_error())),
         }
     }
 
@@ -768,7 +814,11 @@ impl AACPManager {
             state.airpods_mac = Some(airpods_mac);
         }
         Self::clear_connection_data(&mut state);
-        state.connection_generation
+        let connection_generation = state.connection_generation;
+        let _ = self
+            .connection_generation_tx
+            .send_replace(connection_generation);
+        connection_generation
     }
 
     async fn clear_connection_if_current(&self, connection_generation: u64) -> bool {
@@ -781,6 +831,8 @@ impl AACPManager {
         state.sender = None;
         Self::clear_connection_data(&mut state);
         state.connection_generation = state.connection_generation.wrapping_add(1);
+        let next_generation = state.connection_generation;
+        let _ = self.connection_generation_tx.send_replace(next_generation);
         true
     }
 
@@ -1751,17 +1803,145 @@ async fn recv_thread(manager: AACPManager, sp: Arc<SeqPacket>, connection_genera
     }
 }
 
+enum PacketSendOutcome {
+    Sent(io::Result<usize>),
+    Expired,
+    Abandoned,
+    GenerationChanged,
+}
+
+async fn send_packet_until_boundary<Transport: AacpPacketTransport>(
+    packet: &mut QueuedAacpPacket,
+    transport: &Transport,
+    generation_changes: &mut watch::Receiver<u64>,
+) -> PacketSendOutcome {
+    let QueuedAacpPacket {
+        data,
+        deadline,
+        completion,
+    } = packet;
+    let deadline = *deadline;
+    let abandoned = async {
+        if let Some(completion) = completion.as_mut() {
+            completion.closed().await;
+        } else {
+            std::future::pending::<()>().await;
+        }
+    };
+    let expired = async {
+        if let Some(deadline) = deadline {
+            sleep_until(deadline).await;
+        } else {
+            std::future::pending::<()>().await;
+        }
+    };
+
+    tokio::select! {
+        biased;
+        _ = abandoned => PacketSendOutcome::Abandoned,
+        _ = expired => PacketSendOutcome::Expired,
+        _ = generation_changes.changed() => PacketSendOutcome::GenerationChanged,
+        result = transport.send_packet(data) => PacketSendOutcome::Sent(result),
+    }
+}
+
+enum RetryWaitOutcome {
+    Retry,
+    Expired,
+    Abandoned,
+    GenerationChanged,
+}
+
+async fn wait_for_retry_until_boundary(
+    packet: &mut QueuedAacpPacket,
+    generation_changes: &mut watch::Receiver<u64>,
+) -> RetryWaitOutcome {
+    let deadline = packet.deadline;
+    let completion = &mut packet.completion;
+    let abandoned = async {
+        if let Some(completion) = completion.as_mut() {
+            completion.closed().await;
+        } else {
+            std::future::pending::<()>().await;
+        }
+    };
+    let expired = async {
+        if let Some(deadline) = deadline {
+            sleep_until(deadline).await;
+        } else {
+            std::future::pending::<()>().await;
+        }
+    };
+
+    tokio::select! {
+        biased;
+        _ = abandoned => RetryWaitOutcome::Abandoned,
+        _ = expired => RetryWaitOutcome::Expired,
+        _ = generation_changes.changed() => RetryWaitOutcome::GenerationChanged,
+        _ = sleep(Duration::from_millis(100)) => RetryWaitOutcome::Retry,
+    }
+}
+
 async fn send_thread<Transport: AacpPacketTransport>(
     manager: AACPManager,
     mut rx: mpsc::Receiver<QueuedAacpPacket>,
     transport: Arc<Transport>,
     connection_generation: u64,
 ) {
-    while let Some(mut packet) = rx.recv().await {
+    let mut generation_changes = manager.connection_generation_tx.subscribe();
+    let watched_generation = *generation_changes.borrow();
+    if watched_generation != connection_generation
+        || !manager
+            .is_connection_generation_current(connection_generation)
+            .await
+    {
+        return;
+    }
+
+    loop {
+        let packet = tokio::select! {
+            biased;
+            _ = generation_changes.changed() => return,
+            packet = rx.recv() => packet,
+        };
+        let Some(mut packet) = packet else {
+            info!("Send thread finished.");
+            return;
+        };
+
+        if packet.is_abandoned() {
+            continue;
+        }
+        if packet.is_expired() {
+            packet.complete(Err(transport_timeout_error()));
+            continue;
+        }
+
         let mut attempts = 0;
         loop {
-            match transport.send_packet(&packet.data).await {
-                Ok(_) => {
+            if packet.is_abandoned() {
+                break;
+            }
+            if packet.is_expired() {
+                packet.complete(Err(transport_timeout_error()));
+                break;
+            }
+            if !manager
+                .is_connection_generation_current(connection_generation)
+                .await
+            {
+                packet.complete(Err(transport_generation_error()));
+                return;
+            }
+
+            match send_packet_until_boundary(
+                &mut packet,
+                transport.as_ref(),
+                &mut generation_changes,
+            )
+            .await
+            {
+                PacketSendOutcome::Sent(Ok(_)) => {
                     debug!(
                         "Sent {} bytes: {}",
                         packet.data.len(),
@@ -1770,22 +1950,44 @@ async fn send_thread<Transport: AacpPacketTransport>(
                     packet.complete(Ok(()));
                     break;
                 }
-                Err(e) if e.raw_os_error() == Some(107) && attempts < 10 => {
+                PacketSendOutcome::Sent(Err(error))
+                    if error.raw_os_error() == Some(107) && attempts < 10 =>
+                {
                     attempts += 1;
-                    sleep(Duration::from_millis(100)).await;
+                    match wait_for_retry_until_boundary(&mut packet, &mut generation_changes).await
+                    {
+                        RetryWaitOutcome::Retry => {}
+                        RetryWaitOutcome::Expired => {
+                            packet.complete(Err(transport_timeout_error()));
+                            break;
+                        }
+                        RetryWaitOutcome::Abandoned => break,
+                        RetryWaitOutcome::GenerationChanged => {
+                            packet.complete(Err(transport_generation_error()));
+                            return;
+                        }
+                    }
                 }
-                Err(e) => {
-                    error!("Failed to send data: {}", e);
-                    packet.complete(Err(e));
+                PacketSendOutcome::Sent(Err(error)) => {
+                    error!("Failed to send data: {}", error);
+                    packet.complete(Err(error));
                     manager
                         .clear_connection_if_current(connection_generation)
                         .await;
                     return;
                 }
+                PacketSendOutcome::Expired => {
+                    packet.complete(Err(transport_timeout_error()));
+                    break;
+                }
+                PacketSendOutcome::Abandoned => break,
+                PacketSendOutcome::GenerationChanged => {
+                    packet.complete(Err(transport_generation_error()));
+                    return;
+                }
             }
         }
     }
-    info!("Send thread finished.");
 }
 
 #[cfg(test)]
