@@ -39,7 +39,14 @@ class AttCallbackGateTest {
             closeThread.start()
             assertTrue(closeStarted.await(1, TimeUnit.SECONDS))
 
-            assertFalse(closeReturned.await(50, TimeUnit.MILLISECONDS))
+            val blockedDeadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(1)
+            while (closeThread.state != Thread.State.BLOCKED &&
+                closeReturned.count != 0L &&
+                System.nanoTime() < blockedDeadline) {
+                Thread.yield()
+            }
+            assertEquals(Thread.State.BLOCKED, closeThread.state)
+            assertEquals(1L, closeReturned.count)
             releaseCallback.countDown()
             assertTrue(closeReturned.await(1, TimeUnit.SECONDS))
 

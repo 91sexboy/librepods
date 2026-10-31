@@ -133,10 +133,14 @@ class AacpSessionLifecycleTest {
         assertTrue(lifecycle.promote(oldAttempt, oldSocket))
         val oldSession = lifecycle.activeSession()!!
         var restartCount = 0
+        fun restartHeadTracking(session: AacpSession<FakeSocket>): Boolean {
+            if (!lifecycle.isActive(session)) return false
+
+            restartCount++
+            return true
+        }
         val delayedRestart = {
-            lifecycle.runIfActive(oldSession) {
-                restartCount++
-            }
+            restartHeadTracking(oldSession)
         }
 
         val disconnected = lifecycle.disconnect()
@@ -148,9 +152,8 @@ class AacpSessionLifecycleTest {
 
         assertFalse(delayedRestart())
         assertEquals(0, restartCount)
-        assertTrue(lifecycle.runIfActive(lifecycle.activeSession()!!) {
-            restartCount++
-        })
+        val replacementSession = lifecycle.activeSession()!!
+        assertTrue(restartHeadTracking(replacementSession))
         assertEquals(1, restartCount)
     }
 

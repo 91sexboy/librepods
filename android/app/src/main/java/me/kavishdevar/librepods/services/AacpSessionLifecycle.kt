@@ -166,18 +166,6 @@ internal class AacpSessionLifecycle<Socket : Any> {
         active?.let { it.attempt == session.attempt && it.socket === session.socket } == true
 
     @Synchronized
-    fun runIfActive(session: AacpSession<Socket>, action: () -> Unit): Boolean {
-        if (active?.let {
-                it.attempt == session.attempt && it.socket === session.socket
-            } != true) {
-            return false
-        }
-
-        action()
-        return true
-    }
-
-    @Synchronized
     fun activeSession(): AacpSession<Socket>? = active?.let {
         AacpSession(it.attempt, it.socket)
     }
