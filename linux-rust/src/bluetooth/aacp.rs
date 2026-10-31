@@ -2048,6 +2048,275 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn expired_queued_tray_packet_is_skipped() {
+        let manager = AACPManager::new();
+        let (packet_tx, packet_rx) = mpsc::channel(4);
+        let connection_generation = manager.install_connection(packet_tx, None).await;
+        let sender = manager.state.lock().await.sender.clone().unwrap();
+        let (packet, completion) = QueuedAacpPacket::tracked(vec![0xAA], Instant::now());
+        sender.send(packet).await.unwrap();
+        drop(sender);
+        let transport = Arc::new(FakePacketTransport::new(
+            std::iter::empty::<FakeSendOutcome>(),
+        ));
+        let send_loop = tokio::spawn(send_thread(
+            manager.clone(),
+            packet_rx,
+            Arc::clone(&transport),
+            connection_generation,
+        ));
+
+        let error = timeout(Duration::from_millis(250), completion)
+            .await
+            .expect("expired packet waiter hung")
+            .expect("send loop dropped the expired packet without a result")
+            .expect_err("expired packet was reported as sent");
+        assert_eq!(error.kind(), io::ErrorKind::TimedOut);
+        assert!(transport.attempts().is_empty());
+
+        assert!(
+            manager
+                .clear_connection_if_current(connection_generation)
+                .await
+        );
+        timeout(Duration::from_millis(250), send_loop)
+            .await
+            .expect("send loop did not stop after expiry test")
+            .expect("send loop task failed");
+    }
+
+    #[tokio::test]
+    async fn dropped_tray_send_waiter_is_skipped_before_socket_send() {
+        let manager = AACPManager::new();
+        let (packet_tx, packet_rx) = mpsc::channel(4);
+        let connection_generation = manager.install_connection(packet_tx, None).await;
+        let sender = manager.state.lock().await.sender.clone().unwrap();
+        {
+            let send = manager.send_tray_control_command(
+                ControlCommandIdentifiers::ListeningMode,
+                &[0x04],
+                Instant::now() + Duration::from_secs(1),
+            );
+            tokio::pin!(send);
+            assert!(matches!(futures::poll!(send.as_mut()), Poll::Pending));
+        }
+        assert_eq!(sender.capacity(), 3, "tray packet was not enqueued");
+        let transport = Arc::new(FakePacketTransport::new(
+            std::iter::empty::<FakeSendOutcome>(),
+        ));
+        let send_loop = tokio::spawn(send_thread(
+            manager.clone(),
+            packet_rx,
+            Arc::clone(&transport),
+            connection_generation,
+        ));
+
+        timeout(Duration::from_millis(250), async {
+            while sender.capacity() != 4 {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("send loop did not consume the abandoned packet");
+        assert!(
+            transport.attempts().is_empty(),
+            "abandoned packet reached the socket transport"
+        );
+
+        send_loop.abort();
+        let _ = send_loop.await;
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn tray_packet_expiring_during_socket_send_is_cancelled() {
+        let manager = AACPManager::new();
+        let (packet_tx, packet_rx) = mpsc::channel(4);
+        let connection_generation = manager.install_connection(packet_tx, None).await;
+        let sender = manager.state.lock().await.sender.clone().unwrap();
+        let deadline = Instant::now() + Duration::from_millis(100);
+        let (packet, completion) = QueuedAacpPacket::tracked(vec![0xBB], deadline);
+        sender.send(packet).await.unwrap();
+        drop(sender);
+        let (release_tx, release_rx) = oneshot::channel();
+        let transport = Arc::new(FakePacketTransport::new([FakeSendOutcome::Wait(
+            release_rx,
+        )]));
+        let send_loop = tokio::spawn(send_thread(
+            manager.clone(),
+            packet_rx,
+            Arc::clone(&transport),
+            connection_generation,
+        ));
+        wait_for_attempts(&transport, 1).await;
+
+        tokio::time::advance(Duration::from_millis(101)).await;
+        let error = timeout(Duration::from_millis(1), completion)
+            .await
+            .expect("expired in-flight send waiter hung")
+            .expect("send loop dropped the expired in-flight packet without a result")
+            .expect_err("expired in-flight packet was reported as sent");
+        assert_eq!(error.kind(), io::ErrorKind::TimedOut);
+        assert!(
+            release_tx.send(Ok(1)).is_err(),
+            "expired socket-send future remained live"
+        );
+        assert_eq!(transport.attempts(), [vec![0xBB]]);
+
+        assert!(
+            manager
+                .clear_connection_if_current(connection_generation)
+                .await
+        );
+        timeout(Duration::from_millis(1), send_loop)
+            .await
+            .expect("send loop did not stop after in-flight expiry")
+            .expect("send loop task failed");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn tray_packet_expiring_during_retry_is_not_sent_again() {
+        let manager = AACPManager::new();
+        let (packet_tx, packet_rx) = mpsc::channel(4);
+        let connection_generation = manager.install_connection(packet_tx, None).await;
+        let sender = manager.state.lock().await.sender.clone().unwrap();
+        let deadline = Instant::now() + Duration::from_millis(50);
+        let (packet, completion) = QueuedAacpPacket::tracked(vec![0xCC], deadline);
+        sender.send(packet).await.unwrap();
+        drop(sender);
+        let (_release_tx, release_rx) = oneshot::channel();
+        let transport = Arc::new(FakePacketTransport::new([
+            FakeSendOutcome::Ready(Err(io::Error::from_raw_os_error(107))),
+            FakeSendOutcome::Wait(release_rx),
+        ]));
+        let send_loop = tokio::spawn(send_thread(
+            manager.clone(),
+            packet_rx,
+            Arc::clone(&transport),
+            connection_generation,
+        ));
+        wait_for_attempts(&transport, 1).await;
+
+        tokio::time::advance(Duration::from_millis(51)).await;
+        let error = timeout(Duration::from_millis(1), completion)
+            .await
+            .expect("retrying expired packet waiter hung")
+            .expect("send loop dropped the retrying expired packet without a result")
+            .expect_err("retrying expired packet was reported as sent");
+        assert_eq!(error.kind(), io::ErrorKind::TimedOut);
+        assert_eq!(transport.attempts(), [vec![0xCC]]);
+
+        assert!(
+            manager
+                .clear_connection_if_current(connection_generation)
+                .await
+        );
+        timeout(Duration::from_millis(1), send_loop)
+            .await
+            .expect("send loop did not stop after retry expiry")
+            .expect("send loop task failed");
+    }
+
+    #[tokio::test]
+    async fn generation_teardown_fails_old_waiter_without_affecting_new_send() {
+        let manager = AACPManager::new();
+        let (old_packet_tx, old_packet_rx) = mpsc::channel(4);
+        let old_generation = manager.install_connection(old_packet_tx, None).await;
+        let (old_release_tx, old_release_rx) = oneshot::channel();
+        let old_transport = Arc::new(FakePacketTransport::new([FakeSendOutcome::Wait(
+            old_release_rx,
+        )]));
+        let old_send_loop = tokio::spawn(send_thread(
+            manager.clone(),
+            old_packet_rx,
+            Arc::clone(&old_transport),
+            old_generation,
+        ));
+        let old_manager = manager.clone();
+        let old_send = tokio::spawn(async move {
+            old_manager
+                .send_tray_control_command(
+                    ControlCommandIdentifiers::ListeningMode,
+                    &[0x03],
+                    Instant::now() + Duration::from_secs(1),
+                )
+                .await
+        });
+        wait_for_attempts(&old_transport, 1).await;
+
+        assert!(manager.clear_connection_if_current(old_generation).await);
+        let old_error = timeout(Duration::from_millis(250), old_send)
+            .await
+            .expect("old waiter hung after connection teardown")
+            .expect("old tray send task failed")
+            .expect_err("old waiter succeeded after connection teardown");
+        assert!(
+            old_error.to_string().contains("connection"),
+            "unexpected teardown error: {old_error}"
+        );
+        assert!(
+            old_release_tx.send(Ok(11)).is_err(),
+            "old socket-send future survived generation teardown"
+        );
+        timeout(Duration::from_millis(250), old_send_loop)
+            .await
+            .expect("old send loop survived generation teardown")
+            .expect("old send loop task failed");
+
+        let (new_packet_tx, new_packet_rx) = mpsc::channel(4);
+        let new_generation = manager.install_connection(new_packet_tx, None).await;
+        let new_transport = Arc::new(FakePacketTransport::new([FakeSendOutcome::Ready(Ok(11))]));
+        let new_send_loop = tokio::spawn(send_thread(
+            manager.clone(),
+            new_packet_rx,
+            Arc::clone(&new_transport),
+            new_generation,
+        ));
+        timeout(
+            Duration::from_millis(250),
+            manager.send_tray_control_command(
+                ControlCommandIdentifiers::ListeningMode,
+                &[0x04],
+                Instant::now() + Duration::from_secs(1),
+            ),
+        )
+        .await
+        .expect("new send hung after replacement connection")
+        .expect("replacement connection send failed");
+        assert_eq!(new_transport.attempts().len(), 1);
+        let state = manager.state.lock().await;
+        assert_eq!(state.connection_generation, new_generation);
+        assert!(state.sender.is_some());
+        drop(state);
+
+        assert!(manager.clear_connection_if_current(new_generation).await);
+        timeout(Duration::from_millis(250), new_send_loop)
+            .await
+            .expect("new send loop did not stop")
+            .expect("new send loop task failed");
+    }
+
+    #[tokio::test]
+    async fn queued_tray_waiter_fails_when_send_channel_is_dropped() {
+        let manager = AACPManager::new();
+        let (packet_tx, packet_rx) = mpsc::channel(4);
+        manager.install_connection(packet_tx, None).await;
+        let send = manager.send_tray_control_command(
+            ControlCommandIdentifiers::ListeningMode,
+            &[0x03],
+            Instant::now() + Duration::from_secs(1),
+        );
+        tokio::pin!(send);
+        assert!(matches!(futures::poll!(send.as_mut()), Poll::Pending));
+
+        drop(packet_rx);
+        let error = timeout(Duration::from_millis(250), send)
+            .await
+            .expect("tray waiter hung after send channel closure")
+            .expect_err("closed send channel was reported as success");
+        assert!(error.to_string().contains("completion channel closed"));
+    }
+
+    #[tokio::test]
     async fn battery_snapshot_merges_valid_partial_readings_and_resets_on_reconnect() {
         let manager = AACPManager::new();
         let (event_tx, mut event_rx) = mpsc::unbounded_channel();

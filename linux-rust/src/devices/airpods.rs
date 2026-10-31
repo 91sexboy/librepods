@@ -223,7 +223,7 @@ impl AirPodsDevice {
         let command_tray_handle = tray_handle.clone();
         tokio::spawn(run_tray_command_worker(
             command_rx,
-            move |identifier, value| {
+            move |identifier, value, _deadline| {
                 let aacp_manager = aacp_manager_clone.clone();
                 async move { aacp_manager.send_control_command(identifier, &value).await }
             },

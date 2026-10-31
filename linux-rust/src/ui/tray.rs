@@ -94,7 +94,8 @@ pub(crate) async fn run_tray_command_worker<
     send_command: SendCommand,
     clear_pending: ClearPending,
 ) where
-    SendCommand: Fn(ControlCommandIdentifiers, Vec<u8>) -> SendFuture + Send + Sync + 'static,
+    SendCommand:
+        Fn(ControlCommandIdentifiers, Vec<u8>, Instant) -> SendFuture + Send + Sync + 'static,
     SendFuture: std::future::Future<Output = Result<(), Error>> + Send + 'static,
     ClearPending: Fn(TrayRequestKey) -> ClearFuture + Clone + Send + Sync + 'static,
     ClearFuture: std::future::Future<Output = ()> + Send + 'static,
@@ -115,7 +116,7 @@ pub(crate) async fn run_tray_command_worker<
             continue;
         }
         let mut send_cancellation = cancellation.clone();
-        let send = send_command(identifier, value);
+        let send = send_command(identifier, value, deadline);
         tokio::pin!(send);
 
         tokio::select! {
@@ -860,6 +861,35 @@ mod tests {
     }
 
     #[tokio::test(start_paused = true)]
+    async fn worker_forwards_the_original_request_deadline() {
+        let (command_tx, command_rx) = tokio::sync::mpsc::unbounded_channel();
+        let tray = Arc::new(tokio::sync::Mutex::new(empty_tray()));
+        let expected_deadline = {
+            let mut tray = tray.lock().await;
+            tray.listening_mode = Some(0x02);
+            tray.command_tx = Some(command_tx);
+            let group = listening_mode_group(&tray);
+            (group.select)(&mut tray, 1);
+            tray.command_tx = None;
+            tray.pending_listening_mode.as_ref().unwrap().deadline
+        };
+        let deadlines = Arc::new(StdMutex::new(Vec::new()));
+        let deadlines_for_send = Arc::clone(&deadlines);
+
+        run_tray_command_worker(
+            command_rx,
+            move |_, _, deadline| {
+                deadlines_for_send.lock().unwrap().push(deadline);
+                async { Ok::<(), &'static str>(()) }
+            },
+            clear_pending_in(Arc::clone(&tray)),
+        )
+        .await;
+
+        assert_eq!(deadlines.lock().unwrap().as_slice(), [expected_deadline]);
+    }
+
+    #[tokio::test(start_paused = true)]
     async fn queued_requests_expire_from_creation_and_cancel_backpressured_send() {
         let (command_tx, command_rx) = tokio::sync::mpsc::unbounded_channel();
         let tray = Arc::new(tokio::sync::Mutex::new(empty_tray()));
@@ -884,7 +914,7 @@ mod tests {
         let (started_tx, mut started_rx) = tokio::sync::mpsc::unbounded_channel();
         let worker = tokio::spawn(run_tray_command_worker(
             command_rx,
-            move |identifier, value| {
+            move |identifier, value, _deadline| {
                 attempts_for_send.lock().unwrap().push((identifier, value));
                 started_tx.send(()).unwrap();
                 PendingSend {
@@ -926,7 +956,7 @@ mod tests {
         let (started_tx, mut started_rx) = tokio::sync::mpsc::unbounded_channel();
         let worker = tokio::spawn(run_tray_command_worker(
             command_rx,
-            move |identifier, value| -> TestSendFuture {
+            move |identifier, value, _deadline| -> TestSendFuture {
                 attempts_for_send
                     .lock()
                     .unwrap()
@@ -1005,7 +1035,7 @@ mod tests {
         let attempts_for_send = Arc::clone(&attempts);
         run_tray_command_worker(
             command_rx,
-            move |identifier, value| {
+            move |identifier, value, _deadline| {
                 attempts_for_send.lock().unwrap().push((identifier, value));
                 async { Ok::<(), &'static str>(()) }
             },
@@ -1064,7 +1094,7 @@ mod tests {
         let attempts_for_send = Arc::clone(&attempts);
         run_tray_command_worker(
             command_rx,
-            move |identifier, value| {
+            move |identifier, value, _deadline| {
                 attempts_for_send.lock().unwrap().push((identifier, value));
                 async { Ok::<(), &'static str>(()) }
             },
@@ -1102,7 +1132,7 @@ mod tests {
 
         run_tray_command_worker(
             command_rx,
-            |_, _| async { Err::<(), _>("transport failed") },
+            |_, _, _| async { Err::<(), _>("transport failed") },
             clear_pending_in(Arc::clone(&tray)),
         )
         .await;
@@ -1130,7 +1160,7 @@ mod tests {
 
         run_tray_command_worker(
             command_rx,
-            |_, _| async { Ok::<(), &'static str>(()) },
+            |_, _, _| async { Ok::<(), &'static str>(()) },
             clear_pending_in(Arc::clone(&tray)),
         )
         .await;
