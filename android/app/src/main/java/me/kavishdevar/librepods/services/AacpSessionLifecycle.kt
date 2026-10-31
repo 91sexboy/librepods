@@ -41,12 +41,13 @@ internal class AacpSessionLifecycle<Socket : Any> {
     )
 
     private var generation = 0L
+    private var cleanupGeneration: Long? = null
     private var pending: Pending<Socket>? = null
     private var active: Active<Socket>? = null
 
     @Synchronized
     fun beginAttempt(): AacpConnectionAttempt? {
-        if (pending != null || active != null) return null
+        if (pending != null || active != null || cleanupGeneration != null) return null
 
         val attempt = AacpConnectionAttempt(++generation)
         pending = Pending(attempt)
@@ -87,12 +88,22 @@ internal class AacpSessionLifecycle<Socket : Any> {
         if (current.attempt != attempt || current.socket !== socket) return false
 
         active = null
+        cleanupGeneration = attempt.generation
         return true
     }
 
     @Synchronized
     fun disconnect(): DisconnectedAacpLifecycle<Socket> {
+        if (cleanupGeneration != null) {
+            return DisconnectedAacpLifecycle(
+                pendingSocket = null,
+                activeSocket = null,
+                cleanupToken = null,
+            )
+        }
+
         generation++
+        cleanupGeneration = generation
         val disconnected = DisconnectedAacpLifecycle(
             pendingSocket = pending?.socket,
             activeSocket = active?.socket,
@@ -104,7 +115,12 @@ internal class AacpSessionLifecycle<Socket : Any> {
     }
 
     @Synchronized
-    fun completeCleanup(cleanupToken: Long?): Boolean = cleanupToken != null && cleanupToken <= generation
+    fun completeCleanup(cleanupToken: Long?): Boolean {
+        if (cleanupToken == null || cleanupGeneration != cleanupToken) return false
+
+        cleanupGeneration = null
+        return true
+    }
 
     @Synchronized
     fun isActive(attempt: AacpConnectionAttempt, socket: Socket): Boolean =
