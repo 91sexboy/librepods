@@ -18,6 +18,8 @@
 
 package me.kavishdevar.librepods.services
 
+import java.util.concurrent.CountDownLatch
+
 internal data class AacpConnectionAttempt(val generation: Long)
 
 internal data class DisconnectedAacpLifecycle<Socket : Any>(
@@ -42,8 +44,15 @@ internal class AacpSessionLifecycle<Socket : Any> {
 
     private var generation = 0L
     private var cleanupGeneration: Long? = null
+    private var cleanupLatch: CountDownLatch? = null
     private var pending: Pending<Socket>? = null
     private var active: Active<Socket>? = null
+
+    private fun beginCleanup(generation: Long) {
+        check(cleanupGeneration == null)
+        cleanupGeneration = generation
+        cleanupLatch = CountDownLatch(1)
+    }
 
     @Synchronized
     fun beginAttempt(): AacpConnectionAttempt? {
@@ -79,7 +88,7 @@ internal class AacpSessionLifecycle<Socket : Any> {
         if (current.attempt != attempt || current.socket !== socket) return false
 
         pending = null
-        cleanupGeneration = attempt.generation
+        beginCleanup(attempt.generation)
         return true
     }
 
@@ -89,7 +98,7 @@ internal class AacpSessionLifecycle<Socket : Any> {
         if (current.attempt != attempt || current.socket !== socket) return false
 
         active = null
-        cleanupGeneration = attempt.generation
+        beginCleanup(attempt.generation)
         return true
     }
 
@@ -104,7 +113,7 @@ internal class AacpSessionLifecycle<Socket : Any> {
         }
 
         generation++
-        cleanupGeneration = generation
+        beginCleanup(generation)
         val disconnected = DisconnectedAacpLifecycle(
             pendingSocket = pending?.socket,
             activeSocket = active?.socket,
@@ -119,9 +128,30 @@ internal class AacpSessionLifecycle<Socket : Any> {
     fun completeCleanup(cleanupToken: Long?): Boolean {
         if (cleanupToken == null || cleanupGeneration != cleanupToken) return false
 
+        val completedLatch = cleanupLatch
         cleanupGeneration = null
+        cleanupLatch = null
+        completedLatch?.countDown()
         return true
     }
+
+    fun awaitCleanup() {
+        val activeLatch = synchronized(this) { cleanupLatch } ?: return
+        var interrupted = false
+        while (true) {
+            try {
+                activeLatch.await()
+                break
+            } catch (_: InterruptedException) {
+                interrupted = true
+            }
+        }
+        if (interrupted) Thread.currentThread().interrupt()
+    }
+
+    @Synchronized
+    fun isPending(attempt: AacpConnectionAttempt, socket: Socket): Boolean =
+        pending?.let { it.attempt == attempt && it.socket === socket } == true
 
     @Synchronized
     fun isActive(attempt: AacpConnectionAttempt, socket: Socket): Boolean =
