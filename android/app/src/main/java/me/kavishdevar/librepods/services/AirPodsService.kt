@@ -160,6 +160,8 @@ object ServiceManager {
 @ExperimentalEncodingApi
 class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeListener {
     private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    @Volatile
+    private var shuttingDown = false
 
     var macAddress = ""
     var localMac = ""
@@ -283,12 +285,18 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
     }
 
     @Synchronized
+    private fun beginAacpAttempt(): AacpConnectionAttempt? {
+        if (shuttingDown) return null
+        return aacpLifecycle.beginAttempt()
+    }
+
+    @Synchronized
     private fun promoteAacpSession(
         attempt: AacpConnectionAttempt,
         connectedSocket: BluetoothSocket,
         connectedDevice: BluetoothDevice,
     ): Boolean {
-        if (!aacpLifecycle.promote(attempt, connectedSocket)) return false
+        if (shuttingDown || !aacpLifecycle.promote(attempt, connectedSocket)) return false
 
         BluetoothConnectionManager.setCurrentConnection(connectedSocket, connectedDevice)
         return true
@@ -337,7 +345,12 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
     private fun cancelAndJoinConnectJob(job: Deferred<Unit>?) {
         if (job == null) return
         job.cancel()
-        runBlocking { job.join() }
+        try {
+            runBlocking { job.join() }
+        } catch (e: Exception) {
+            if (e is InterruptedException) Thread.currentThread().interrupt()
+            Log.w(TAG, "Error joining AACP connection job: ${e.message}")
+        }
     }
 
     @Synchronized
@@ -476,7 +489,7 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
         val disconnected = aacpLifecycle.disconnect()
         val cleanupToken = disconnected.cleanupToken
         if (cleanupToken == null) {
-            aacpLifecycle.awaitCleanup()
+            disconnected.awaitExistingCleanup()
             return
         }
 
@@ -499,9 +512,15 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
                 }
             }
         } finally {
-            cancelAndJoinConnectJob(endedConnectJob)
-            disconnectAttManagers(endedAttManagers)
-            aacpLifecycle.completeCleanup(cleanupToken)
+            try {
+                cancelAndJoinConnectJob(endedConnectJob)
+            } finally {
+                try {
+                    disconnectAttManagers(endedAttManagers)
+                } finally {
+                    aacpLifecycle.completeCleanup(cleanupToken)
+                }
+            }
         }
     }
 
@@ -2559,7 +2578,7 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
         Log.d(TAG, "<LogCollector:Start> Connecting to socket")
         if (CrossDevice.isAvailable) return
 
-        val attempt = aacpLifecycle.beginAttempt()
+        val attempt = beginAacpAttempt()
         if (attempt == null) {
             Log.d(TAG, "Skipping duplicate AACP connection attempt")
             return
@@ -3068,6 +3087,9 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
             e.printStackTrace()
         }
         telephonyManager.listen(phoneStateListener, PhoneStateListener.LISTEN_NONE)
+        synchronized(this) {
+            shuttingDown = true
+        }
         closeAacpSession()
         serviceScope.cancel()
         val endedAttManager = attManager

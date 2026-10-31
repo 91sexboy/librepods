@@ -26,9 +26,24 @@ internal data class DisconnectedAacpLifecycle<Socket : Any>(
     val pendingSocket: Socket?,
     val activeSocket: Socket?,
     val cleanupToken: Long?,
+    private val cleanupSignal: CountDownLatch? = null,
 ) {
     val endedActiveSession: Boolean
         get() = activeSocket != null
+
+    fun awaitExistingCleanup() {
+        val signal = cleanupSignal ?: return
+        var interrupted = false
+        while (true) {
+            try {
+                signal.await()
+                break
+            } catch (_: InterruptedException) {
+                interrupted = true
+            }
+        }
+        if (interrupted) Thread.currentThread().interrupt()
+    }
 }
 
 internal class AacpSessionLifecycle<Socket : Any> {
@@ -109,6 +124,7 @@ internal class AacpSessionLifecycle<Socket : Any> {
                 pendingSocket = null,
                 activeSocket = null,
                 cleanupToken = null,
+                cleanupSignal = cleanupLatch,
             )
         }
 
@@ -133,20 +149,6 @@ internal class AacpSessionLifecycle<Socket : Any> {
         cleanupLatch = null
         completedLatch?.countDown()
         return true
-    }
-
-    fun awaitCleanup() {
-        val activeLatch = synchronized(this) { cleanupLatch } ?: return
-        var interrupted = false
-        while (true) {
-            try {
-                activeLatch.await()
-                break
-            } catch (_: InterruptedException) {
-                interrupted = true
-            }
-        }
-        if (interrupted) Thread.currentThread().interrupt()
     }
 
     @Synchronized
