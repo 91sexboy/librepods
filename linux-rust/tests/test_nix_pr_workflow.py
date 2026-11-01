@@ -113,7 +113,7 @@ class NixPullRequestWorkflowTests(unittest.TestCase):
 
         self.assertEqual(1, len(checkout_steps))
         self.assertEqual(
-            {"persist-credentials": "false"},
+            {"persist-credentials": "false", "fetch-depth": "0"},
             checkout_steps[0]["with"],
         )
 
