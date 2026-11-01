@@ -18,6 +18,9 @@ NIX_INSTALLER_ACTION = (
     "DeterminateSystems/nix-installer-action@"
     "3138316df39ed29be04236d7ffc686fa525866aa"  # v23
 )
+GITHUB_SCRIPT_ACTION = (
+    "actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3"  # v9.0.0
+)
 IMMUTABLE_ACTION_REFERENCE = re.compile(
     r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+@[0-9a-f]{40}$"
 )
@@ -81,11 +84,28 @@ class NixPullRequestWorkflowTests(unittest.TestCase):
         workflow = load_workflow()
 
         self.assertEqual({}, workflow["permissions"])
-        self.assertEqual(["validate"], list(workflow["jobs"]))
+        self.assertEqual(["validate", "report"], list(workflow["jobs"]))
         self.assertEqual(
             {"contents": "read"},
             validation_job(workflow)["permissions"],
         )
+
+    def test_status_reporting_is_isolated_from_untrusted_validation(self):
+        workflow = load_workflow()
+        report = workflow["jobs"]["report"]
+
+        self.assertEqual("validate", report["needs"])
+        self.assertEqual("always()", report["if"])
+        self.assertEqual({"statuses": "write"}, report["permissions"])
+        self.assertEqual(1, len(report["steps"]))
+        step = report["steps"][0]
+        self.assertEqual(GITHUB_SCRIPT_ACTION, step["uses"])
+        script = step["with"]["script"]
+        self.assertIn("github.rest.repos.createCommitStatus", script)
+        self.assertIn("sha: context.sha", script)
+        self.assertIn("context: 'Nix PR validation / merge'", script)
+        self.assertNotIn("actions/checkout", str(report))
+        self.assertFalse(any("run" in item for item in report["steps"]))
 
     def test_actions_use_reviewed_immutable_commits(self):
         workflow = load_workflow()
