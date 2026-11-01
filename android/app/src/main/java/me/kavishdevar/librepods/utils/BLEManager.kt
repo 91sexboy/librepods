@@ -294,30 +294,37 @@ class BLEManager(private val context: Context) {
             deviceStatusMap[address] = parsedStatus
 
             airPodsStatusListener?.let { listener ->
-                if (previousStatus == null) {
+                val dispatch = planBleObservationDispatch(
+                    previousLidOpen = previousStatus?.lidOpen,
+                    currentGlobalLidState = currentGlobalLidState,
+                    observedLidOpen = parsedStatus.lidOpen,
+                    statusChanged = parsedStatus != previousStatus,
+                )
+
+                if (dispatch.notifyNewAddress) {
                     listener.onBroadcastFromNewAddress(parsedStatus)
                     Log.d(TAG, "New AirPods device detected: $address")
-
-                    if (currentGlobalLidState == null || currentGlobalLidState != parsedStatus.lidOpen) {
-                        currentGlobalLidState = parsedStatus.lidOpen
-                        listener.onLidStateChanged(parsedStatus.lidOpen)
-                        Log.d(TAG, "Lid state ${if (parsedStatus.lidOpen) "opened" else "closed"} (detected from new device)")
+                    dispatch.lidStateChange?.let { lidOpen ->
+                        currentGlobalLidState = lidOpen
+                        listener.onLidStateChanged(lidOpen)
+                        Log.d(TAG, "Lid state ${if (lidOpen) "opened" else "closed"} (detected from new device)")
                     }
-                } else {
-                    if (parsedStatus != previousStatus) {
-                        listener.onDeviceStatusChanged(parsedStatus, previousStatus)
-                    }
+                }
 
-                    if (parsedStatus.lidOpen != previousStatus.lidOpen) {
+                if (dispatch.deliverStatusObservation) {
+                    listener.onDeviceStatusChanged(parsedStatus, previousStatus)
+                }
+
+                if (!dispatch.notifyNewAddress) {
+                    dispatch.lidStateChange?.let { lidOpen ->
                         val previousGlobalState = currentGlobalLidState
-                        currentGlobalLidState = parsedStatus.lidOpen
-
-                        if (previousGlobalState != parsedStatus.lidOpen) {
-                            listener.onLidStateChanged(parsedStatus.lidOpen)
-                            Log.d(TAG, "Lid state changed from $previousGlobalState to ${parsedStatus.lidOpen}")
-                        }
+                        currentGlobalLidState = lidOpen
+                        listener.onLidStateChanged(lidOpen)
+                        Log.d(TAG, "Lid state changed from $previousGlobalState to $lidOpen")
                     }
+                }
 
+                if (previousStatus != null) {
                     if (parsedStatus.isLeftInEar != previousStatus.isLeftInEar ||
                         parsedStatus.isRightInEar != previousStatus.isRightInEar) {
                         listener.onEarStateChanged(
