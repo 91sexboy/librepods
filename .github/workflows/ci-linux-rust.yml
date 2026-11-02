@@ -8,7 +8,11 @@ on:
       - 'linux-v*'
     paths:
       - 'linux-rust/**'
-      - '.github/workflows/linux-build.yml'
+      - 'flake.nix'
+      - 'flake.lock'
+      - '.github/workflows/ci-linux-rust.yml'
+      - '.github/workflows/ci-nix-pr.yml'
+      - '.github/workflows/ci-nix-flake-update.yml'
   workflow_dispatch:
 
 jobs:
