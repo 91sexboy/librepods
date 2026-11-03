@@ -72,7 +72,8 @@ jobs:
           with zipfile.ZipFile(archive) as package:
               package.extractall(destination)
           sdk = destination / 'cmdline-tools/bin/sdkmanager'
-          sdk.chmod(0o755)
+          for binary in (sdk, sdk.parent / 'android'):
+              binary.chmod(0o755)
           args = [str(sdk), '--sdk_root=' + str(root)]
           subprocess.run([*args, '--licenses'], input='y\n' * 1000, text=True, check=True)
           subprocess.run([*args, 'platforms;android-37.0', 'ndk;30.0.14904198', 'cmake;3.22.1'], check=True)
