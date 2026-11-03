@@ -65,8 +65,12 @@ using RecordCount = uint32_t (*)();
 
 int main(int argc, char **argv) {
     try {
-        if (argc != 3) {
-            throw std::runtime_error("Usage: sdp_registration_test MODULE FIXTURE");
+        if (argc != 3 && argc != 4) {
+            throw std::runtime_error("Usage: sdp_registration_test MODULE FIXTURE [CASE]");
+        }
+        const std::string scenario = argc == 4 ? argv[3] : "single_registration";
+        if (scenario != "single_registration" && scenario != "disabled_vendor") {
+            throw std::runtime_error("Unknown regression case: " + scenario);
         }
         Library fixture(argv[2]);
         const auto original = fixture.symbol<RegisterRecord>("BTA_DmSetLocalDiRecord");
@@ -87,7 +91,7 @@ int main(int argc, char **argv) {
         }
         module.symbol<SetSdpHook>(
                 "Java_me_kavishdevar_librepods_utils_NativeBridge_setSdpHook")(
-                nullptr, nullptr, JNI_TRUE);
+                nullptr, nullptr, scenario == "disabled_vendor" ? JNI_FALSE : JNI_TRUE);
 
         tSDP_DI_RECORD record{};
         record.vendor = 0x1234;
@@ -101,7 +105,14 @@ int main(int argc, char **argv) {
             throw std::runtime_error("Expected one native SDP registration, got " +
                                      std::to_string(actual));
         }
-        std::cout << "PASS: one hook invocation creates exactly one native SDP record\n";
+        if (scenario == "disabled_vendor") {
+            if (record.vendor != 0x1234 || record.vendor_id_source != 0x0002) {
+                throw std::runtime_error("Disabled SDP spoof must preserve the original vendor identity");
+            }
+            std::cout << "PASS: disabled spoof preserves vendor identity and normal SDP registration\n";
+        } else {
+            std::cout << "PASS: one hook invocation creates exactly one native SDP record\n";
+        }
         return 0;
     } catch (const std::exception &error) {
         std::cerr << "FAIL: " << error.what() << '\n';
