@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
+#include "bluetooth_fixture.h"
 #include "l2c_fcr_hook.h"
 #include <jni.h>
+#include <cstring>
 #include <dlfcn.h>
 #include <iostream>
 #include <stdexcept>
@@ -61,6 +63,103 @@ int registerHook(void *target, void *replacement, void **backup) {
 using RegisterRecord = tBTA_STATUS (*)(tSDP_DI_RECORD *, uint32_t *);
 using SetSdpHook = void (*)(JNIEnv *, jobject, jboolean);
 using RecordCount = uint32_t (*)();
+
+void expectCallerData(const tSDP_DI_RECORD &actual, const tSDP_DI_RECORD &caller,
+        const std::string &context) {
+    if (actual.product != caller.product || actual.version != caller.version ||
+        actual.primary_record != caller.primary_record ||
+        std::memcmp(actual.client_executable_url, caller.client_executable_url,
+                sizeof(caller.client_executable_url)) != 0 ||
+        std::memcmp(actual.service_description, caller.service_description,
+                sizeof(caller.service_description)) != 0 ||
+        std::memcmp(actual.documentation_url, caller.documentation_url,
+                sizeof(caller.documentation_url)) != 0) {
+        throw std::runtime_error(context + ": product/version/primary/text buffers changed");
+    }
+}
+
+// Characterize the existing public forwarding contract; this is not a new RED.
+void characterizeForwarding(const Library &fixture, RegisterRecord installed,
+        RecordCount recordCount) {
+    const auto configure = fixture.symbol<decltype(&FixtureConfigureRegistrationResult)>(
+            "FixtureConfigureRegistrationResult");
+    const auto attemptCount = fixture.symbol<decltype(&FixtureRegistrationAttemptCount)>(
+            "FixtureRegistrationAttemptCount");
+    const auto lastRequest = fixture.symbol<decltype(&FixtureLastRegistrationRequest)>(
+            "FixtureLastRegistrationRequest");
+    struct ForwardingCase {
+        const char *name;
+        tBTA_STATUS status;
+        uint32_t sdkHandle;
+        bool writesHandle;
+        uint32_t expectedHandle;
+        bool primaryRecord;
+    };
+    // Literal external SDK outcomes, independent of the production wrapper.
+    // A fixed uint8_t enum can also carry an unnamed byte without normalization.
+    const ForwardingCase cases[] = {
+        {"BTA_SUCCESS", BTA_SUCCESS, 0xA1B2C3D4, true, 0xA1B2C3D4, false},
+        {"BTA_FAILURE", BTA_FAILURE, 0xF1E2D3C4, true, 0xF1E2D3C4, true},
+        {"BTA_PENDING", BTA_PENDING, 0x01020304, true, 0x01020304, false},
+        {"BTA_BUSY", BTA_BUSY, 0x00000000, true, 0x00000000, true},
+        {"BTA_NO_RESOURCES", BTA_NO_RESOURCES, 0x89ABCDEF, true, 0x89ABCDEF, false},
+        {"BTA_WRONG_MODE", BTA_WRONG_MODE, 0x76543210, true, 0x76543210, true},
+        {"unknown_status_0xA5", static_cast<tBTA_STATUS>(0xA5),
+                0x13579BDF, true, 0x13579BDF, false},
+        {"BTA_FAILURE_untouched_handle", BTA_FAILURE,
+                0x2468ACE0, false, 0xDEADBEEF, true},
+    };
+    if (attemptCount() != 0 || recordCount() != 0) {
+        throw std::runtime_error("Expected an empty SDK fixture before forwarding requests");
+    }
+    uint32_t expectedAttempts = 0;
+    for (const auto &test : cases) {
+        configure(test.status, test.sdkHandle, test.writesHandle);
+        tSDP_DI_RECORD record{};
+        record.vendor = 0x1234;
+        record.vendor_id_source = 0x0002;
+        record.product = 0x6B7C;
+        record.version = 0x9D2E;
+        record.primary_record = test.primaryRecord;
+        std::memset(record.client_executable_url, 'C', sizeof(record.client_executable_url));
+        std::memcpy(record.client_executable_url, "https://caller.invalid/client",
+                sizeof("https://caller.invalid/client"));
+        record.client_executable_url[sizeof(record.client_executable_url) - 1] = '\0';
+        std::memset(record.service_description, 'S', sizeof(record.service_description));
+        std::memcpy(record.service_description, "Caller-owned SDP record",
+                sizeof("Caller-owned SDP record"));
+        record.service_description[sizeof(record.service_description) - 1] = '\0';
+        std::memset(record.documentation_url, 'D', sizeof(record.documentation_url));
+        std::memcpy(record.documentation_url, "https://caller.invalid/manual",
+                sizeof("https://caller.invalid/manual"));
+        record.documentation_url[sizeof(record.documentation_url) - 1] = '\0';
+        const tSDP_DI_RECORD caller = record;
+        uint32_t handle = 0xDEADBEEF;
+
+        const tBTA_STATUS status = installed(&record, &handle);
+        const FixtureRegistrationRequest request = lastRequest();
+        const std::string context = test.name;
+        ++expectedAttempts;
+        if (attemptCount() != expectedAttempts || recordCount() != 1) {
+            throw std::runtime_error(context +
+                    ": expected one SDK attempt per request and only one successful non-primary record");
+        }
+        if (status != test.status || handle != test.expectedHandle) {
+            throw std::runtime_error(context + ": SDK status/handle output was not preserved");
+        }
+        if (request.record != &record || request.handle != &handle ||
+            request.inputHandle != 0xDEADBEEF) {
+            throw std::runtime_error(context + ": original caller pointers/input handle were not forwarded");
+        }
+        if (request.data.vendor != 0x004C || request.data.vendor_id_source != 0x0001 ||
+            record.vendor != 0x004C || record.vendor_id_source != 0x0001) {
+            throw std::runtime_error(context + ": enabled SDP policy must change only the Apple vendor identity");
+        }
+        expectCallerData(request.data, caller, context + " at SDK entry");
+        expectCallerData(record, caller, context + " after SDK return");
+    }
+    std::cout << "PASS: installed SDP callback preserves SDK status/handle and caller data with enabled vendor policy\n";
+}
 }
 
 int main(int argc, char **argv) {
@@ -69,7 +168,8 @@ int main(int argc, char **argv) {
             throw std::runtime_error("Usage: sdp_registration_test MODULE FIXTURE [CASE]");
         }
         const std::string scenario = argc == 4 ? argv[3] : "single_registration";
-        if (scenario != "single_registration" && scenario != "disabled_vendor") {
+        if (scenario != "single_registration" && scenario != "disabled_vendor" &&
+            scenario != "forwarding_contract") {
             throw std::runtime_error("Unknown regression case: " + scenario);
         }
         Library fixture(argv[2]);
@@ -92,6 +192,11 @@ int main(int argc, char **argv) {
         module.symbol<SetSdpHook>(
                 "Java_me_kavishdevar_librepods_utils_NativeBridge_setSdpHook")(
                 nullptr, nullptr, scenario == "disabled_vendor" ? JNI_FALSE : JNI_TRUE);
+
+        if (scenario == "forwarding_contract") {
+            characterizeForwarding(fixture, reinterpret_cast<RegisterRecord>(sdpReplacement), recordCount);
+            return 0;
+        }
 
         tSDP_DI_RECORD record{};
         record.vendor = 0x1234;
