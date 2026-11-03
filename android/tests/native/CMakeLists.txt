@@ -51,4 +51,8 @@ add_test(NAME sdp_one_registration
   COMMAND sdp_registration_test
     $<TARGET_FILE:native_module> $<TARGET_FILE:bluetooth_fixture>
 )
-set_tests_properties(sdp_one_registration PROPERTIES TIMEOUT 10)
+add_test(NAME sdp_disabled_preserves_vendor
+  COMMAND sdp_registration_test
+    $<TARGET_FILE:native_module> $<TARGET_FILE:bluetooth_fixture> disabled_vendor
+)
+set_tests_properties(sdp_one_registration sdp_disabled_preserves_vendor PROPERTIES TIMEOUT 10)
