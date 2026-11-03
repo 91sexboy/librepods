@@ -1,402 +1,99 @@
-name: Android CI
+name: Issue 873 Android source verification
+run-name: Issue 873 verification ${{ inputs.source_sha }}
 
 on:
-  push:
-    branches:
-      - '**'
-    paths:
-      - 'android/**'
-      - '.github/workflows/ci-android.yml'
-  pull_request:
-    paths:
-      - 'android/**'
   workflow_dispatch:
     inputs:
-      branch:
-        description: Branch to build
+      source_sha:
+        description: Exact source commit whose Android tree must match this CI ref
         required: true
-        default: main
-  workflow_call:
+        type: string
+
+permissions: {}
 
 jobs:
-  build:
-    runs-on: blacksmith-8vcpu-ubuntu-2404
+  verify:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: read
     env:
-      GRADLE_OPTS: '-Dorg.gradle.jvmargs="-Xmx16g -XX:MaxMetaspaceSize=2g -XX:+UseParallelGC" -Dkotlin.daemon.jvm.options="-Xmx6g,-XX:+UseParallelGC" -Dorg.gradle.workers.max=8'
-    outputs:
-      short_sha: ${{ steps.vars.outputs.short_sha }}
-      app_version: ${{ steps.version.outputs.app_version }}
-      version_code: ${{ steps.version.outputs.version_code }}
+      EXPECTED_SOURCE_SHA: ${{ inputs.source_sha }}
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: 'true'
     steps:
-      - uses: useblacksmith/checkout@v1
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
-          submodules: true
           fetch-depth: 0
-          ref: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.branch || github.ref }}
-      - uses: actions/setup-java@v5
+          ref: ${{ github.sha }}
+          submodules: true
+          persist-credentials: false
+      - name: Verify exact Android source mapping
+        run: |
+          [[ "$EXPECTED_SOURCE_SHA" =~ ^[0-9a-f]{40}$ ]]
+          git cat-file -e "$EXPECTED_SOURCE_SHA^{commit}"
+          git diff --exit-code "$EXPECTED_SOURCE_SHA" HEAD -- android
+          python3 - <<'PY'
+          import hashlib, json, os, pathlib, subprocess
+          def git(*args):
+              return subprocess.check_output(['git', *args], text=True).strip()
+          source = os.environ['EXPECTED_SOURCE_SHA']
+          payload = {
+              'source_sha': source,
+              'ci_sha': git('rev-parse', 'HEAD'),
+              'android_tree': git('rev-parse', source + ':android'),
+              'native_source_sha256': hashlib.sha256(pathlib.Path('android/app/src/main/cpp/l2c_fcr_hook.cpp').read_bytes()).hexdigest(),
+              'scope': 'native SDP registration; original OEM crash unverified',
+          }
+          pathlib.Path('source-proof.json').write_text(json.dumps(payload, indent=2) + '\n')
+          print(json.dumps(payload))
+          PY
+      - uses: actions/setup-java@cf277c60eb25467037889841efdb72551f06f6c3
         with:
           distribution: zulu
           java-version: 21
-
-      - name: Mount Gradle Cache
-        uses: useblacksmith/stickydisk@v1
-        with:
-          key: ${{ github.repository }}-android-gradle-cache
-          path: ~/.gradle
-
-      - name: Mount Native NDK CXX Cache
-        uses: useblacksmith/stickydisk@v1
-        with:
-          key: ${{ github.repository }}-android-cxx-cache
-          path: android/app/.cxx
-
-      - name: Mount Android NDK
-        uses: useblacksmith/stickydisk@v1
-        with:
-          key: ${{ github.repository }}-android-ndk
-          path: /usr/local/lib/android/sdk/ndk
-
-      - name: Decode keystore
-        if: github.event_name != 'pull_request'
-        run: echo "${{ secrets.RELEASE_KEYSTORE_FILE }}" | base64 --decode > android/release.keystore
-      - name: Setup Android SDK
-        uses: android-actions/setup-android@v4
-        with:
-          packages: platform-tools
-      - name: Accept Licenses
-        run: yes | sdkmanager --licenses
-      - name: Install NDK
+      - uses: gradle/actions/setup-gradle@ed408507eac070d1f99cc633dbcf757c94c7933a
+      - name: Compile real native hook and regression fixture
         run: |
-          if [ ! -d "/usr/local/lib/android/sdk/ndk/30.0.14904198" ]; then
-            sdkmanager "ndk;30.0.14904198"
-          else
-            echo "NDK 30.0.14904198 already cached on sticky disk"
-          fi
-
-      - name: Create local.properties
-        if: github.event_name != 'pull_request'
+          cmake -S android/tests/native -B "$RUNNER_TEMP/librepods-native-tests"
+          cmake --build "$RUNNER_TEMP/librepods-native-tests" --parallel 2
+      - name: Run native SDP behavior regressions
+        run: ctest --test-dir "$RUNNER_TEMP/librepods-native-tests" --output-on-failure --no-tests=error
+      - name: Install exact source SDK and NDK
         run: |
-          cat <<EOF > android/local.properties
-          RELEASE_STORE_FILE=../release.keystore
-          RELEASE_STORE_PASSWORD=${{ secrets.RELEASE_STORE_PASSWORD }}
-          RELEASE_KEY_ALIAS=${{ secrets.RELEASE_KEY_ALIAS }}
-          RELEASE_KEY_PASSWORD=${{ secrets.RELEASE_KEY_PASSWORD }}
-          EOF
-      - name: Build debug APK for PRs
-        if: github.event_name == 'pull_request'
-        run: ./gradlew assembleFossDebug
+          python3 - <<'PY'
+          import hashlib, os, pathlib, subprocess, urllib.request, zipfile
+          root = pathlib.Path(os.environ['ANDROID_HOME'])
+          scratch = pathlib.Path(os.environ['RUNNER_TEMP'])
+          archive = scratch / 'commandlinetools-23.zip'
+          urllib.request.urlretrieve('https://dl.google.com/android/repository/commandlinetools-linux-16111833_latest.zip', archive)
+          if hashlib.sha1(archive.read_bytes()).hexdigest() != 'e025545c62a8e64c7559119566a569fb1dec5f60':
+              raise RuntimeError('Official command-line tools checksum mismatch')
+          destination = scratch / 'sdk-tools-23'
+          with zipfile.ZipFile(archive) as package:
+              package.extractall(destination)
+          sdk = destination / 'cmdline-tools/bin/sdkmanager'
+          sdk.chmod(0o755)
+          args = [str(sdk), '--sdk_root=' + str(root)]
+          subprocess.run([*args, '--licenses'], input='y\n' * 1000, text=True, check=True)
+          subprocess.run([*args, 'platforms;android-37.0', 'ndk;30.0.14904198', 'cmake;3.22.1'], check=True)
+          PY
+      - name: Run Android unit-test task and build FOSS debug APK
         working-directory: android
-      - name: Build release artifacts
-        if: github.event_name != 'pull_request'
-        run: ./gradlew collectReleaseArtifacts
-        working-directory: android
-      - name: Get app version
-        id: version
-        working-directory: android
-        run: |
-          VERSION_OUTPUT=$(./gradlew -q printAppVersion)
-          echo "$VERSION_OUTPUT" | sed -n 's/^VERSION_NAME=/app_version=/p' >> "$GITHUB_OUTPUT"
-          echo "$VERSION_OUTPUT" | sed -n 's/^VERSION_CODE=/version_code=/p' >> "$GITHUB_OUTPUT"
-      - name: Stop Gradle Daemons
-        run: ./gradlew --stop
-        working-directory: android
-      - id: vars
-        run: echo "short_sha=$(git rev-parse --short HEAD)" >> "$GITHUB_OUTPUT"
-      - uses: actions/upload-artifact@v7
-        if: github.event_name != 'pull_request'
+        run: ./gradlew --no-daemon --max-workers=2 '-Dorg.gradle.jvmargs=-Xmx6g -XX:MaxMetaspaceSize=1g' '-Dkotlin.daemon.jvm.options=-Xmx2g' testFossDebugUnitTest assembleFossDebug
+      - name: Upload exact-source debug APK
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
-          name: apk-release
-          path: release/*release.apk
-
-      - uses: actions/upload-artifact@v7
-        if: github.event_name == 'pull_request'
+          name: issue-873-debug-apk
+          path: android/app/build/outputs/apk/foss/debug/*.apk
+          if-no-files-found: error
+          retention-days: 14
+      - name: Upload native diagnostics and source proof
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
-          name: apk-debug
-          path: android/app/build/outputs/apk/foss/debug/app-foss-debug.apk
-
-      - uses: actions/upload-artifact@v7
-        if: github.event_name != 'pull_request'
-        with:
-          name: apk-debug
-          path: release/*debug.apk
-
-      - uses: actions/upload-artifact@v7
-        if: github.event_name != 'pull_request'
-        with:
-          name: release-bundle
-          path: release/*.aab
-
-  release:
-    if: >-
-      github.event_name == 'push' &&
-      (github.ref == 'refs/heads/main' ||
-       github.ref == 'refs/heads/android/rewrite')
-    runs-on: blacksmith-8vcpu-ubuntu-2404
-    needs: build
-    permissions:
-      contents: write
-
-    steps:
-      - uses: useblacksmith/checkout@v1
-        with:
-          fetch-depth: 0
-          fetch-tags: true
-
-      - name: Determine release tag and action type
-        id: release_check
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          APP_VERSION: ${{ needs.build.outputs.app_version }}
-          SHORT_SHA: ${{ needs.build.outputs.short_sha }}
-        run: |
-          if [[ "$GITHUB_REF" == "refs/heads/main" ]]; then
-            NEW_TAG="v${APP_VERSION}"
-            TITLE="${NEW_TAG}"
-            DESCRIPTION="Download the latest release and debug APKs."
-          else
-            NEW_TAG="rewrite-v${APP_VERSION}"
-            TITLE="v${APP_VERSION} (rewrite)"
-            DESCRIPTION="Download rewrite testing versions. THINGS WILL BE BROKEN!"
-          fi
-
-          echo "tag=${NEW_TAG}" >> "$GITHUB_OUTPUT"
-          echo "title=${TITLE}" >> "$GITHUB_OUTPUT"
-          echo "description=${DESCRIPTION}" >> "$GITHUB_OUTPUT"
-
-          if gh release view "$NEW_TAG" &>/dev/null; then
-            echo "exists=true" >> "$GITHUB_OUTPUT"
-            echo "Release $NEW_TAG already exists."
-          else
-            echo "exists=false" >> "$GITHUB_OUTPUT"
-            echo "Release $NEW_TAG does not exist."
-          fi
-
-      - name: Download release APK
-        uses: actions/download-artifact@v8
-        with:
-          name: apk-release
-          path: artifacts/apk-release
-
-      - name: Download debug APK
-        uses: actions/download-artifact@v8
-        with:
-          name: apk-debug
-          path: artifacts/apk-debug
-
-      - name: Find previous release
-        id: prev
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          CURRENT_TAG: ${{ steps.release_check.outputs.tag }}
-        run: |
-          if [[ "$GITHUB_REF" == "refs/heads/main" ]]; then
-            TAG=$(gh release list --limit 1000 --json tagName -q 'first(.[] | select((.tagName | startswith("v")) and .tagName != env.CURRENT_TAG) | .tagName) // empty')
-          else
-            TAG=$(gh release list --limit 1000 --json tagName -q 'first(.[] | select((.tagName | startswith("rewrite-")) and .tagName != env.CURRENT_TAG) | .tagName) // empty')
-          fi
-
-          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
-      - name: Get previous version code from latest matching release
-        id: prev_code
-        continue-on-error: true
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          if [[ "$GITHUB_REF" == "refs/heads/main" ]]; then
-            PREV_TAG=$(gh release list --limit 50 --json tagName -q 'first(.[] | select(.tagName | startswith("v")) | .tagName) // empty')
-          else
-            PREV_TAG=$(gh release list --limit 50 --json tagName -q 'first(.[] | select(.tagName | startswith("rewrite-")) | .tagName) // empty')
-          fi
-
-          if [ -n "$PREV_TAG" ]; then
-            ASSETS=$(gh release view "$PREV_TAG" --json assets -q '.assets[].name')
-            PREV_CODE=$(echo "$ASSETS" | grep -oE 'v[0-9]+\.[0-9]+\.[0-9]+-([0-9]+)-' | sed -E 's/v[0-9]+\.[0-9]+\.[0-9]+-([0-9]+)-/\1/' | head -n 1)
-
-            if [ -n "$PREV_CODE" ]; then
-              echo "previous_code=$PREV_CODE" >> "$GITHUB_OUTPUT"
-              echo "Previous version code for $PREV_TAG: $PREV_CODE"
-            fi
-          fi
-      - name: Generate changelog
-        id: changelog
-        env:
-          PREVIOUS_TAG: ${{ steps.prev.outputs.tag }}
-        run: |
-          if [[ "$GITHUB_REF" == "refs/heads/main" ]]; then
-            if [ -z "$PREVIOUS_TAG" ]; then
-              NOTES=$(git log --pretty=format:"- %s ([%h](https://github.com/kavishdevar/librepods/commit/%H))")
-            else
-              NOTES=$(git log "${PREVIOUS_TAG}..HEAD" --pretty=format:"- %s ([%h](https://github.com/kavishdevar/librepods/commit/%H))")
-            fi
-          else
-            if [ -z "$PREVIOUS_TAG" ]; then
-              RANGE="HEAD"
-            else
-              RANGE="${PREVIOUS_TAG}..HEAD"
-            fi
-
-            NOTES=$(git log "$RANGE" \
-              --pretty=format:"%s|%h|%H" |
-              awk -F '|' '$1 ~ /^android/ {
-                printf "- %s ([%s](https://github.com/kavishdevar/librepods/commit/%s))\n", $1, $2, $3
-              }')
-          fi
-
-          {
-            echo "notes<<EOF"
-            echo "$NOTES"
-            echo "EOF"
-          } >> "$GITHUB_OUTPUT"
-
-      - name: Create or Update release
-        id: release
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          TAG: ${{ steps.release_check.outputs.tag }}
-          TITLE: ${{ steps.release_check.outputs.title }}
-          NOTES: ${{ steps.changelog.outputs.notes }}
-          EXISTS: ${{ steps.release_check.outputs.exists }}
-        run: |
-          IS_STABLE=true
-          if [[ "$TAG" =~ -(alpha|beta|rc) ]]; then
-            IS_STABLE=false
-          fi
-
-          PRERELEASE_FLAG=""
-          if [[ "$IS_STABLE" == "false" ]]; then
-            PRERELEASE_FLAG="--prerelease"
-          fi
-
-          if [[ "$EXISTS" == "true" ]]; then
-            if [[ "$IS_STABLE" == "true" ]]; then
-              echo "Stable release $TAG already exists. Overwriting assets and updating notes..."
-              gh release upload "$TAG" artifacts/apk-release/* artifacts/apk-debug/* --clobber
-              gh release edit "$TAG" --title "$TITLE" --notes "$NOTES"
-              echo "posted=true" >> "$GITHUB_OUTPUT"
-            else
-              echo "Prerelease $TAG already exists. Skipping..."
-              echo "posted=false" >> "$GITHUB_OUTPUT"
-            fi
-          else
-            echo "Creating new release $TAG..."
-            gh release create "$TAG" \
-              artifacts/apk-release/* \
-              artifacts/apk-debug/* \
-              --target "$GITHUB_SHA" \
-              --title "$TITLE" \
-              --notes "$NOTES" \
-              $PRERELEASE_FLAG
-            echo "posted=true" >> "$GITHUB_OUTPUT"
-          fi
-
-      - name: Download release bundle
-        uses: actions/download-artifact@v8
-        with:
-          name: release-bundle
-          path: artifacts/release-bundle
-
-      - name: Upload to Google Play (Main branch only)
-        if: github.ref == 'refs/heads/main' && (steps.prev_code.outputs.previous_code != env.VERSION_CODE)
-        env:
-          APP_VERSION: ${{ needs.build.outputs.app_version }}
-          VERSION_CODE: ${{ needs.build.outputs.version_code }}
-        uses: r0adkll/upload-google-play@v1
-        with:
-          serviceAccountJsonPlainText: ${{ secrets.PLAY_STORE_SERVICE_ACCOUNT_JSON }}
-          packageName: me.kavishdevar.librepods
-          releaseFiles: artifacts/release-bundle/*.aab
-          tracks: beta
-          releaseName: "${VERSION_CODE} (v${APP_VERSION})"
-
-      - name: Upload to Google Play (Rewrite Internal Track)
-        id: upload_rewrite
-        if: github.ref == 'refs/heads/android/rewrite'
-        env:
-          APP_VERSION: ${{ needs.build.outputs.app_version }}
-          VERSION_CODE: ${{ needs.build.outputs.version_code }}
-        uses: r0adkll/upload-google-play@v1
-        with:
-          serviceAccountJsonPlainText: ${{ secrets.PLAY_STORE_SERVICE_ACCOUNT_JSON }}
-          packageName: me.kavishdevar.librepods
-          releaseFiles: artifacts/release-bundle/*.aab
-          tracks: internal
-          releaseName: "rewrite v${APP_VERSION} (${VERSION_CODE})"
-
-      - name: Get timestamp
-        if: steps.release.outputs.posted == 'true'
-        id: timestamp
-        run: echo "timestamp=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_OUTPUT"
-
-      - name: Post to Discord
-        if: steps.release.outputs.posted == 'true'
-        env:
-          DISCORD_WEBHOOK: ${{ secrets.DISCORD_ANDROID_CI_URL }}
-          RELEASE_TAG: ${{ steps.release_check.outputs.tag }}
-          RELEASE_TITLE: ${{ steps.release_check.outputs.title }}
-          RELEASE_DESCRIPTION: ${{ steps.release_check.outputs.description }}
-          APP_VERSION: ${{ needs.build.outputs.app_version }}
-          TIMESTAMP: ${{ steps.timestamp.outputs.timestamp }}
-          CHANGELOG_NOTES: ${{ steps.changelog.outputs.notes }}
-          PLAY_URL: ${{ steps.upload_rewrite.outputs.INTERNAL_SHARING_DOWNLOAD_URL }}
-        run: |
-          jq -n \
-            --arg title "$RELEASE_TITLE" \
-            --arg description "$RELEASE_DESCRIPTION" \
-            --arg timestamp "$TIMESTAMP" \
-            --arg changelog "$CHANGELOG_NOTES" \
-            --arg release_url "https://github.com/kavishdevar/librepods/releases/download/${RELEASE_TAG}/LibrePods-FOSS-v${APP_VERSION}-${{ needs.build.outputs.version_code }}-release.apk" \
-            --arg debug_url "https://github.com/kavishdevar/librepods/releases/download/${RELEASE_TAG}/LibrePods-FOSS-v${APP_VERSION}-${{ needs.build.outputs.version_code }}-debug.apk" \
-            --arg play_url "${PLAY_URL:-}" \
-            '{
-              embeds: [
-                {
-                  title: $title,
-                  description: $description,
-                  color: 253060,
-                  timestamp: $timestamp,
-                  fields: [
-                    {
-                      name: "Changelog",
-                      value: (if $changelog == "" then "No changes." elif ($changelog | length) > 1024 then (($changelog | .[0:1021]) + "...") else $changelog end),
-                      inline: false
-                    }
-                  ],
-                  footer: {
-                    text: "GitHub Actions"
-                  }
-                }
-              ],
-              components: [
-                {
-                  type: 1,
-                  components: (
-                    [
-                      {
-                        type: 2,
-                        label: "Download Release APK",
-                        style: 5,
-                        url: $release_url
-                      },
-                      {
-                        type: 2,
-                        label: "Download Debug APK",
-                        style: 5,
-                        url: $debug_url
-                      }
-                    ] +
-                    if $play_url != "" then [
-                      {
-                        type: 2,
-                        label: "Google Play Internal",
-                        style: 5,
-                        url: $play_url
-                      }
-                    ] else [] end
-                  )
-                }
-              ]
-            }' |
-          curl --fail-with-body -X POST \
-            "${DISCORD_WEBHOOK}?with_components=true" \
-            -H "Content-Type: application/json" \
-            --data-binary @-
+          name: issue-873-native-proof
+          path: |
+            source-proof.json
+            ${{ runner.temp }}/librepods-native-tests/Testing/Temporary/LastTest.log
+          if-no-files-found: error
+          retention-days: 14
