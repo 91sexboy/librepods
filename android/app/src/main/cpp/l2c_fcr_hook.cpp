@@ -59,9 +59,8 @@ tBTA_STATUS fake_BTA_DmSetLocalDiRecord(tSDP_DI_RECORD *p_device_info, uint32_t 
 
     LOGI("fake_BTA_DmSetLocalDiRecord called");
 
-    LOGI("fake_BTA_DmSetLocalDiRecord: modifying vendor to 0x004C, vendor_id_source to 0x0001");
-
-    if (p_device_info) {
+    if (p_device_info && enableSdpHook.load(std::memory_order_relaxed)) {
+        LOGI("fake_BTA_DmSetLocalDiRecord: modifying vendor to 0x004C, vendor_id_source to 0x0001");
         p_device_info->vendor = 0x004C;
         p_device_info->vendor_id_source = 0x0001;
     }
