@@ -2,6 +2,7 @@
 #include "bluetooth_fixture.h"
 #include "l2c_fcr_hook.h"
 #include <jni.h>
+#include <cstddef>
 #include <cstring>
 #include <dlfcn.h>
 #include <iostream>
@@ -64,6 +65,14 @@ using RegisterRecord = tBTA_STATUS (*)(tSDP_DI_RECORD *, uint32_t *);
 using SetSdpHook = void (*)(JNIEnv *, jobject, jboolean);
 using RecordCount = uint32_t (*)();
 
+template<std::size_t BufferSize, std::size_t TextSize>
+void fillCallerText(char (&buffer)[BufferSize], char fill, const char (&text)[TextSize]) {
+    static_assert(TextSize <= BufferSize, "Caller text must fit its buffer");
+    std::memset(buffer, fill, BufferSize);
+    std::memcpy(buffer, text, TextSize);
+    buffer[BufferSize - 1] = '\0';
+}
+
 void expectCallerData(const tSDP_DI_RECORD &actual, const tSDP_DI_RECORD &caller,
         const std::string &context) {
     if (actual.product != caller.product || actual.version != caller.version ||
@@ -121,18 +130,9 @@ void characterizeForwarding(const Library &fixture, RegisterRecord installed,
         record.product = 0x6B7C;
         record.version = 0x9D2E;
         record.primary_record = test.primaryRecord;
-        std::memset(record.client_executable_url, 'C', sizeof(record.client_executable_url));
-        std::memcpy(record.client_executable_url, "https://caller.invalid/client",
-                sizeof("https://caller.invalid/client"));
-        record.client_executable_url[sizeof(record.client_executable_url) - 1] = '\0';
-        std::memset(record.service_description, 'S', sizeof(record.service_description));
-        std::memcpy(record.service_description, "Caller-owned SDP record",
-                sizeof("Caller-owned SDP record"));
-        record.service_description[sizeof(record.service_description) - 1] = '\0';
-        std::memset(record.documentation_url, 'D', sizeof(record.documentation_url));
-        std::memcpy(record.documentation_url, "https://caller.invalid/manual",
-                sizeof("https://caller.invalid/manual"));
-        record.documentation_url[sizeof(record.documentation_url) - 1] = '\0';
+        fillCallerText(record.client_executable_url, 'C', "https://caller.invalid/client");
+        fillCallerText(record.service_description, 'S', "Caller-owned SDP record");
+        fillCallerText(record.documentation_url, 'D', "https://caller.invalid/manual");
         const tSDP_DI_RECORD caller = record;
         uint32_t handle = 0xDEADBEEF;
 
